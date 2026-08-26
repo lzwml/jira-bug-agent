@@ -31,13 +31,14 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - 可追溯 Evidence：Artifact、相对路径和行号；
 - 可替换的 OpenAI-compatible 模型服务；
 - 步骤预算、Tool Result 预算和统一错误观察。
+- 稳定的 `BugAnalysisTask → BugAnalysisResult` Worker 契约。
 
 当前尚未实现 Code Search MCP、RAG 和 Jira 回写；路线见下方 Roadmap。
 
 ## 仓库结构
 
 ```text
-src/bug_agent/                    # Agent Core / Harness / CLI
+src/bug_agent/                    # Worker / Agent Core / Harness / CLI
 packages/jira-bug-mcp/            # Jira Adapter
 packages/log-analyzer-mcp/        # 日志证据工具
 tests/                            # Agent 与 Provider 测试
@@ -74,11 +75,35 @@ $env:BUG_AGENT_LLM_MODEL = 'your-model'
 uv run bug-agent analyze-local 'D:\bug-cases\APP-42'
 ```
 
-输出完整运行状态和工具轨迹：
+输出完整 Worker 结果和内部工具轨迹：
 
 ```powershell
 uv run bug-agent --json analyze-local 'D:\bug-cases\APP-42'
 ```
+
+## 作为 Worker 调用
+
+部门 Workflow、HTTP 服务或任务队列不应调用 CLI，而应依赖稳定 Worker 契约：
+
+```python
+from bug_agent import BugAnalysisTask, BugAnalysisWorker
+from bug_agent.config import AgentConfig
+
+worker = BugAnalysisWorker(AgentConfig.from_environment())
+result = await worker.execute(BugAnalysisTask(
+    task_id="workflow-2026-001",
+    source="jira",
+    issue_key="APP-42",
+    objective="定位启动黑屏根因",
+))
+
+if result.status == "completed":
+    print(result.report.summary)
+```
+
+对外结果包含结构化 RCA、Evidence 引用、假设、缺失证据和下一步动作。内部
+Tool Event 默认不返回；只有 `include_trace=true` 时才进入结果，避免上游系统
+依赖模型消息细节。完整 Schema 见 [Worker Contract](docs/worker-contract.md)。
 
 ## 分析 Jira Issue
 
@@ -114,9 +139,11 @@ uv run pytest -q packages/log-analyzer-mcp/tests
 - [x] Jira MCP
 - [x] Log Analyzer MCP V2
 - [x] Jira / Local 双入口 CLI
+- [x] 可嵌入部门 Workflow 的 Worker Facade 与稳定输入输出契约
 - [ ] Code Search / Git MCP
 - [ ] 历史 Bug RAG
-- [ ] RCAReport 严格结构化输出与 Renderer
+- [x] RCAReport Schema、兼容解析与 Markdown Renderer
+- [ ] 使用模型原生 constrained output 强制 RCAReport
 - [ ] Eval 数据集与 LLM-as-Judge
 - [ ] Human-in-the-loop Jira 回写
 - [ ] Web UI / Task history

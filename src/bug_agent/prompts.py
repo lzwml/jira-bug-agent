@@ -28,3 +28,30 @@ LOCAL_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 3. 再使用 search_evidence、extract_timeline、parse_diagnostics 收集证据。
 """
 
+REPORT_FORMAT_PROMPT = """
+
+最终答案必须只输出一个 JSON 对象，不要使用 Markdown 代码围栏，结构如下：
+{
+  "conclusion_status": "confirmed | hypothesis_only | insufficient_evidence",
+  "summary": "结论摘要",
+  "confirmed_facts": ["已由证据确认的事实"],
+  "hypotheses": [{
+    "statement": "假设",
+    "confidence": 0.0,
+    "status": "candidate | supported | rejected",
+    "supporting_evidence_ids": ["evidence_id"],
+    "falsification": "如何证伪"
+  }],
+  "evidence": [{
+    "evidence_id": "工具返回的稳定 ID",
+    "artifact_id": "artifact_id 或 null",
+    "relative_path": "相对路径",
+    "line_start": 1,
+    "line_end": 1,
+    "excerpt": "必要的短摘录"
+  }],
+  "missing_evidence": ["缺失信息"],
+  "next_actions": ["下一步"]
+}
+不得虚构 evidence_id、文件或行号；没有可靠证据时使用 insufficient_evidence。
+"""
