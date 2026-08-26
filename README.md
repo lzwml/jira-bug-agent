@@ -26,6 +26,7 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - `bug-agent analyze-jira APP-42`：读取 Jira、导出附件并分析；
 - `bug-agent analyze-local D:\cases\APP-42`：直接分析本地 Case；
 - Jira Cloud v3 与 Data Center v2；
+- 可组合的团队 Skills：通用日志分诊与 Android 黑屏专项；
 - Android/logcat、Kernel monotonic、Wall Clock 时间线；
 - AVC、Fatal、ANR、Kernel Call Trace 结构化诊断；
 - 可追溯 Evidence：Artifact、相对路径和行号；
@@ -40,7 +41,9 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 ```text
 src/bug_agent/                    # Worker / Agent Core / Harness / CLI
 packages/jira-bug-mcp/            # Jira Adapter
-packages/log-analyzer-mcp/        # 日志证据工具
+packages/log-analysis-core/       # 与协议无关的确定性解析引擎
+packages/log-analyzer-mcp/        # Core 的 MCP 安全适配层
+skills/                           # 团队维护的领域分析方法
 tests/                            # Agent 与 Provider 测试
 docs/architecture.md              # 分层与数据流
 ```
@@ -80,6 +83,18 @@ uv run bug-agent analyze-local 'D:\bug-cases\APP-42'
 ```powershell
 uv run bug-agent --json analyze-local 'D:\bug-cases\APP-42'
 ```
+
+针对明确的黑屏问题激活专项 Skill；多个 `--skill` 可以组合：
+
+```powershell
+uv run bug-agent `
+  --skill android-log-triage `
+  --skill android-black-screen `
+  analyze-local 'D:\bug-cases\APP-42'
+```
+
+Skill 决定分析顺序、时间线锚点和证据标准；解析、路径权限和扫描预算仍由
+Core/MCP 代码保证。不要把正则解析器或文件操作写进 Skill。
 
 ## 作为 Worker 调用
 
@@ -129,6 +144,7 @@ Data Center PAT 通常配置为 `JIRA_DEPLOYMENT=datacenter`、
 
 ```powershell
 uv run pytest -q tests
+uv run pytest -q packages/log-analysis-core/tests
 uv run pytest -q packages/jira-bug-mcp/tests
 uv run pytest -q packages/log-analyzer-mcp/tests
 ```
@@ -138,9 +154,12 @@ uv run pytest -q packages/log-analyzer-mcp/tests
 - [x] 可移植 Agent Loop
 - [x] Jira MCP
 - [x] Log Analyzer MCP V2
+- [x] Log Analysis Core 与 MCP 协议层分离
+- [x] 通用日志分诊与黑屏分析 Skills
 - [x] Jira / Local 双入口 CLI
 - [x] 可嵌入部门 Workflow 的 Worker Facade 与稳定输入输出契约
 - [ ] Code Search / Git MCP
+- [ ] 根据 Issue 分类动态选择专项 Skill
 - [ ] 历史 Bug RAG
 - [x] RCAReport Schema、兼容解析与 Markdown Renderer
 - [ ] 使用模型原生 constrained output 强制 RCAReport

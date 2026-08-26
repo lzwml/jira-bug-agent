@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "log-analyzer-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "面向 Bug Agent 的证据驱动日志分析 MCP Server"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -24,6 +24,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "log-analysis-core>=0.1.0",
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
 ]

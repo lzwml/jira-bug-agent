@@ -21,8 +21,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-packages --extra dev --frozen
       - run: uv run pytest -q tests
+      - run: uv run pytest -q packages/log-analysis-core/tests
       - run: uv run pytest -q packages/jira-bug-mcp/tests
       - run: uv run pytest -q packages/log-analyzer-mcp/tests
       - if: matrix.python-version == '3.12'
-        run: uv build
-
+        run: uv build --all-packages

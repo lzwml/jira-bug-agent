@@ -14,6 +14,7 @@ from .contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
 from .mcp_router import McpToolRouter
 from .prompts import JIRA_WORKFLOW_PROMPT, LOCAL_WORKFLOW_PROMPT, REPORT_FORMAT_PROMPT
 from .provider import OpenAICompatibleProvider
+from .skills import SkillRegistry
 
 
 class CloseableProvider(ModelProvider, Protocol):
@@ -58,10 +59,12 @@ class BugAnalysisWorker:
         config: AgentConfig,
         provider_factory: ProviderFactory = _default_provider,
         router_factory: RouterFactory = McpToolRouter,
+        skill_registry: SkillRegistry | None = None,
     ):
         self.config = config
         self.provider_factory = provider_factory
         self.router_factory = router_factory
+        self.skill_registry = skill_registry or SkillRegistry.default()
 
     async def execute(self, task: BugAnalysisTask) -> BugAnalysisResult:
         run_config = replace(
@@ -69,14 +72,16 @@ class BugAnalysisWorker:
             max_steps=task.max_steps if task.max_steps is not None else self.config.max_steps,
         )
         provider = None
+        applied_skills: list[str] = []
         try:
+            skill_prompt, applied_skills = self.skill_registry.render(task.skills)
             provider = self.provider_factory(run_config)
             try:
                 async with self.router_factory() as router:
                     prompt, instruction = await self._prepare(task, router)
                     run = await BugAnalysisAgent(run_config, provider).run(
                         instruction,
-                        prompt + REPORT_FORMAT_PROMPT,
+                        prompt + "\n\n" + skill_prompt + REPORT_FORMAT_PROMPT,
                         router,
                     )
             finally:
@@ -96,6 +101,7 @@ class BugAnalysisWorker:
                 ),
                 steps=0,
                 structured_output=False,
+                applied_skills=applied_skills,
                 error=message,
             )
 
@@ -114,6 +120,7 @@ class BugAnalysisWorker:
             report=report,
             steps=run.steps,
             structured_output=structured,
+            applied_skills=applied_skills,
             trace=run.tool_events if task.include_trace else [],
             error=run.error,
         )

@@ -12,6 +12,7 @@ resolution-markers = [
 members = [
     "jira-bug-agent",
     "jira-bug-mcp",
+    "log-analysis-core",
     "log-analyzer-mcp",
 ]
 
@@ -470,10 +471,25 @@ wheels = [
 ]
 
 [[package]]
+name = "log-analysis-core"
+version = "0.1.0"
+source = { editable = "packages/log-analysis-core" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" }]
+provides-extras = ["dev"]
+
+[[package]]
 name = "log-analyzer-mcp"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "packages/log-analyzer-mcp" }
 dependencies = [
+    { name = "log-analysis-core" },
     { name = "mcp" },
     { name = "pydantic" },
 ]
@@ -486,6 +502,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "log-analysis-core", editable = "packages/log-analysis-core" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },

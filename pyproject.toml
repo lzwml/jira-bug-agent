@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27.0",
     "jira-bug-mcp>=0.1.0",
-    "log-analyzer-mcp>=0.2.0",
+    "log-analyzer-mcp>=0.3.0",
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
 ]
@@ -28,12 +28,16 @@ bug-agent = "bug_agent.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/bug_agent"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "bug_agent_builtin_skills"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.uv.workspace]
-members = ["packages/jira-bug-mcp", "packages/log-analyzer-mcp"]
+members = ["packages/*"]
 
 [tool.uv.sources]
 jira-bug-mcp = { workspace = true }
+log-analysis-core = { workspace = true }
 log-analyzer-mcp = { workspace = true }

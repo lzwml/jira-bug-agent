@@ -107,9 +107,11 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
     assert result.status == "completed"
     assert result.structured_output is True
     assert result.report.evidence[0].relative_path == "logcat.txt"
+    assert result.applied_skills == ["android-log-triage"]
     assert harness.provider.config.max_steps == 5
     assert harness.provider.closed is True
     assert harness.router.connections[0][0:2] == ("log", "log_analyzer.server")
+    assert "Skill: android-log-triage" in harness.provider.messages[0][0]["content"]
 
 
 @pytest.mark.anyio
@@ -149,3 +151,18 @@ async def test_worker_closes_provider_when_local_path_is_invalid(tmp_path):
     assert result.status == "failed"
     assert "Case 目录不存在" in (result.error or "")
     assert harness.provider.closed is True
+
+
+@pytest.mark.anyio
+async def test_unknown_skill_fails_before_provider_or_mcp_start(tmp_path):
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    result = await worker.execute(BugAnalysisTask(
+        source="local", case_path=str(tmp_path), skills=["not-found"],
+    ))
+
+    assert result.status == "failed"
+    assert "Skill 不存在" in (result.error or "")
+    assert harness.provider is None
+    assert harness.router is None

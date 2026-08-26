@@ -21,6 +21,7 @@ class BugAnalysisTask(BaseModel):
     case_path: str | None = None
     objective: str = Field(default="定位 Bug 根因并给出下一步建议", min_length=1, max_length=2000)
     max_steps: int | None = Field(default=None, ge=1, le=100)
+    skills: list[str] = Field(default_factory=lambda: ["android-log-triage"], max_length=5)
     include_trace: bool = False
     metadata: dict[str, str] = Field(default_factory=dict)
 
@@ -76,6 +77,6 @@ class BugAnalysisResult(BaseModel):
     report: RCAReport
     steps: int = Field(ge=0)
     structured_output: bool
+    applied_skills: list[str] = Field(default_factory=list)
     trace: list[ToolEvent] = Field(default_factory=list)
     error: str | None = None
-

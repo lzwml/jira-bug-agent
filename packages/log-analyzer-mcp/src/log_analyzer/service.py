@@ -10,12 +10,15 @@ ToolResult，因此可以脱离 MCP 单独测试，也可以被其他 Runtime �
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections import Counter, deque
-from datetime import datetime
 from typing import Callable
 
+from log_analysis_core import (
+    classify_diagnostic_line,
+    extract_timestamp,
+    infer_component,
+    stable_id,
+)
 from pydantic import ValidationError
 
 from .case_registry import CaseRegistry
@@ -33,72 +36,8 @@ from .errors import make_error, make_success
 from .models import ToolResult
 
 
-DEFAULT_TIMELINE_ANCHORS = [
-    "SurfaceFlinger", "bootanimation", "backlight", "Watchdog",
-    "FATAL", "ANR in", "Kernel panic", "Call Trace:", "avc: denied",
-]
 MAX_SCAN_BYTES_PER_FILE = 128 * 1024 * 1024
 MAX_SCAN_BYTES_PER_CALL = 512 * 1024 * 1024
-
-
-def _hash_id(prefix: str, value: str) -> str:
-    """为 Evidence/Event/Finding 生成可重复引用的稳定 ID。"""
-
-    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
-    return f"{prefix}_{digest[:16]}"
-
-
-def _extract_timestamp(line: str, year_hint: int | None = None) -> dict | None:
-    """识别常见日志时间戳，并明确标记所属时钟域。
-
-    注意：Kernel monotonic 表示开机后的相对秒数。没有额外同步点时，它不能
-    和 Android wall clock 直接对齐，所以这里只解析，不做猜测性换算。
-    """
-
-    # 例如：2026-08-26 10:20:31.123 或 2026-08-26T10:20:31
-    full = re.search(r"\b(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)", line)
-    if full:
-        raw = full.group(0)
-        try:
-            normalized = datetime.fromisoformat(raw.replace(" ", "T")).isoformat()
-        except ValueError:
-            normalized = None
-        return {"raw": raw, "normalized": normalized, "clock": "wall", "relative": None}
-
-    # Android threadtime 常见前缀：08-26 10:20:31.123
-    logcat = re.search(r"(?<!\d)(\d{2})-(\d{2})\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)", line)
-    if logcat:
-        raw = logcat.group(0)
-        year = year_hint or datetime.now().year
-        try:
-            normalized = datetime.fromisoformat(
-                f"{year}-{logcat.group(1)}-{logcat.group(2)}T{logcat.group(3)}"
-            ).isoformat()
-        except ValueError:
-            normalized = None
-        return {"raw": raw, "normalized": normalized, "clock": "android", "relative": None}
-
-    # Kernel printk 常见前缀：[  123.456789]
-    kernel = re.search(r"^\s*\[\s*(\d+(?:\.\d+)?)\]", line)
-    if kernel:
-        return {
-            "raw": kernel.group(0).strip(),
-            "normalized": None,
-            "clock": "kernel_monotonic",
-            "relative": float(kernel.group(1)),
-        }
-    return None
-
-
-def _infer_component(line: str, anchors: list[str]) -> str | None:
-    """优先使用命中的领域锚点，否则尝试提取 Android 日志 Tag。"""
-
-    lowered = line.casefold()
-    for anchor in anchors:
-        if anchor.casefold() in lowered:
-            return anchor
-    tag = re.search(r"\s[VDIWEF]\s+([A-Za-z0-9_.:/-]+)\s*:", line)
-    return tag.group(1) if tag else None
 
 
 class LogAnalyzerService:
@@ -162,9 +101,9 @@ class LogAnalyzerService:
         """把流式搜索过程中暂存的前后文组装为 Evidence。"""
 
         lines = pending["before"] + [pending["line"]] + pending["after"]
-        timestamp = _extract_timestamp(pending["line"])
+        timestamp = extract_timestamp(pending["line"])
         return Evidence(
-            evidence_id=_hash_id(
+            evidence_id=stable_id(
                 "evidence",
                 f"{pending['artifact'].artifact_id}:{pending['line_number']}:{pending['query']}",
             ),
@@ -174,7 +113,7 @@ class LogAnalyzerService:
             line_start=max(1, pending["line_number"] - len(pending["before"])),
             line_end=pending["line_number"] + len(pending["after"]),
             content="\n".join(lines),
-            timestamp_raw=timestamp["raw"] if timestamp else None,
+            timestamp_raw=timestamp.raw if timestamp else None,
             query=pending["query"],
         )
 
@@ -278,14 +217,14 @@ class LogAnalyzerService:
     def extract_timeline(self, **kwargs) -> ToolResult:
         """从多个附件中提取锚点事件，并在各自时钟域内排序。
 
-        默认锚点只用于快速概览；领域 Agent 应根据当前 Bug 主动传入更具体的
-        anchors。不同 clock_domain 的事件被保留但不会被伪造为同一时间轴。
+        anchors 必须由当前 Skill/Agent 显式提供。不同 clock_domain 的事件被
+        保留，但不会被伪造为同一时间轴。
         """
 
         params = ExtractTimelineInput.model_validate(kwargs)
         if self.registry.get_case(params.case_id) is None:
             return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
-        anchors = params.anchors or DEFAULT_TIMELINE_ANCHORS
+        anchors = params.anchors
         anchors_folded = [anchor.casefold() for anchor in anchors]
         artifacts = self.registry.select_artifacts(params.case_id, artifact_ids=params.artifact_ids)
         events: list[TimelineEvent] = []
@@ -311,19 +250,19 @@ class LogAnalyzerService:
                     )
                     if matched_anchor is None:
                         continue
-                    timestamp = _extract_timestamp(line, params.year_hint)
+                    timestamp = extract_timestamp(line, params.year_hint)
                     if timestamp is None:
                         continue
                     events.append(TimelineEvent(
-                        event_id=_hash_id("event", f"{artifact.artifact_id}:{line_number}:{line}"),
+                        event_id=stable_id("event", f"{artifact.artifact_id}:{line_number}:{line}"),
                         artifact_id=artifact.artifact_id,
                         relative_path=artifact.relative_path,
                         line_number=line_number,
-                        clock_domain=timestamp["clock"],
-                        timestamp_raw=timestamp["raw"],
-                        timestamp_normalized=timestamp["normalized"],
-                        relative_seconds=timestamp["relative"],
-                        component=_infer_component(line, anchors),
+                        clock_domain=timestamp.clock_domain,
+                        timestamp_raw=timestamp.raw,
+                        timestamp_normalized=timestamp.normalized,
+                        relative_seconds=timestamp.relative_seconds,
+                        component=infer_component(line, anchors),
                         event_type=matched_anchor,
                         content=line,
                     ))
@@ -357,16 +296,16 @@ class LogAnalyzerService:
     def _make_line_evidence(self, artifact, line_number: int, content: str) -> Evidence:
         """为确定性诊断结果创建可追溯的 Evidence。"""
 
-        timestamp = _extract_timestamp(content)
+        timestamp = extract_timestamp(content)
         return Evidence(
-            evidence_id=_hash_id("evidence", f"{artifact.artifact_id}:{line_number}:{content}"),
+            evidence_id=stable_id("evidence", f"{artifact.artifact_id}:{line_number}:{content}"),
             artifact_id=artifact.artifact_id,
             artifact_name=artifact.name,
             relative_path=artifact.relative_path,
             line_start=line_number,
             line_end=line_number,
             content=content,
-            timestamp_raw=timestamp["raw"] if timestamp else None,
+            timestamp_raw=timestamp.raw if timestamp else None,
         )
 
     def parse_diagnostics(self, **kwargs) -> ToolResult:
@@ -383,8 +322,6 @@ class LogAnalyzerService:
         artifacts = self.registry.select_artifacts(params.case_id, artifact_ids=params.artifact_ids)
         findings: list[DiagnosticFinding] = []
         truncated = False
-        permissions_pattern = re.compile(r"avc:\s*denied\s*\{([^}]*)\}", re.IGNORECASE)
-
         for artifact in artifacts:
             path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)
             if path is None:
@@ -393,30 +330,9 @@ class LogAnalyzerService:
                 lines = iter(enumerate(handle, 1))
                 for line_number, raw_line in lines:
                     line = raw_line.rstrip("\r\n")
-                    lowered = line.casefold()
-                    diagnostic_type = None
-                    severity = "warning"
-                    summary = ""
-                    attributes: dict = {}
+                    diagnostic = classify_diagnostic_line(line, wanted)
 
-                    if "avc" in wanted and "avc: denied" in lowered:
-                        diagnostic_type = "avc"
-                        permissions = permissions_pattern.search(line)
-                        for field in ("scontext", "tcontext", "tclass", "permissive"):
-                            match = re.search(rf"\b{field}=([^\s]+)", line, re.IGNORECASE)
-                            if match:
-                                attributes[field] = match.group(1)
-                        attributes["permissions"] = permissions.group(1).split() if permissions else []
-                        summary = "SELinux AVC 拒绝"
-                    elif "fatal" in wanted and ("fatal exception" in lowered or "fatal signal" in lowered):
-                        diagnostic_type = "fatal"
-                        severity = "critical"
-                        summary = "检测到致命异常"
-                    elif "anr" in wanted and "anr in" in lowered:
-                        diagnostic_type = "anr"
-                        severity = "critical"
-                        summary = "检测到 ANR"
-                    elif "kernel_stack" in wanted and "call trace:" in lowered:
+                    if diagnostic and diagnostic.diagnostic_type == "kernel_stack":
                         # Call Trace 是多行结构；在同一个流中向后收集，限制 64 行
                         # 防止缺少结束标记的损坏日志吞掉整个文件。
                         stack_lines = [line]
@@ -432,10 +348,10 @@ class LogAnalyzerService:
                         evidence = self._make_line_evidence(artifact, line_number, "\n".join(stack_lines))
                         evidence.line_end = end_line
                         findings.append(DiagnosticFinding(
-                            finding_id=_hash_id("finding", evidence.evidence_id),
-                            diagnostic_type="kernel_stack",
-                            severity="critical",
-                            summary="检测到 Kernel Call Trace",
+                            finding_id=stable_id("finding", evidence.evidence_id),
+                            diagnostic_type=diagnostic.diagnostic_type,
+                            severity=diagnostic.severity,
+                            summary=diagnostic.summary,
                             evidence=evidence,
                             attributes={"frame_lines": max(0, len(stack_lines) - 1)},
                         ))
@@ -444,15 +360,15 @@ class LogAnalyzerService:
                             break
                         continue
 
-                    if diagnostic_type:
+                    if diagnostic:
                         evidence = self._make_line_evidence(artifact, line_number, line)
                         findings.append(DiagnosticFinding(
-                            finding_id=_hash_id("finding", evidence.evidence_id),
-                            diagnostic_type=diagnostic_type,
-                            severity=severity,
-                            summary=summary,
+                            finding_id=stable_id("finding", evidence.evidence_id),
+                            diagnostic_type=diagnostic.diagnostic_type,
+                            severity=diagnostic.severity,
+                            summary=diagnostic.summary,
                             evidence=evidence,
-                            attributes=attributes,
+                            attributes=diagnostic.attributes,
                         ))
                         if len(findings) >= params.max_findings:
                             truncated = True

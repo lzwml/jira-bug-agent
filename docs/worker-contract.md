@@ -33,6 +33,7 @@ BugAnalysisResult
 | `case_path` | Local 模式必填 |
 | `objective` | 本次分析目标，不扩大 Worker 权限 |
 | `max_steps` | 可选的单任务步骤预算 |
+| `skills` | 本次激活的团队 Skill 名称；默认通用 Android 日志分诊 |
 | `include_trace` | 是否在结果中包含内部 Tool Event |
 | `metadata` | 上游关联信息，Agent 当前不消费 |
 
@@ -55,3 +56,6 @@ BugAnalysisResult
 
 `trace` 是内部诊断信息，不是业务契约的推理依据。生产环境应单独控制保存周期
 和访问权限，因为其中可能包含 Jira 与日志内容。
+
+Worker 会把成功加载的名称写入 `applied_skills`。不存在、路径不安全、frontmatter
+不完整或超过预算的 Skill 会让任务在调用模型和 MCP 前失败。

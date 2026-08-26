@@ -132,7 +132,8 @@ class ExtractTimelineInput(BaseModel):
     """extract_timeline 的输入；anchors 是当前调查关注的关键事件。"""
 
     case_id: str = Field(min_length=1)
-    anchors: list[str] = Field(default_factory=list, max_length=30)
+    # 领域锚点由 Skill 提供；MCP 不再内置“黑屏/启动”等调查策略。
+    anchors: list[str] = Field(min_length=1, max_length=30)
     artifact_ids: list[str] = Field(default_factory=list, max_length=100)
     year_hint: int | None = Field(default=None, ge=2000, le=2100)
     max_events: int = Field(default=200, ge=1, le=1000)

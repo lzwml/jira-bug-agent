@@ -2,6 +2,10 @@
 
 面向 Android Bug Agent 的证据驱动日志分析 MCP Server。
 
+MCP package 负责 Case 文件权限、扫描预算和 Tool Contract；时间戳、稳定 ID、
+诊断信号等确定性算法位于同一 workspace 的 `log-analysis-core`。问题类型的
+调查顺序、关键词和时间线 anchors 位于仓库 `skills/`，不再硬编码在 Server。
+
 V2 不再把任意目录路径直接交给每个工具。Agent 必须先注册一个 Bug Case，
 后续通过 `case_id` 和 `artifact_id` 检索证据、提取时间线和解析诊断信息。
 
@@ -113,6 +117,9 @@ PYTHONPATH=src python -m unittest tests.test_service_v2 -v
 报告推理属于 Agent Core；本 MCP 只负责提供事实和证据，不再提供
 `generate_report` 工具。
 
+`extract_timeline.anchors` 是必填参数，应由当前领域 Skill 显式提供。MCP 不
+内置黑屏、启动或 ANR 等调查策略。
+
 ## V1 → V2 迁移
 
 | V1 | V2 |
@@ -141,3 +148,5 @@ src/log_analyzer/
 ├── errors.py          # 统一错误结果
 └── tools.py           # V1 纯 Python 解析函数（不再直接暴露）
 ```
+
+协议无关的解析原语位于 `../log-analysis-core/src/log_analysis_core/`。

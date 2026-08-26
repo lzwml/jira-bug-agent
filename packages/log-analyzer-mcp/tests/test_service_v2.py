@@ -93,6 +93,11 @@ class LogAnalyzerServiceV2Test(unittest.TestCase):
             {"android", "kernel_monotonic"},
         )
 
+    def test_timeline_requires_skill_supplied_anchors(self):
+        result = self.service.dispatch("extract_timeline", {"case_id": self.case_id})
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "INVALID_PARAMS")
+
     def test_parse_diagnostics_returns_structured_findings(self):
         result = self.service.parse_diagnostics(case_id=self.case_id)
         self.assertTrue(result.success)

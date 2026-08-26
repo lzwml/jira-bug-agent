@@ -19,6 +19,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-id", help="由上游 Workflow 提供的稳定任务 ID")
     parser.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
     parser.add_argument("--max-steps", type=int, help="覆盖本次任务的 Agent 步骤预算")
+    parser.add_argument(
+        "--skill", dest="skills", action="append",
+        help="激活项目 Skill；可重复指定，默认 android-log-triage",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     jira = sub.add_parser("analyze-jira", help="从 Jira Issue 开始分析")
     jira.add_argument("issue_key", help="例如 APP-42")
@@ -36,6 +40,8 @@ async def _run(args: argparse.Namespace) -> int:
     }
     if args.task_id:
         common["task_id"] = args.task_id
+    if args.skills:
+        common["skills"] = args.skills
     if args.command == "analyze-jira":
         task = BugAnalysisTask(source="jira", issue_key=args.issue_key.upper(), **common)
     else:

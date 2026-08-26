@@ -10,6 +10,8 @@ CLI / HTTP / Queue / Department Workflow
         ▼
 BugAnalysisWorker       稳定 Task/Result、依赖生命周期、模式选择
         │
+        ├── SkillRegistry          团队分析方法与证据标准
+        │
         ▼
 BugAnalysisAgent        Agent Loop、步骤预算、内部 Trace、Prompt
         │
@@ -17,7 +19,8 @@ BugAnalysisAgent        Agent Loop、步骤预算、内部 Trace、Prompt
         │
         └── McpToolRouter
                 ├── jira-bug-mcp       Issue 与附件 Adapter
-                ├── log-analyzer-mcp   证据提取 Adapter
+                ├── log-analyzer-mcp   文件安全与 MCP Adapter
+                │       └── log-analysis-core  确定性解析
                 └── future code/rag MCP
 ```
 
@@ -27,6 +30,19 @@ BugAnalysisAgent        Agent Loop、步骤预算、内部 Trace、Prompt
 而 Agent Loop、领域 Prompt 和运行状态保持稳定。
 
 Worker 契约与内部 Agent Trace 的边界见 [Worker Contract](worker-contract.md)。
+
+## Core、MCP 与 Skill
+
+```text
+Skill                  怎么调查、关注什么、证据何时充分
+  ↓ anchors / queries / diagnostic types
+Log MCP                安全注册 Case、执行有预算的工具调用
+  ↓
+Log Analysis Core      时间戳、稳定 ID、诊断信号等确定性解析
+```
+
+Skill 不执行文件操作，也不承担安全控制。Core 不决定某条 Fatal 或 AVC 是否是
+当前 Bug 的根因。MCP 是两者之间的受控执行边界，而不是领域专家本身。
 
 ## 两条入口流程
 
