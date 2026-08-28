@@ -26,7 +26,7 @@ async def test_stdio_initialize_and_list_tools():
             await session.initialize()
             tools = await session.list_tools()
     assert {tool.name for tool in tools.tools} == {
-        "get_issue", "search_issues", "get_comments",
+        "test_connection", "get_issue", "collect_issue_context",
+        "search_issues", "get_comments",
         "list_attachments", "export_issue_case",
     }
-

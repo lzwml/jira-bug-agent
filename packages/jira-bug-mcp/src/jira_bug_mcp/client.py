@@ -13,7 +13,7 @@ from urllib.parse import quote, urljoin, urlparse
 import httpx
 
 from .config import JiraConfig
-from .domain import JiraAttachment, JiraComment, JiraIssue
+from .domain import JiraAttachment, JiraComment, JiraIssue, JiraIssueLink
 from .errors import JiraApiError
 
 
@@ -47,6 +47,30 @@ def _display_name(user: Any) -> str | None:
     return user.get("displayName") or user.get("name") or user.get("emailAddress")
 
 
+def _named_values(value: Any) -> list[str]:
+    """提取 Jira 常见 name 列表字段，对异常数据保持容错。"""
+
+    if not isinstance(value, list):
+        return []
+    return [str(item.get("name")) for item in value if isinstance(item, dict) and item.get("name")]
+
+
+def _extra_value(value: Any) -> Any:
+    """将白名单自定义字段转成可序列化、可阅读的值。"""
+
+    if isinstance(value, dict) and value.get("type") == "doc":
+        return flatten_adf(value).strip()
+    if isinstance(value, dict):
+        # select/user/version 等字段优先保留人类可读值。
+        for key in ("value", "displayName", "name", "key"):
+            if value.get(key) is not None:
+                return value[key]
+        return {str(key): _extra_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_extra_value(item) for item in value]
+    return value
+
+
 class JiraClient:
     """同步 Jira Client；允许注入 MockTransport，便于无网络单元测试。"""
 
@@ -67,6 +91,7 @@ class JiraClient:
             headers=headers,
             auth=auth,
             verify=config.verify_ssl,
+            trust_env=config.trust_env,
             timeout=config.timeout_seconds,
             follow_redirects=True,
             transport=transport,
@@ -79,7 +104,16 @@ class JiraClient:
         try:
             response = self.http.request(method, path, **kwargs)
         except httpx.TransportError as exc:
-            raise JiraApiError("NETWORK_ERROR", f"无法连接 Jira: {type(exc).__name__}", True) from exc
+            detail = str(exc).strip()
+            lowered = detail.lower()
+            if "certificate_verify_failed" in lowered or "certificate verify failed" in lowered:
+                message = "Jira TLS 证书校验失败；请配置公司 CA，不要在生产环境关闭 SSL 校验"
+                code = "TLS_VERIFY_FAILED"
+            else:
+                safe_detail = f": {detail}" if detail else ""
+                message = f"无法连接 Jira: {type(exc).__name__}{safe_detail}"
+                code = "NETWORK_ERROR"
+            raise JiraApiError(code, message, True) from exc
         if response.is_success:
             return response
         mapping = {
@@ -130,6 +164,26 @@ class JiraClient:
     def _issue(self, raw: dict, include_comments: bool = True) -> JiraIssue:
         fields = raw.get("fields") or {}
         comments_raw = (fields.get("comment") or {}).get("comments", []) if include_comments else []
+        links: list[JiraIssueLink] = []
+        for raw_link in fields.get("issuelinks") or []:
+            link_type = raw_link.get("type") or {}
+            for direction, issue_name, description_name in (
+                ("outward", "outwardIssue", "outward"),
+                ("inward", "inwardIssue", "inward"),
+            ):
+                target = raw_link.get(issue_name)
+                if not isinstance(target, dict):
+                    continue
+                target_fields = target.get("fields") or {}
+                links.append(JiraIssueLink(
+                    link_type=str(link_type.get("name") or "link"),
+                    direction=direction,
+                    description=link_type.get(description_name),
+                    target_key=str(target.get("key") or ""),
+                    target_summary=target_fields.get("summary"),
+                    target_status=(target_fields.get("status") or {}).get("name"),
+                ))
+        parent = fields.get("parent") or {}
         return JiraIssue(
             issue_id=str(raw.get("id", "")),
             key=str(raw.get("key", "")),
@@ -142,17 +196,34 @@ class JiraClient:
             reporter=_display_name(fields.get("reporter")),
             labels=list(fields.get("labels") or []),
             components=[item.get("name", "") for item in fields.get("components") or []],
+            environment=flatten_adf(fields.get("environment")).strip(),
+            resolution=(fields.get("resolution") or {}).get("name"),
+            versions=_named_values(fields.get("versions")),
+            fix_versions=_named_values(fields.get("fixVersions")),
+            parent_key=parent.get("key"),
+            subtask_keys=[
+                str(item.get("key")) for item in fields.get("subtasks") or []
+                if isinstance(item, dict) and item.get("key")
+            ],
+            issue_links=links,
             created_at=fields.get("created"),
             updated_at=fields.get("updated"),
             attachments=[self._attachment(item) for item in fields.get("attachment") or []],
             comments=[self._comment(item) for item in comments_raw],
+            extra_fields={
+                field: _extra_value(fields.get(field))
+                for field in self.config.extra_fields
+                if field in fields
+            },
         )
 
     def get_issue(self, issue_key: str, include_comments: bool = True) -> JiraIssue:
         fields = [
             "summary", "description", "issuetype", "status", "priority", "assignee",
-            "reporter", "labels", "components", "created", "updated", "attachment",
+            "reporter", "labels", "components", "environment", "resolution", "versions",
+            "fixVersions", "parent", "subtasks", "issuelinks", "created", "updated", "attachment",
         ]
+        fields.extend(self.config.extra_fields)
         if include_comments:
             fields.append("comment")
         data = self._json(
@@ -161,6 +232,67 @@ class JiraClient:
             params={"fields": ",".join(fields)},
         )
         return self._issue(data, include_comments)
+
+    def get_issue_attachment_source(self, issue_key: str) -> JiraIssue:
+        """只读取关联 Issue 的摘要与附件元数据。
+
+        评论中的 Jira Key 常只是大日志存放位置，不应因此收集
+        对方描述、评论和整个关联图。
+        """
+
+        data = self._json(
+            "GET",
+            f"/rest/api/{self.config.api_version}/issue/{quote(issue_key, safe='')}",
+            params={"fields": "summary,attachment"},
+        )
+        return self._issue(data, include_comments=False)
+
+    def collect_issue_context(
+        self,
+        issue_key: str,
+        include_comments: bool = True,
+        max_comments: int = 1000,
+    ) -> tuple[JiraIssue, bool]:
+        """收集一个 Issue 的完整静态上下文。
+
+        get_issue 中内嵌的 comment 可能被 Jira 截断，因此聚合工具
+        单独分页读取。返回值中的 bool 表示是否因 max_comments 截断。
+        """
+
+        issue = self.get_issue(issue_key, include_comments=False)
+        if not include_comments or max_comments == 0:
+            return issue, False
+        comments: list[JiraComment] = []
+        start_at = 0
+        truncated = False
+        while len(comments) < max_comments:
+            page = self.get_comments(issue_key, min(100, max_comments - len(comments)), start_at)
+            comments.extend(page["items"])
+            next_start = page["next_start_at"]
+            if next_start is None:
+                break
+            if len(comments) >= max_comments:
+                truncated = True
+                break
+            start_at = next_start
+        issue.comments = comments
+        return issue, truncated
+
+    def get_server_info(self) -> dict:
+        """验证 Jira 网络、认证与 REST 版本，不读取业务 Issue。"""
+
+        data = self._json("GET", f"/rest/api/{self.config.api_version}/serverInfo")
+        # serverInfo 在部分部署中允许匿名访问；myself 才能真正校验 Token。
+        myself = self._json("GET", f"/rest/api/{self.config.api_version}/myself")
+        return {
+            "base_url": self.config.base_url,
+            "deployment": self.config.deployment,
+            "server_title": data.get("serverTitle"),
+            "version": data.get("version"),
+            "deployment_type": data.get("deploymentType"),
+            "authenticated_user": _display_name(myself),
+            "account_id": myself.get("accountId") or myself.get("key") or myself.get("name"),
+        }
 
     def search_issues(self, jql: str, max_results: int, cursor: str | None = None) -> dict:
         fields = ["summary", "issuetype", "status", "priority", "assignee", "updated"]

@@ -1,6 +1,10 @@
 """V2 领域模型与 MCP 输入契约。
 
-这个模块只定义“数据长什么样”，不读取文件，也不包含业务流程。
+【学习要点】这个模块定义了整个 log-analyzer-mcp 的"词汇表"：
+- 领域模型(Artifact、Evidence、TimelineEvent 等)描述了业务实体的结构；
+- 输入契约(OpenCaseInput、SearchEvidenceInput 等)定义了每个工具接受的参数。
+
+这个模块只定义"数据长什么样"，不读取文件，也不包含业务流程。
 
 把模型集中在这里有三个目的：
 1. Agent、MCP Server 和测试共享同一套字段定义；
@@ -17,6 +21,11 @@ from pydantic import BaseModel, Field
 
 # ArtifactKind 是 Agent 能理解的附件分类，不等同于文件扩展名。
 # 例如 main_log.curf 会由 CaseRegistry 识别为 logcat。
+#
+# 【学习要点】为什么不直接用文件扩展名？
+# - 同一个扩展名可能是不同类型：.txt 可能是 logcat、kernel log、或普通文本；
+# - 不同扩展名可能是同一类型：logcat 可能是 main_log.curf、logcat.txt 等；
+# - ArtifactKind 是语义分类，由 CaseRegistry 根据文件内容、路径等综合判断。
 ArtifactKind = Literal[
     "logcat", "kernel", "anr", "tombstone", "trace",
     "sos", "text", "archive", "binary",
@@ -28,6 +37,15 @@ class Artifact(BaseModel):
 
     relative_path 可以提供给模型作为证据来源；真实绝对路径只保存在
     CaseRegistry 内部，避免工具结果泄漏或复用不受信任的路径。
+
+    【学习要点】为什么区分 relative_path 和绝对路径？
+    - relative_path: 相对于 Case 根目录的路径，可以安全地返回给模型和上游系统；
+    - 绝对路径: 只在 Server 内部使用，防止路径泄露和跨 Case 访问。
+
+    【学习要点】origin 和 source_archive_id 的作用：
+    - origin="case": 附件直接位于 Case 目录中；
+    - origin="archive": 附件是从归档中解压出来的；
+    - source_archive_id: 记录来源归档的 artifact_id，便于追溯和缓存管理。
     """
 
     artifact_id: str
@@ -37,10 +55,18 @@ class Artifact(BaseModel):
     size_bytes: int = Field(ge=0)
     modified_at: str | None = None
     readable_text: bool = True
+    origin: Literal["case", "archive"] = "case"
+    source_archive_id: str | None = None
 
 
 class CaseInfo(BaseModel):
-    """一次 Bug 分析任务的附件清单与总体规模。"""
+    """一次 Bug 分析任务的附件清单与总体规模。
+
+    【学习要点】CaseInfo 是 Agent 了解 Case 的第一步：
+    - artifact_count 和 total_size_bytes 帮助 Agent 评估工作量；
+    - artifacts 列表让 Agent 知道有哪些可用证据；
+    - Agent 可以根据 kind 和 size_bytes 决定优先分析哪些附件。
+    """
 
     case_id: str
     name: str
@@ -52,8 +78,19 @@ class CaseInfo(BaseModel):
 class Evidence(BaseModel):
     """Agent 可以引用和复核的原始证据。
 
-    Evidence 不负责解释根因，只记录“在哪个附件的哪些行看到了什么”。
+    Evidence 不负责解释根因，只记录"在哪个附件的哪些行看到了什么"。
     根因推理应由 Agent Core 完成。
+
+    【学习要点】Evidence 是 RCA 报告的基础：
+    - line_start/line_end: 精确到行号，可以人工复核；
+    - content: 原始日志内容，Agent 应该在结论中引用 evidence_id 而非大段复制；
+    - timestamp_raw: 保留原始时间戳格式，便于人工验证；
+    - query: 记录是通过什么搜索词找到的，便于追溯分析过程。
+
+    【学习要点】为什么需要 evidence_id？
+    Agent 生成的 RCA 报告中会引用证据，例如"根据 ev-123 和 ev-456，
+    确认 SurfaceFlinger 在 12:34:56 发生 Fatal"。evidence_id 是稳定标识，
+    让人和其他系统可以追溯到原始日志位置。
     """
 
     evidence_id: str
@@ -72,6 +109,18 @@ class TimelineEvent(BaseModel):
 
     timestamp_normalized 用于墙上时间排序；relative_seconds 用于 Kernel
     monotonic 时间。两个时钟域没有映射证据时不能直接互相换算。
+
+    【学习要点】Android 系统中存在多个时钟域：
+    - wall: 墙上时间(用户可见的日期时间)，来自系统时钟；
+    - android: Android logcat 时间戳，格式如 "08-28 12:34:56.789"；
+    - kernel_monotonic: 内核单调时间，从 boot 开始的秒数，如 "[ 123.456]"；
+    - unknown: 无法识别的时间格式。
+
+    【学习要点】为什么不能直接换算？
+    - Kernel monotonic 不包含日期信息，无法直接对应到墙上时间；
+    - 除非日志中有同步点(如 "kernel time = xxx, wall time = yyy")，
+      否则不能直接说 "kernel 时间 123.456 就是 12:34:56"；
+    - Skill 中会指导 Agent 如何处理跨时钟域的证据。
     """
 
     event_id: str
@@ -88,7 +137,18 @@ class TimelineEvent(BaseModel):
 
 
 class DiagnosticFinding(BaseModel):
-    """确定性解析器发现的异常结构，不代表最终 RCA 结论。"""
+    """确定性解析器发现的异常结构，不代表最终 RCA 结论。
+
+    【学习要点】DiagnosticFinding vs Evidence 的区别：
+    - Evidence: 原始日志行，Agent 需要自己判断是否重要；
+    - DiagnosticFinding: 经过确定性解析器(如正则、结构化解析)识别出的异常，
+      例如 SELinux AVC 拒绝、Kernel Call Trace、Fatal Exception。
+
+    【学习要点】为什么"不代表最终 RCA 结论"？
+    解析器只能识别"这里有一个 Fatal"，但不能判断"这个 Fatal 是否导致了
+    用户可见的黑屏"。根因推理需要 Agent 结合症状、时间窗口、多个证据综合判断。
+    这就是架构文档中说的"Core 不决定某条 Fatal 是否是当前 Bug 的根因"。
+    """
 
     finding_id: str
     diagnostic_type: Literal["avc", "kernel_stack", "fatal", "anr"]
@@ -98,17 +158,124 @@ class DiagnosticFinding(BaseModel):
     attributes: dict = Field(default_factory=dict)
 
 
+# ========== 工具输入契约 ==========
+#
+# 【学习要点】每个 Input Model 对应一个 MCP 工具的参数。
+# 设计原则：
+# 1. 所有数量字段都有上限，防止模型意外请求无限结果；
+# 2. ID 字段(如 case_id、artifact_id)不允许为空；
+# 3. 可选字段提供合理默认值；
+# 4. Field(description=...) 会出现在 MCP Schema 中，指导模型正确使用。
+#
+# 【学习要点】为什么用 Pydantic 而不是 dict？
+# - 类型安全：Pydantic 自动验证类型，如 max_results 必须是 int；
+# - 约束验证：ge/le/min_length/max_length 等约束自动检查；
+# - 文档生成：Field 的 description 会成为 Schema 的一部分；
+# - IDE 支持：自动补全和类型检查。
+# ==========
+
+
 class OpenCaseInput(BaseModel):
-    """open_case 的输入；case_path 仍需经过服务端根目录授权。"""
+    """open_case 的输入；case_path 仍需经过服务端根目录授权。
+
+    【学习要点】case_path 是 Agent 提供的相对或绝对路径，
+    但 CaseRegistry 会验证它是否在 LOG_ANALYZER_ALLOWED_ROOTS 下。
+    这是防止路径穿越攻击的第一道防线。
+    """
 
     case_path: str = Field(min_length=1, description="允许根目录内的 Bug 案例目录")
 
 
 class InspectCaseInput(BaseModel):
-    """inspect_case 的输入。sample_limit 防止一次返回全部附件。"""
+    """inspect_case 的输入。sample_limit 防止一次返回全部附件。
+
+    【学习要点】sample_limit 的作用：
+    一个 Case 可能有几百个附件，全部返回会占用大量 token。
+    Agent 可以先获取前 50 个样本，了解 Case 的大致内容，
+    然后根据需要深入分析特定附件。
+    """
 
     case_id: str = Field(min_length=1)
     sample_limit: int = Field(default=50, ge=1, le=200)
+
+
+class PrepareCaseInput(BaseModel):
+    """安全展开归档并为文本附件建立持久化分块索引。
+
+    资源上限全部来自服务端环境配置，调用者只能缩小选择范围，不能自行扩大预算。
+
+    【学习要点】这是"全量准备"的兜底工具：
+    - extract_archives=True: 展开所有 ZIP/TAR/GZIP；
+    - build_index=True: 为所有文本附件建立 SQLite 索引；
+    - force_rebuild=True: 忽略缓存，强制重新处理。
+
+    【学习要点】为什么 artifact_ids 可以缩小范围？
+    默认情况下 prepare_case 处理所有附件，但 Agent 可以指定
+    只处理特定的 artifact_ids，避免不必要的计算。
+    但无论如何都不能超过服务端配置的预算上限(如最大解压字节数)。
+    """
+
+    case_id: str = Field(min_length=1)
+    artifact_ids: list[str] = Field(default_factory=list, max_length=100)
+    extract_archives: bool = True
+    build_index: bool = True
+    force_rebuild: bool = False
+
+
+class InspectArchiveInput(BaseModel):
+    """只读归档成员清单，不将成员内容解压到磁盘。
+
+    【学习要点】这是渐进式调查的关键工具：
+    Agent 先查看归档里有什么(成员名、大小、类型)，
+    然后根据症状和时间窗口选择需要解压的成员，
+    而不是一上来就全量解压几个 GB 的 ZIP。
+
+    【学习要点】member_offset 用于分页：
+    一个 ZIP 可能有几万个成员，一次返回会超时。
+    Agent 可以通过多次调用(调整 offset)逐步浏览成员清单。
+
+    【学习要点】source_sha256 的作用：
+    用于缓存验证。如果 Agent 之前已经检查过这个归档，
+    可以提供 SHA256 哈希值，Server 会快速判断归档是否变化。
+    """
+
+    case_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    member_offset: int = Field(default=0, ge=0, le=1_000_000)
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    max_members: int = Field(default=1000, ge=1, le=5000)
+
+
+class ExtractArchiveMembersInput(BaseModel):
+    """通过 inspect_archive 返回的稳定 member_id 选择性解压。
+
+    【学习要点】member_ids 来自 inspect_archive 的返回结果，
+    是稳定标识符，不是文件路径。Server 内部会映射到实际的归档成员，
+    防止 Agent 构造恶意路径。
+    """
+
+    case_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    member_ids: list[str] = Field(min_length=1, max_length=200)
+    force_rebuild: bool = False
+
+
+class BuildIndexInput(BaseModel):
+    """把指定 Artifact 增量加入该 Case 的持久化日志索引集合。
+
+    【学习要点】索引的作用：
+    - 加速搜索：没有索引时，search_evidence 需要扫描所有文件；
+    - 持久化：索引保存在 SQLite 中，同一 Case 的多次分析可以复用；
+    - 增量构建：Agent 可以先索引一部分文件，后续逐步扩大范围。
+
+    【学习要点】为什么 artifact_ids 上限是 500 而不是 100？
+    索引构建是批量操作，一次处理多个文件可以分摊 I/O 开销。
+    但也不能无限大，防止单次操作超时。
+    """
+
+    case_id: str = Field(min_length=1)
+    artifact_ids: list[str] = Field(min_length=1, max_length=500)
+    force_rebuild: bool = False
 
 
 class SearchEvidenceInput(BaseModel):
@@ -116,6 +283,18 @@ class SearchEvidenceInput(BaseModel):
 
     所有数量字段都有上限，防止模型意外请求无限结果或巨大上下文。
     V2 只支持字面量搜索，刻意不开放任意正则执行。
+
+    【学习要点】为什么不支持正则？
+    1. 安全：正则可能有 ReDoS(正则拒绝服务)风险；
+    2. 可控：字面量搜索的性能可预测，正则可能因为复杂度爆炸而超时；
+    3. 简化：字面量搜索足够覆盖大多数 Bug 分析场景。
+
+    【学习要点】context_before/after 的作用：
+    单行日志往往不足以理解问题，需要前后几行的上下文。
+    但也不能返回太多，避免结果过大。
+
+    【学习要点】artifact_kinds 用于按类型过滤：
+    例如 Agent 可以只在 logcat 中搜索 "Fatal"，而不搜索 kernel log。
     """
 
     case_id: str = Field(min_length=1)
@@ -129,10 +308,19 @@ class SearchEvidenceInput(BaseModel):
 
 
 class ExtractTimelineInput(BaseModel):
-    """extract_timeline 的输入；anchors 是当前调查关注的关键事件。"""
+    """extract_timeline 的输入；anchors 是当前调查关注的关键事件。
+
+    【学习要点】anchors 由 Skill 提供：
+    例如黑屏分析的 Skill 会建议 anchors 包含 ["bootanimation", "SurfaceFlinger",
+    "HWC", "present"] 等关键词。MCP 不再内置"黑屏/启动"等调查策略，
+    这是架构文档中"Skill 决定分析顺序、时间线锚点"的体现。
+
+    【学习要点】year_hint 用于解析不完整时间戳：
+    某些日志格式只有 "08-28 12:34:56" 没有年份，year_hint 帮助解析器补全。
+    """
 
     case_id: str = Field(min_length=1)
-    # 领域锚点由 Skill 提供；MCP 不再内置“黑屏/启动”等调查策略。
+    # 领域锚点由 Skill 提供；MCP 不再内置"黑屏/启动"等调查策略。
     anchors: list[str] = Field(min_length=1, max_length=30)
     artifact_ids: list[str] = Field(default_factory=list, max_length=100)
     year_hint: int | None = Field(default=None, ge=2000, le=2100)
@@ -140,7 +328,13 @@ class ExtractTimelineInput(BaseModel):
 
 
 class ParseDiagnosticsInput(BaseModel):
-    """parse_diagnostics 的输入；只允许服务端实现的诊断类型。"""
+    """parse_diagnostics 的输入；只允许服务端实现的诊断类型。
+
+    【学习要点】diagnostic_types 是白名单：
+    只允许 ["avc", "kernel_stack", "fatal", "anr"] 这四种类型，
+    因为这是 log_analysis_core 实现的确定性解析器。
+    未来新增诊断类型需要先在 Core 中实现解析逻辑。
+    """
 
     case_id: str = Field(min_length=1)
     diagnostic_types: list[Literal["avc", "kernel_stack", "fatal", "anr"]] = Field(

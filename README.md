@@ -26,9 +26,11 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - `bug-agent analyze-jira APP-42`：读取 Jira、导出附件并分析；
 - `bug-agent analyze-local D:\cases\APP-42`：直接分析本地 Case；
 - Jira Cloud v3 与 Data Center v2；
-- 可组合的团队 Skills：通用日志分诊与 Android 黑屏专项；
+- 可组合的团队 Skills：通用日志分诊、Android 黑屏与 MTK IVI 跨域分析；
 - Android/logcat、Kernel monotonic、Wall Clock 时间线；
 - AVC、Fatal、ANR、Kernel Call Trace 结构化诊断；
+- ZIP/TAR/TAR.GZ/TGZ/GZIP 归档清单、选择性安全展开、嵌套深度与解压炸弹预算；
+- 持久化分块索引和超大文本日志检索；
 - 可追溯 Evidence：Artifact、相对路径和行号；
 - 可替换的 OpenAI-compatible 模型服务；
 - 步骤预算、Tool Result 预算和统一错误观察。
@@ -61,8 +63,9 @@ cd jira-bug-agent
 uv sync --all-packages --extra dev
 ```
 
-复制 `.env.example` 中需要的值到你自己的安全配置系统或终端环境。项目不会
-自动读取 `.env`，避免使用者误以为明文文件是密钥保险箱。
+本地开发可以复制 `.env.example` 为 `.env`。Agent CLI 和 Jira MCP 会自动
+读取项目当前目录的 `.env`，系统环境变量优先。`.env` 已被 Git 忽略，
+但它仍是本地明文文件；生产环境应使用密钥管理系统。
 
 模型服务必须兼容 Chat Completions 的 `tools/tool_calls`：
 
@@ -93,8 +96,45 @@ uv run bug-agent `
   analyze-local 'D:\bug-cases\APP-42'
 ```
 
+MTK 车机 Case 涉及 Android VM、Linux VM、TBox、SCP、Hypervisor、MCU 或
+CAN 等跨域证据时，再叠加平台 Skill：
+
+```powershell
+uv run bug-agent `
+  --skill android-log-triage `
+  --skill mtk-ivi-log-analysis `
+  analyze-local 'D:\bug-cases\APP-42'
+```
+
+`mtk-ivi-log-analysis` 的入口只保留调查路由、跨时钟约束和证据停止条件；
+Android、Linux、时钟域与安全解压细节拆分在其 `references/` 目录，便于团队维护。
+
+症状层目前提供以下独立路线：
+
+| 症状 | Skill |
+| --- | --- |
+| 黑屏、无显示、显示冻结 | `android-black-screen` |
+| ANR、UI 卡死、输入超时 | `android-anr-ui-freeze` |
+| Tombstone、Native Crash、Native 服务死亡 | `android-native-crash` |
+| 重启、Watchdog、Kernel Panic、Boot Loop | `system-reboot-watchdog` |
+| Linux VM、Hypervisor、SCP 或跨 VM 故障 | `linux-virtualization-failure` |
+| CAN/MCU 信号缺失、过期或异常 | `can-mcu-signal-analysis` |
+| OTA、PKI、认证或连接失败 | `ota-pki-connectivity` |
+
+当前 Worker 不会因为一个 Skill 提到了另一个 Skill 就自动切换路线。CLI 或上层
+Workflow 应显式传入一个主要症状 Skill；故障类型未知时先使用默认的
+`android-log-triage`。每条路线遵循相同的触发条件、事件身份、首轮证据、决策分支、
+反证/停止条件和输出契约，后续可以根据真实 Case 分别增强。
+
 Skill 决定分析顺序、时间线锚点和证据标准；解析、路径权限和扫描预算仍由
 Core/MCP 代码保证。不要把正则解析器或文件操作写进 Skill。
+
+Agent 默认不会先把所有附件全量解压。它先用 `inspect_case` 判断 Case 规模，
+再用 `inspect_archive` 查看候选归档的成员清单；结合 Jira 中的问题症状、发生
+时间、日志域、文件名和大小选择成员，通过 `extract_archive_members` 解压，并
+只对相关文本调用 `build_index`。如果首轮证据不足，Agent 会逐步扩大时间窗口、
+日志域或成员范围，再继续检索。`prepare_case` 只作为用户明确要求或渐进式调查
+仍无法确定必要成员时的全量兜底。
 
 ## 作为 Worker 调用
 
@@ -121,6 +161,56 @@ Tool Event 默认不返回；只有 `include_trace=true` 时才进入结果，�
 依赖模型消息细节。完整 Schema 见 [Worker Contract](docs/worker-contract.md)。
 
 ## 分析 Jira Issue
+
+先可以只验证 Jira 接入并收集信息。该命令不需要配置大模型：
+
+```powershell
+uv run bug-agent collect-jira APP-42
+```
+
+如果还需要生成本地 Case 并下载附件：
+
+```powershell
+uv run bug-agent collect-jira APP-42 --export-case
+```
+
+只做 Jira 收集、附件下载、全量安全解压和索引，不配置也不调用大模型：
+
+```powershell
+uv run bug-agent collect-jira APP-42 --prepare
+```
+
+如果当前只需要下载和全量解压，不建立索引：
+
+```powershell
+uv run bug-agent collect-jira APP-42 --prepare --no-index
+```
+
+`--prepare` 是显式的全量准备入口，并隐含 `--export-case`；它不会执行 Agent 的
+按症状和问题时间选择成员流程。输出中的 `export` 区分
+`downloaded_attachments` 与 `reused_attachments`，`preparation` 包含展开、跳过和
+索引统计。归档会展开到它旁边的 `<归档文件名>.unpacked/`，方便人工查看；索引和
+内部状态默认写入 Case 下的 `.bug-agent/`。原始附件不会被修改。`--work-dir`
+只改变索引和内部状态的位置，不改变解压位置。
+
+对于已经存在的本地 Case，也可以显式执行全量解压和索引：
+
+```powershell
+uv run bug-agent prepare-local "D:\bug-cases\APP-42"
+```
+
+`prepare-local` 与 `collect-jira --prepare` 一样，是供人工批处理或最终兜底使用的
+全量准备命令，不是 Agent 的默认调查路径。需要忽略缓存时添加
+`--force-rebuild`；只解压不索引使用 `--no-index`，只索引现有文本使用
+`--no-extract`。
+
+导出时会默认展开一层 Jira 关联，包括评论中引用的 Issue，并下载
+关联 Issue 的日志附件。本地已存在且附件 ID、文件名与大小均匹配时会直接复用，
+不会再次下载。如只需当前 Issue：
+
+```powershell
+uv run bug-agent collect-jira APP-42 --export-case --no-related
+```
 
 Jira Cloud 示例：
 
@@ -155,6 +245,7 @@ uv run pytest -q packages/log-analyzer-mcp/tests
 - [x] Jira MCP
 - [x] Log Analyzer MCP V2
 - [x] Log Analysis Core 与 MCP 协议层分离
+- [x] 安全归档展开、持久化分块索引与超大日志检索
 - [x] 通用日志分诊与黑屏分析 Skills
 - [x] Jira / Local 双入口 CLI
 - [x] 可嵌入部门 Workflow 的 Worker Facade 与稳定输入输出契约

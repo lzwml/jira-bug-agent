@@ -11,6 +11,7 @@ ToolResult，因此可以脱离 MCP 单独测试，也可以被其他 Runtime �
 from __future__ import annotations
 
 from collections import Counter, deque
+import sqlite3
 from typing import Callable
 
 from log_analysis_core import (
@@ -21,18 +22,32 @@ from log_analysis_core import (
 )
 from pydantic import ValidationError
 
+from .archive_manager import (
+    ArchiveExtractor,
+    ArchiveRejected,
+    ExtractionBudget,
+    extraction_destination,
+    is_supported_archive,
+)
+from .archive_selection import extract_archive_members as extract_selected_members
+from .archive_selection import inventory_archive, managed_extraction_matches
 from .case_registry import CaseRegistry
 from .domain import (
+    BuildIndexInput,
     DiagnosticFinding,
     Evidence,
+    ExtractArchiveMembersInput,
     ExtractTimelineInput,
     InspectCaseInput,
+    InspectArchiveInput,
     OpenCaseInput,
     ParseDiagnosticsInput,
+    PrepareCaseInput,
     SearchEvidenceInput,
     TimelineEvent,
 )
 from .errors import make_error, make_success
+from .log_index import IndexMatch, LogIndex
 from .models import ToolResult
 
 
@@ -41,13 +56,18 @@ MAX_SCAN_BYTES_PER_CALL = 512 * 1024 * 1024
 
 
 class LogAnalyzerService:
-    """五个 V2 工具的领域实现与统一分发入口。"""
+    """V2 工具的领域实现与统一分发入口。"""
 
     def __init__(self, registry: CaseRegistry):
         self.registry = registry
+        self._indexes: dict[str, LogIndex] = {}
         self.handlers: dict[str, Callable[..., ToolResult]] = {
             "open_case": self.open_case,
             "inspect_case": self.inspect_case,
+            "inspect_archive": self.inspect_archive,
+            "extract_archive_members": self.extract_archive_members,
+            "build_index": self.build_index,
+            "prepare_case": self.prepare_case,
             "search_evidence": self.search_evidence,
             "extract_timeline": self.extract_timeline,
             "parse_diagnostics": self.parse_diagnostics,
@@ -67,6 +87,8 @@ class LogAnalyzerService:
             return handler(**arguments)
         except ValidationError as exc:
             return make_error("INVALID_PARAMS", exc.json(include_url=False))
+        except sqlite3.Error as exc:
+            return make_error("INDEX_ERROR", str(exc), retryable=True)
         except (OSError, UnicodeError) as exc:
             return make_error("FILE_READ_ERROR", str(exc), retryable=True)
 
@@ -86,6 +108,8 @@ class LogAnalyzerService:
         _, info = entry
         kind_counts = Counter(artifact.kind for artifact in info.artifacts)
         text_bytes = sum(a.size_bytes for a in info.artifacts if a.readable_text)
+        index = self._get_index(info.case_id)
+        indexed_ids = index.indexed_artifact_ids() if index else set()
         return make_success({
             "case_id": info.case_id,
             "name": info.name,
@@ -95,6 +119,357 @@ class LogAnalyzerService:
             "kinds": dict(sorted(kind_counts.items())),
             "artifacts": [a.model_dump() for a in info.artifacts[: params.sample_limit]],
             "artifacts_truncated": info.artifact_count > params.sample_limit,
+            "preparation": {
+                "archive_count": kind_counts.get("archive", 0),
+                "extracted_artifact_count": sum(a.origin == "archive" for a in info.artifacts),
+                "index_available": bool(indexed_ids),
+                "indexed_artifact_count": len(indexed_ids),
+            },
+        })
+
+    def _get_index(self, case_id: str) -> LogIndex | None:
+        existing = self._indexes.get(case_id)
+        if existing is not None:
+            return existing
+        work_dir = self.registry.get_work_dir(case_id)
+        if work_dir is None:
+            return None
+        candidate = LogIndex(work_dir / "index" / "logs.sqlite3", self.registry.index_limits)
+        if candidate.path.is_file():
+            self._indexes[case_id] = candidate
+            return candidate
+        return None
+
+    @staticmethod
+    def _archive_depth(info, artifact) -> int:
+        """Count archive ancestry and reject malformed cycles conservatively."""
+
+        artifacts = {item.artifact_id: item for item in info.artifacts}
+        depth = 1
+        seen = {artifact.artifact_id}
+        current = artifact
+        while current.source_archive_id:
+            parent_id = current.source_archive_id
+            if parent_id in seen:
+                return 1_000_000
+            seen.add(parent_id)
+            parent = artifacts.get(parent_id)
+            if parent is None:
+                break
+            depth += 1
+            current = parent
+        return depth
+
+    def inspect_archive(self, **kwargs) -> ToolResult:
+        """Return a bounded member catalog without writing extracted files."""
+
+        params = InspectArchiveInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        _, info = entry
+        artifact = next((item for item in info.artifacts if item.artifact_id == params.artifact_id), None)
+        if artifact is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 不存在")
+        if artifact.kind != "archive":
+            return make_error("ARTIFACT_NOT_ARCHIVE", "指定 Artifact 不是归档文件")
+        if self._archive_depth(info, artifact) > self.registry.archive_limits.max_depth:
+            return make_error("ARCHIVE_DEPTH_LIMIT", "归档嵌套深度超过服务端预算")
+        path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)
+        if path is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 路径不可用")
+        try:
+            inventory = inventory_archive(
+                path,
+                artifact.artifact_id,
+                self.registry.archive_limits,
+            )
+        except ArchiveRejected as exc:
+            if exc.code in {"ARCHIVE_INVALID", "ARCHIVE_NOT_FOUND", "ARCHIVE_SOURCE_CHANGED"}:
+                self.registry.remove_archive_descendants(params.case_id, artifact.artifact_id)
+            return make_error(exc.code, exc.message)
+        if params.member_offset > 0 and not params.source_sha256:
+            return make_error("ARCHIVE_CURSOR_REQUIRED", "翻页必须携带上一页 source_fingerprint.sha256")
+        if params.source_sha256 and params.source_sha256 != inventory.source_fingerprint.sha256:
+            self.registry.remove_archive_descendants(params.case_id, artifact.artifact_id)
+            return make_error("ARCHIVE_SOURCE_CHANGED", "归档版本已变化，请从第一页重新读取清单")
+        extraction_current = managed_extraction_matches(
+            path, artifact.artifact_id, inventory.source_fingerprint
+        )
+        if extraction_current is False:
+            self.registry.remove_archive_descendants(params.case_id, artifact.artifact_id)
+        page_end = min(params.member_offset + params.max_members, len(inventory.members))
+        page = inventory.members[params.member_offset:page_end]
+        has_more = page_end < len(inventory.members)
+        return make_success({
+            "case_id": params.case_id,
+            "artifact_id": artifact.artifact_id,
+            "relative_path": artifact.relative_path,
+            "format": inventory.format,
+            "member_offset": params.member_offset,
+            "member_count": len(page),
+            "cataloged_member_count": len(inventory.members),
+            "truncated": inventory.truncated or has_more,
+            "next_offset": page_end if has_more else None,
+            "source_fingerprint": {
+                "size_bytes": inventory.source_fingerprint.size_bytes,
+                "mtime_ns": inventory.source_fingerprint.mtime_ns,
+                "sha256": inventory.source_fingerprint.sha256,
+            },
+            "members": [
+                {
+                    "member_id": item.member_id,
+                    "member_path": item.member_path,
+                    "size_bytes": item.size_bytes,
+                    "compressed_size": item.compressed_size,
+                    "kind": item.kind,
+                    "is_archive": item.is_archive,
+                    "safe": item.safe,
+                    "reason": item.reason,
+                }
+                for item in page
+            ],
+        })
+
+    def extract_archive_members(self, **kwargs) -> ToolResult:
+        """Incrementally extract only member IDs returned by inspect_archive."""
+
+        params = ExtractArchiveMembersInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        _, info = entry
+        archive = next((item for item in info.artifacts if item.artifact_id == params.artifact_id), None)
+        if archive is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 不存在")
+        if archive.kind != "archive":
+            return make_error("ARTIFACT_NOT_ARCHIVE", "指定 Artifact 不是归档文件")
+        if self._archive_depth(info, archive) > self.registry.archive_limits.max_depth:
+            return make_error("ARCHIVE_DEPTH_LIMIT", "归档嵌套深度超过服务端预算")
+        path = self.registry.get_artifact_path(params.case_id, archive.artifact_id)
+        if path is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 路径不可用")
+        try:
+            result = extract_selected_members(
+                path,
+                archive.artifact_id,
+                params.member_ids,
+                self.registry.archive_limits,
+                force=params.force_rebuild,
+            )
+            if result.reset:
+                self.registry.remove_archive_descendants(params.case_id, archive.artifact_id)
+            registered = self.registry.register_extracted_artifacts(
+                params.case_id,
+                source_archive=archive,
+                members=[(item.path, item.member_path) for item in result.members],
+            )
+        except ArchiveRejected as exc:
+            if exc.code in {
+                "ARCHIVE_INVALID", "ARCHIVE_SOURCE_CHANGED", "ARCHIVE_DESTINATION_CONFLICT",
+                "ARCHIVE_FILE_LIMIT", "ARCHIVE_MEMBER_SIZE_MISMATCH",
+            }:
+                self.registry.remove_archive_descendants(params.case_id, archive.artifact_id)
+            return make_error(exc.code, exc.message)
+        except ValueError as exc:
+            return make_error("CASE_TOO_LARGE", str(exc))
+        except (OSError, UnicodeError) as exc:
+            if self.registry.get_artifact_path(params.case_id, archive.artifact_id) is None:
+                self.registry.remove_archive_descendants(params.case_id, archive.artifact_id)
+            return make_error("FILE_WRITE_ERROR", str(exc), retryable=True)
+
+        artifacts_by_path = {item.relative_path: item for item in registered}
+        items = []
+        for selected in result.members:
+            virtual_path = f"{archive.relative_path}!/{selected.member_path}"
+            artifact = artifacts_by_path.get(virtual_path)
+            items.append({
+                "member_id": selected.member_id,
+                "member_path": selected.member_path,
+                "artifact_id": artifact.artifact_id if artifact else None,
+                "relative_path": virtual_path,
+                "size_bytes": selected.size_bytes,
+                "reused": selected.reused,
+            })
+        return make_success({
+            "case_id": params.case_id,
+            "archive_artifact_id": archive.artifact_id,
+            "archive_relative_path": archive.relative_path,
+            "reset": result.reset,
+            "member_count": len(items),
+            "members": items,
+        })
+
+    def build_index(self, **kwargs) -> ToolResult:
+        """Build a reusable index for a selected, cumulatively growing Artifact set."""
+
+        params = BuildIndexInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        _, info = entry
+        artifact_map = {item.artifact_id: item for item in info.artifacts}
+        unknown = [artifact_id for artifact_id in params.artifact_ids if artifact_id not in artifact_map]
+        if unknown:
+            return make_error("ARTIFACT_NOT_FOUND", f"指定 Artifact 不存在: {unknown[0]}")
+        invalid = [artifact_id for artifact_id in params.artifact_ids if not artifact_map[artifact_id].readable_text]
+        if invalid:
+            return make_error("ARTIFACT_NOT_TEXT", f"指定 Artifact 不能作为文本索引: {invalid[0]}")
+        unavailable = [
+            artifact_id for artifact_id in params.artifact_ids
+            if self.registry.get_artifact_path(params.case_id, artifact_id) is None
+        ]
+        if unavailable:
+            return make_error("ARTIFACT_UNAVAILABLE", f"指定 Artifact 文件不可用: {unavailable[0]}")
+        work_dir = self.registry.get_work_dir(params.case_id)
+        if work_dir is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        index = LogIndex(work_dir / "index" / "logs.sqlite3", self.registry.index_limits)
+        retained_ids = index.indexed_artifact_ids() & set(artifact_map)
+        selected_ids = retained_ids | set(params.artifact_ids)
+        # Rebuild is currently transactional rather than in-place incremental. Put
+        # previously indexed artifacts first so an expansion that hits a budget cannot
+        # evict already searchable evidence in favor of newly requested files.
+        retained = [artifact for artifact in info.artifacts if artifact.artifact_id in retained_ids]
+        additions = [
+            artifact for artifact in info.artifacts
+            if artifact.artifact_id in selected_ids and artifact.artifact_id not in retained_ids
+        ]
+        selected = retained + additions
+        build = index.build(
+            self.registry.artifact_paths(params.case_id, selected),
+            force=params.force_rebuild,
+        )
+        self._indexes[params.case_id] = index
+        indexed_ids = sorted(index.indexed_artifact_ids())
+        return make_success({
+            "case_id": params.case_id,
+            "requested_artifact_ids": list(dict.fromkeys(params.artifact_ids)),
+            "indexed_artifact_ids": indexed_ids,
+            "artifact_count": build.artifact_count,
+            "chunk_count": build.chunk_count,
+            "indexed_bytes": build.indexed_bytes,
+            "reused": build.reused,
+            "truncated": build.truncated,
+            "warnings": build.warnings,
+        })
+
+    def prepare_case(self, **kwargs) -> ToolResult:
+        """安全展开支持的归档，并为文本 Artifact 建立可复用分块索引。"""
+
+        params = PrepareCaseInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        _, info = entry
+        work_dir = self.registry.get_work_dir(params.case_id)
+        if work_dir is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+
+        selected_ids = set(params.artifact_ids)
+        archives = [
+            artifact for artifact in info.artifacts
+            if artifact.kind == "archive" and (not selected_ids or artifact.artifact_id in selected_ids)
+        ]
+        extraction_items: list[dict] = []
+        skipped_archives: list[dict] = []
+        generated_ids: set[str] = set()
+        if params.extract_archives:
+            extractor = ArchiveExtractor(self.registry.archive_limits)
+            budget = ExtractionBudget(self.registry.archive_limits)
+            queue = deque((artifact, 1) for artifact in archives)
+            processed: set[str] = set()
+            while queue:
+                archive, depth = queue.popleft()
+                if archive.artifact_id in processed:
+                    continue
+                processed.add(archive.artifact_id)
+                path = self.registry.get_artifact_path(params.case_id, archive.artifact_id)
+                if path is None:
+                    continue
+                if not is_supported_archive(path):
+                    skipped_archives.append({
+                        "artifact_id": archive.artifact_id,
+                        "relative_path": archive.relative_path,
+                        "reason": "ARCHIVE_FORMAT_UNSUPPORTED",
+                    })
+                    continue
+                try:
+                    result = extractor.extract(
+                        path,
+                        extraction_destination(path),
+                        budget,
+                        force=params.force_rebuild,
+                    )
+                    self.registry.remove_archive_descendants(params.case_id, archive.artifact_id)
+                    registered = self.registry.register_extracted_artifacts(
+                        params.case_id,
+                        source_archive=archive,
+                        members=[(item.path, item.member_path) for item in result.members],
+                    )
+                except ArchiveRejected as exc:
+                    # A previously extracted version must never remain searchable after
+                    # the current archive can no longer be validated or expanded.
+                    self.registry.remove_archive_descendants(params.case_id, archive.artifact_id)
+                    skipped_archives.append({
+                        "artifact_id": archive.artifact_id,
+                        "relative_path": archive.relative_path,
+                        "reason": exc.code,
+                        "message": exc.message,
+                    })
+                    continue
+                except ValueError as exc:
+                    return make_error("CASE_TOO_LARGE", str(exc))
+
+                generated_ids.update(item.artifact_id for item in registered)
+                extraction_items.append({
+                    "artifact_id": archive.artifact_id,
+                    "relative_path": archive.relative_path,
+                    "depth": depth,
+                    "member_count": len(registered),
+                    "expanded_bytes": sum(item.size_bytes for item in registered),
+                    "reused": result.reused,
+                })
+                nested = [item for item in registered if item.kind == "archive"]
+                if depth < self.registry.archive_limits.max_depth:
+                    queue.extend((item, depth + 1) for item in nested)
+                else:
+                    skipped_archives.extend({
+                        "artifact_id": item.artifact_id,
+                        "relative_path": item.relative_path,
+                        "reason": "ARCHIVE_DEPTH_LIMIT",
+                    } for item in nested)
+
+        index_data = None
+        if params.build_index:
+            current_artifacts = self.registry.select_artifacts(params.case_id)
+            if selected_ids:
+                allowed_index_ids = selected_ids | generated_ids
+                current_artifacts = [item for item in current_artifacts if item.artifact_id in allowed_index_ids]
+            index = LogIndex(work_dir / "index" / "logs.sqlite3", self.registry.index_limits)
+            build = index.build(
+                self.registry.artifact_paths(params.case_id, current_artifacts),
+                force=params.force_rebuild,
+            )
+            self._indexes[params.case_id] = index
+            index_data = {
+                "artifact_count": build.artifact_count,
+                "chunk_count": build.chunk_count,
+                "indexed_bytes": build.indexed_bytes,
+                "reused": build.reused,
+                "truncated": build.truncated,
+                "warnings": build.warnings,
+            }
+
+        return make_success({
+            "case_id": params.case_id,
+            "extraction": {
+                "archives": extraction_items,
+                "skipped": skipped_archives,
+                "expanded_file_count": len(generated_ids),
+            },
+            "index": index_data,
+            "artifact_count": info.artifact_count,
         })
 
     def _evidence_from_pending(self, pending: dict) -> Evidence:
@@ -116,6 +491,17 @@ class LogAnalyzerService:
             timestamp_raw=timestamp.raw if timestamp else None,
             query=pending["query"],
         )
+
+    def _evidence_from_index_match(self, artifact, match: IndexMatch, query: str) -> Evidence:
+        pending = {
+            "artifact": artifact,
+            "line_number": match.line_number,
+            "line": match.line,
+            "before": match.before,
+            "after": match.after,
+            "query": query,
+        }
+        return self._evidence_from_pending(pending)
 
     def search_evidence(self, **kwargs) -> ToolResult:
         """在 Case 文本附件中进行有预算的流式字面量搜索。
@@ -141,7 +527,36 @@ class LogAnalyzerService:
         scanned_bytes = 0
         truncated = False
 
-        for artifact in artifacts:
+        index = self._get_index(params.case_id)
+        indexed_ids: set[str] = set()
+        selected_indexed_ids: set[str] = set()
+        candidate_chunks = 0
+        if index is not None:
+            indexed = index.search(
+                params.query,
+                artifact_ids=[item.artifact_id for item in artifacts],
+                case_sensitive=params.case_sensitive,
+                context_before=params.context_before,
+                context_after=params.context_after,
+                max_results=params.max_results,
+            )
+            indexed_ids = indexed.indexed_artifact_ids
+            selected_indexed_ids = indexed_ids & {item.artifact_id for item in artifacts}
+            candidate_chunks = indexed.candidate_chunks
+            if indexed.truncated:
+                warnings.append("索引查询达到运行时间预算，结果已截断")
+                truncated = True
+            artifact_map = {item.artifact_id: item for item in artifacts}
+            results.extend(
+                self._evidence_from_index_match(artifact_map[item.artifact_id], item, params.query)
+                for item in indexed.matches
+                if item.artifact_id in artifact_map
+            )
+            if len(results) >= params.max_results:
+                truncated = True
+        artifacts = [item for item in artifacts if item.artifact_id not in indexed_ids]
+
+        for artifact in artifacts if len(results) < params.max_results else []:
             path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)
             if path is None:
                 continue
@@ -212,6 +627,8 @@ class LogAnalyzerService:
             "scanned_bytes": scanned_bytes,
             "truncated": truncated,
             "warnings": warnings,
+            "search_mode": "hybrid" if selected_indexed_ids and artifacts else ("index" if selected_indexed_ids else "stream"),
+            "candidate_chunks": candidate_chunks,
         })
 
     def extract_timeline(self, **kwargs) -> ToolResult:
@@ -231,7 +648,54 @@ class LogAnalyzerService:
         scanned_bytes = 0
         truncated = False
 
-        for artifact in artifacts:
+        index = self._get_index(params.case_id)
+        indexed_ids: set[str] = set()
+        selected_indexed_ids: set[str] = set()
+        if index is not None:
+            indexed_ids = index.indexed_artifact_ids()
+            artifact_map = {item.artifact_id: item for item in artifacts}
+            selected_indexed_ids = indexed_ids & set(artifact_map)
+            seen_events: set[tuple[str, int]] = set()
+            for anchor in anchors:
+                indexed = index.search(
+                    anchor,
+                    artifact_ids=list(artifact_map),
+                    case_sensitive=False,
+                    context_before=0,
+                    context_after=0,
+                    max_results=params.max_events,
+                )
+                if indexed.truncated:
+                    truncated = True
+                for match in indexed.matches:
+                    key = (match.artifact_id, match.line_number)
+                    if key in seen_events:
+                        continue
+                    timestamp = extract_timestamp(match.line, params.year_hint)
+                    if timestamp is None:
+                        continue
+                    seen_events.add(key)
+                    events.append(TimelineEvent(
+                        event_id=stable_id("event", f"{match.artifact_id}:{match.line_number}:{match.line}"),
+                        artifact_id=match.artifact_id,
+                        relative_path=match.relative_path,
+                        line_number=match.line_number,
+                        clock_domain=timestamp.clock_domain,
+                        timestamp_raw=timestamp.raw,
+                        timestamp_normalized=timestamp.normalized,
+                        relative_seconds=timestamp.relative_seconds,
+                        component=infer_component(match.line, anchors),
+                        event_type=anchor,
+                        content=match.line,
+                    ))
+                    if len(events) >= params.max_events:
+                        truncated = True
+                        break
+                if len(events) >= params.max_events:
+                    break
+        artifacts = [item for item in artifacts if item.artifact_id not in indexed_ids]
+
+        for artifact in artifacts if len(events) < params.max_events else []:
             path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)
             if path is None:
                 continue
@@ -291,6 +755,7 @@ class LogAnalyzerService:
             "event_count": len(events),
             "clock_domains": sorted({event.clock_domain for event in events}),
             "truncated": truncated,
+            "search_mode": "hybrid" if selected_indexed_ids and artifacts else ("index" if selected_indexed_ids else "stream"),
         })
 
     def _make_line_evidence(self, artifact, line_number: int, content: str) -> Evidence:
@@ -322,7 +787,77 @@ class LogAnalyzerService:
         artifacts = self.registry.select_artifacts(params.case_id, artifact_ids=params.artifact_ids)
         findings: list[DiagnosticFinding] = []
         truncated = False
-        for artifact in artifacts:
+        index = self._get_index(params.case_id)
+        indexed_ids: set[str] = set()
+        selected_indexed_ids: set[str] = set()
+        if index is not None:
+            indexed_ids = index.indexed_artifact_ids()
+            artifact_map = {item.artifact_id: item for item in artifacts}
+            selected_indexed_ids = indexed_ids & set(artifact_map)
+            marker_queries = {
+                "avc": ["avc: denied"],
+                "fatal": ["FATAL EXCEPTION", "Fatal signal"],
+                "anr": ["ANR in"],
+                "kernel_stack": ["Call Trace:"],
+            }
+            seen_findings: set[tuple[str, int, str]] = set()
+            for diagnostic_type in params.diagnostic_types:
+                for marker in marker_queries[diagnostic_type]:
+                    indexed = index.search(
+                        marker,
+                        artifact_ids=list(artifact_map),
+                        case_sensitive=False,
+                        context_before=0,
+                        context_after=63 if diagnostic_type == "kernel_stack" else 0,
+                        max_results=params.max_findings,
+                    )
+                    if indexed.truncated:
+                        truncated = True
+                    for match in indexed.matches:
+                        diagnostic = classify_diagnostic_line(match.line, wanted)
+                        if diagnostic is None:
+                            continue
+                        key = (match.artifact_id, match.line_number, diagnostic.diagnostic_type)
+                        if key in seen_findings:
+                            continue
+                        seen_findings.add(key)
+                        artifact = artifact_map.get(match.artifact_id)
+                        if artifact is None:
+                            continue
+                        content = match.line
+                        end_line = match.line_number
+                        attributes = diagnostic.attributes
+                        if diagnostic.diagnostic_type == "kernel_stack":
+                            stack_lines = [match.line]
+                            for offset, next_line in enumerate(match.after, 1):
+                                if not next_line.strip() or len(stack_lines) >= 64:
+                                    break
+                                stack_lines.append(next_line)
+                                end_line = match.line_number + offset
+                                if "</TASK>" in next_line:
+                                    break
+                            content = "\n".join(stack_lines)
+                            attributes = {"frame_lines": max(0, len(stack_lines) - 1)}
+                        evidence = self._make_line_evidence(artifact, match.line_number, content)
+                        evidence.line_end = end_line
+                        findings.append(DiagnosticFinding(
+                            finding_id=stable_id("finding", evidence.evidence_id),
+                            diagnostic_type=diagnostic.diagnostic_type,
+                            severity=diagnostic.severity,
+                            summary=diagnostic.summary,
+                            evidence=evidence,
+                            attributes=attributes,
+                        ))
+                        if len(findings) >= params.max_findings:
+                            truncated = True
+                            break
+                    if len(findings) >= params.max_findings:
+                        break
+                if len(findings) >= params.max_findings:
+                    break
+        artifacts = [item for item in artifacts if item.artifact_id not in indexed_ids]
+
+        for artifact in artifacts if len(findings) < params.max_findings else []:
             path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)
             if path is None:
                 continue
@@ -381,4 +916,5 @@ class LogAnalyzerService:
             "findings": [finding.model_dump() for finding in findings],
             "finding_count": len(findings),
             "truncated": truncated,
+            "search_mode": "hybrid" if selected_indexed_ids and artifacts else ("index" if selected_indexed_ids else "stream"),
         })

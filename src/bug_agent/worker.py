@@ -14,6 +14,7 @@ from .contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
 from .mcp_router import McpToolRouter
 from .prompts import JIRA_WORKFLOW_PROMPT, LOCAL_WORKFLOW_PROMPT, REPORT_FORMAT_PROMPT
 from .provider import OpenAICompatibleProvider
+from .runstore import write_run_record
 from .skills import SkillRegistry
 
 
@@ -73,6 +74,9 @@ class BugAnalysisWorker:
         )
         provider = None
         applied_skills: list[str] = []
+        # run 初始化为 None：若在 Agent 运行前（Skill 加载/准备阶段）就失败，
+        # 落盘时仍能记录 task 与失败结果，只是没有 trace。
+        run = None
         try:
             skill_prompt, applied_skills = self.skill_registry.render(task.skills)
             provider = self.provider_factory(run_config)
@@ -90,7 +94,7 @@ class BugAnalysisWorker:
             # Worker 是应用边界：普通准备/基础设施错误转成稳定结果。不要把未知
             # 异常详情直接暴露给上游，以免第三方响应或凭据进入任务系统。
             message = str(exc) if isinstance(exc, (ValueError, OSError)) else type(exc).__name__
-            return BugAnalysisResult(
+            result = BugAnalysisResult(
                 task_id=task.task_id,
                 status="failed",
                 report=RCAReport(
@@ -104,6 +108,9 @@ class BugAnalysisWorker:
                 applied_skills=applied_skills,
                 error=message,
             )
+            # 失败也要落盘（此时 run 为 None，trace 为空），便于排查准备阶段问题。
+            write_run_record(task, run, result)
+            return result
 
         report, structured = _extract_report(run.final_answer)
         if run.status == "failed":
@@ -114,7 +121,7 @@ class BugAnalysisWorker:
             status = "insufficient_evidence"
         else:
             status = "completed"
-        return BugAnalysisResult(
+        result = BugAnalysisResult(
             task_id=task.task_id,
             status=status,
             report=report,
@@ -124,6 +131,10 @@ class BugAnalysisWorker:
             trace=run.tool_events if task.include_trace else [],
             error=run.error,
         )
+        # 落盘完整 trace（来自 run.tool_events，与 include_trace 无关），
+        # 保证默认运行也能复盘。失败只警告，不影响返回给上游的结果。
+        write_run_record(task, run, result)
+        return result
 
     async def _prepare(self, task: BugAnalysisTask, router: ToolRouter) -> tuple[str, str]:
         """只在 Worker 边界处理部署模式和 MCP 生命周期。"""

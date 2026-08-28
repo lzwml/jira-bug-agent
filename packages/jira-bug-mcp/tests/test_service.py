@@ -31,6 +31,20 @@ ISSUE = {
         "reporter": {"displayName": "Bob"},
         "labels": ["boot"],
         "components": [{"name": "Framework"}],
+        "environment": "userdebug build on bench A",
+        "resolution": None,
+        "versions": [{"name": "V1.2"}],
+        "fixVersions": [{"name": "V1.3"}],
+        "parent": {"key": "APP-10"},
+        "subtasks": [{"key": "APP-43"}],
+        "issuelinks": [{
+            "type": {"name": "Blocks", "outward": "blocks", "inward": "is blocked by"},
+            "outwardIssue": {
+                "key": "APP-99",
+                "fields": {"summary": "Display service failure", "status": {"name": "Open"}},
+            },
+        }],
+        "customfield_12345": {"value": "IVI"},
         "created": "2026-08-25T10:00:00.000+0800",
         "updated": "2026-08-26T09:00:00.000+0800",
         "attachment": [{
@@ -40,10 +54,41 @@ ISSUE = {
         "comment": {"comments": [{
             "id": "30001", "author": {"displayName": "Carol"},
             "body": {"type": "doc", "content": [{
-                "type": "paragraph", "content": [{"type": "text", "text": "可以稳定复现"}],
+                "type": "paragraph", "content": [{"type": "text", "text": "可以稳定复现，长日志见 APP-88"}],
             }]},
             "created": "2026-08-26T08:00:00.000+0800",
         }]},
+    },
+}
+
+RELATED_ISSUE = {
+    "id": "10099",
+    "key": "APP-99",
+    "fields": {
+        "summary": "显示服务现场日志",
+        "description": "APP-42 的原始日志在附件中",
+        "issuetype": {"name": "Bug"},
+        "status": {"name": "Open"},
+        "priority": {"name": "High"},
+        "labels": [],
+        "components": [],
+        "attachment": [{
+            "id": "20099", "filename": "related-logcat.txt", "size": 18,
+            "mimeType": "text/plain", "content": "https://jira.test/attachment/20099",
+        }],
+        "comment": {"comments": []},
+    },
+}
+
+ATTACHMENT_ONLY_ISSUE = {
+    "id": "10088",
+    "key": "APP-88",
+    "fields": {
+        "summary": "APP-42 长日志存放位置",
+        "attachment": [{
+            "id": "20088", "filename": "long-bugreport.zip", "size": 15,
+            "mimeType": "application/zip", "content": "https://jira.test/attachment/20088",
+        }],
     },
 }
 
@@ -52,12 +97,28 @@ def jira_transport(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path == "/rest/api/3/issue/APP-42":
         return httpx.Response(200, json=ISSUE)
+    if path == "/rest/api/3/issue/APP-99":
+        return httpx.Response(200, json=RELATED_ISSUE)
+    if path == "/rest/api/3/issue/APP-88":
+        return httpx.Response(200, json=ATTACHMENT_ONLY_ISSUE)
     if path == "/rest/api/3/issue/APP-42/comment":
         return httpx.Response(200, json={"comments": ISSUE["fields"]["comment"]["comments"], "total": 1})
+    if path == "/rest/api/3/issue/APP-99/comment":
+        return httpx.Response(200, json={"comments": [], "total": 0})
+    if path == "/rest/api/3/serverInfo":
+        return httpx.Response(200, json={
+            "serverTitle": "Test Jira", "version": "1001", "deploymentType": "Cloud",
+        })
+    if path == "/rest/api/3/myself":
+        return httpx.Response(200, json={"displayName": "Collector", "accountId": "safe-account-id"})
     if path == "/rest/api/3/search/jql":
         return httpx.Response(200, json={"issues": [ISSUE], "nextPageToken": "page-2"})
     if path == "/attachment/20001":
         return httpx.Response(200, content=b"FATAL boot failed\n", headers={"content-length": "18"})
+    if path == "/attachment/20099":
+        return httpx.Response(200, content=b"RELATED FATAL log\n", headers={"content-length": "18"})
+    if path == "/attachment/20088":
+        return httpx.Response(200, content=b"LONG BUGREPORT\n", headers={"content-length": "15"})
     return httpx.Response(404)
 
 
@@ -68,6 +129,7 @@ class JiraServiceTest(unittest.TestCase):
             base_url="https://jira.test",
             auth_mode="none",
             export_root=Path(self.temp.name),
+            extra_fields=("customfield_12345",),
         )
         self.client = JiraClient(self.config, transport=httpx.MockTransport(jira_transport))
         self.service = JiraService(self.client, CaseExporter(self.config, self.client))
@@ -81,8 +143,29 @@ class JiraServiceTest(unittest.TestCase):
         self.assertTrue(result.success)
         issue = result.data["issue"]
         self.assertEqual(issue["description"], "开机后停留在黑屏。")
-        self.assertEqual(issue["comments"][0]["body"], "可以稳定复现")
+        self.assertEqual(issue["comments"][0]["body"], "可以稳定复现，长日志见 APP-88")
         self.assertNotIn("content_url", issue["attachments"][0])
+
+    def test_collect_issue_context_fetches_complete_comments_and_bug_fields(self):
+        result = self.service.dispatch("collect_issue_context", {"issue_key": "APP-42"})
+        self.assertTrue(result.success)
+        issue = result.data["issue"]
+        self.assertEqual(issue["environment"], "userdebug build on bench A")
+        self.assertEqual(issue["versions"], ["V1.2"])
+        self.assertEqual(issue["fix_versions"], ["V1.3"])
+        self.assertEqual(issue["parent_key"], "APP-10")
+        self.assertEqual(issue["subtask_keys"], ["APP-43"])
+        self.assertEqual(issue["issue_links"][0]["target_key"], "APP-99")
+        self.assertEqual(issue["extra_fields"], {"customfield_12345": "IVI"})
+        self.assertEqual(result.data["collection"]["comments_collected"], 1)
+        self.assertFalse(result.data["collection"]["comments_truncated"])
+
+    def test_connection_reports_safe_server_metadata(self):
+        result = self.service.dispatch("test_connection", {})
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["server"]["server_title"], "Test Jira")
+        self.assertEqual(result.data["server"]["authenticated_user"], "Collector")
+        self.assertNotIn("token", result.data["server"])
 
     def test_cloud_search_uses_opaque_cursor(self):
         result = self.service.dispatch("search_issues", {"jql": "project = APP"})
@@ -97,7 +180,71 @@ class JiraServiceTest(unittest.TestCase):
         self.assertTrue((case / "issue.json").is_file())
         self.assertTrue((case / "issue.md").is_file())
         self.assertEqual((case / "attachments" / "20001_logcat.txt").read_bytes(), b"FATAL boot failed\n")
+        self.assertEqual(
+            (case / "related" / "APP-99" / "attachments" / "20099_related-logcat.txt").read_bytes(),
+            b"RELATED FATAL log\n",
+        )
+        self.assertEqual(
+            (case / "related" / "APP-88" / "attachments" / "20088_long-bugreport.zip").read_bytes(),
+            b"LONG BUGREPORT\n",
+        )
+        self.assertTrue((case / "related" / "APP-88" / "attachment-source.json").is_file())
+        self.assertFalse((case / "related" / "APP-88" / "issue.json").exists())
+        manifest = (case / "collection-manifest.json").read_text(encoding="utf-8")
+        self.assertIn('"to_issue": "APP-99"', manifest)
+        modes = {item["issue_key"]: item["collection_mode"] for item in result.data["related_issues"]}
+        self.assertEqual(modes, {"APP-99": "context", "APP-88": "attachments"})
+        self.assertIn("APP-99", {item["source_issue"] for item in result.data["downloaded_attachments"]})
         self.assertIn("open_case", result.data["next_step"])
+
+    def test_repeated_export_reuses_matching_attachments(self):
+        attachment_requests: list[str] = []
+
+        def counting_transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/attachment/"):
+                attachment_requests.append(request.url.path)
+            return jira_transport(request)
+
+        client = JiraClient(self.config, transport=httpx.MockTransport(counting_transport))
+        service = JiraService(client, CaseExporter(self.config, client))
+        try:
+            first = service.dispatch("export_issue_case", {"issue_key": "APP-42"})
+            requests_after_first = len(attachment_requests)
+            second = service.dispatch("export_issue_case", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+
+        self.assertTrue(first.success and second.success)
+        self.assertEqual(requests_after_first, 3)
+        self.assertEqual(len(attachment_requests), requests_after_first)
+        self.assertEqual(second.data["downloaded_attachments"], [])
+        self.assertEqual(len(second.data["reused_attachments"]), 3)
+        self.assertEqual(second.data["downloaded_bytes"], 0)
+        self.assertEqual(second.data["attachment_bytes"], 51)
+
+    def test_size_mismatch_forces_attachment_redownload(self):
+        attachment_requests: list[str] = []
+
+        def counting_transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/attachment/"):
+                attachment_requests.append(request.url.path)
+            return jira_transport(request)
+
+        client = JiraClient(self.config, transport=httpx.MockTransport(counting_transport))
+        service = JiraService(client, CaseExporter(self.config, client))
+        try:
+            first = service.dispatch("export_issue_case", {"issue_key": "APP-42"})
+            case = Path(first.data["case_path"])
+            (case / "attachments" / "20001_logcat.txt").write_bytes(b"incomplete")
+            requests_after_first = len(attachment_requests)
+            second = service.dispatch("export_issue_case", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+
+        self.assertTrue(second.success)
+        self.assertEqual(len(attachment_requests), requests_after_first + 1)
+        self.assertEqual(len(second.data["downloaded_attachments"]), 1)
+        self.assertEqual(len(second.data["reused_attachments"]), 2)
 
     def test_invalid_issue_key_is_a_contract_error(self):
         result = self.service.dispatch("get_issue", {"issue_key": "../../secret"})
@@ -106,6 +253,14 @@ class JiraServiceTest(unittest.TestCase):
 
 
 class JiraHttpErrorTest(unittest.TestCase):
+    def test_client_does_not_inherit_ambient_proxy_by_default(self):
+        config = JiraConfig(base_url="https://jira.test", auth_mode="none")
+        client = JiraClient(config, transport=httpx.MockTransport(jira_transport))
+        try:
+            self.assertFalse(client.http.trust_env)
+        finally:
+            client.close()
+
     def test_authentication_error_is_safe_and_non_retryable(self):
         transport = httpx.MockTransport(lambda request: httpx.Response(401, json={"token": "do-not-leak"}))
         config = JiraConfig(base_url="https://jira.test", auth_mode="none")

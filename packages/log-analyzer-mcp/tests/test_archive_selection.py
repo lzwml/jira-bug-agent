@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import gzip
+import io
+from pathlib import Path
+import tarfile
+import zipfile
+
+import pytest
+
+from log_analyzer.archive_manager import ArchiveLimits, ArchiveRejected
+import log_analyzer.archive_selection as archive_selection
+from log_analyzer.archive_selection import extract_archive_members, inventory_archive
+
+
+LIMITS = ArchiveLimits(
+    max_archive_bytes=20 * 1024 * 1024,
+    max_members=100,
+    max_member_bytes=20 * 1024 * 1024,
+    max_expanded_bytes=40 * 1024 * 1024,
+    max_compression_ratio=1000,
+)
+
+
+def _by_path(inventory):
+    return {item.member_path: item for item in inventory.members}
+
+
+def test_zip_inventory_and_selective_incremental_extraction(tmp_path: Path):
+    path = tmp_path / "logs.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("logs/main.log", "main evidence")
+        archive.writestr("logs/radio.log", "radio evidence")
+
+    first_inventory = inventory_archive(path, "artifact-1", LIMITS)
+    second_inventory = inventory_archive(path, "artifact-1", LIMITS)
+    members = _by_path(first_inventory)
+    assert [item.member_id for item in first_inventory.members] == [item.member_id for item in second_inventory.members]
+    assert not first_inventory.truncated
+    assert all(item.safe for item in first_inventory.members)
+
+    first = extract_archive_members(path, "artifact-1", [members["logs/main.log"].member_id], LIMITS)
+    assert (first.destination / "logs/main.log").read_text() == "main evidence"
+    assert not (first.destination / "logs/radio.log").exists()
+    assert not first.members[0].reused
+
+    second = extract_archive_members(path, "artifact-1", [
+        members["logs/main.log"].member_id,
+        members["logs/radio.log"].member_id,
+    ], LIMITS)
+    assert second.members[0].reused
+    assert not second.members[1].reused
+    assert (second.destination / "logs/radio.log").read_text() == "radio evidence"
+
+
+def test_incremental_expansion_hard_links_existing_payload(monkeypatch, tmp_path: Path):
+    path = tmp_path / "large.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("logs/first.log", "first payload")
+        archive.writestr("logs/second.log", "second payload")
+    members = _by_path(inventory_archive(path, "artifact-links", LIMITS))
+    extract_archive_members(
+        path, "artifact-links", [members["logs/first.log"].member_id], LIMITS
+    )
+    linked_sources = []
+    real_link = archive_selection.os.link
+
+    def recording_link(source, target):
+        linked_sources.append(Path(source))
+        return real_link(source, target)
+
+    monkeypatch.setattr(archive_selection.os, "link", recording_link)
+    expanded = extract_archive_members(
+        path, "artifact-links", [members["logs/second.log"].member_id], LIMITS
+    )
+
+    assert any(source.name == "first.log" for source in linked_sources)
+    assert (expanded.destination / "logs/first.log").read_text() == "first payload"
+    assert (expanded.destination / "logs/second.log").read_text() == "second payload"
+
+
+def test_inventory_truncates_without_writing_output(tmp_path: Path):
+    path = tmp_path / "many.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("one.log", "1")
+        archive.writestr("two.log", "2")
+
+    result = inventory_archive(path, "artifact-many", LIMITS, max_members=1)
+
+    assert result.truncated
+    assert len(result.members) == 1
+    assert not (tmp_path / "many.zip.unpacked").exists()
+
+
+def test_tar_and_single_gzip_are_selectively_extracted(tmp_path: Path):
+    tar_path = tmp_path / "logs.tar.gz"
+    payload = b"tar evidence"
+    with tarfile.open(tar_path, "w:gz") as archive:
+        info = tarfile.TarInfo("nested/system.log")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    tar_inventory = inventory_archive(tar_path, "tar-artifact", LIMITS)
+    tar_result = extract_archive_members(
+        tar_path, "tar-artifact", [tar_inventory.members[0].member_id], LIMITS
+    )
+    assert (tar_result.destination / "nested/system.log").read_bytes() == payload
+
+    gzip_path = tmp_path / "kernel.log.gz"
+    gzip_path.write_bytes(gzip.compress(b"gzip evidence"))
+    gzip_inventory = inventory_archive(gzip_path, "gzip-artifact", LIMITS)
+    assert gzip_inventory.members[0].member_path == "kernel.log"
+    gzip_result = extract_archive_members(
+        gzip_path, "gzip-artifact", [gzip_inventory.members[0].member_id], LIMITS
+    )
+    assert (gzip_result.destination / "kernel.log").read_bytes() == b"gzip evidence"
+
+
+def test_unknown_and_unsafe_member_ids_are_rejected(tmp_path: Path):
+    path = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("../../escape.log", "bad")
+        archive.writestr("safe.log", "good")
+    result = inventory_archive(path, "artifact-unsafe", LIMITS)
+    unsafe = next(item for item in result.members if not item.safe)
+    assert unsafe.reason == "ARCHIVE_PATH_TRAVERSAL"
+
+    for member_id in ("invented-id", unsafe.member_id):
+        with pytest.raises(ArchiveRejected) as caught:
+            extract_archive_members(path, "artifact-unsafe", [member_id], LIMITS)
+        assert caught.value.code == "ARCHIVE_MEMBER_ID_INVALID"
+    assert not (tmp_path / "escape.log").exists()
+
+
+def test_source_change_resets_managed_destination(tmp_path: Path):
+    path = tmp_path / "changing.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("same.log", "old")
+        archive.writestr("removed.log", "remove me")
+    old_inventory = inventory_archive(path, "artifact-change", LIMITS)
+    old = _by_path(old_inventory)
+    extract_archive_members(path, "artifact-change", [
+        old["same.log"].member_id,
+        old["removed.log"].member_id,
+    ], LIMITS)
+
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("same.log", "new and different")
+    current = inventory_archive(path, "artifact-change", LIMITS)
+    result = extract_archive_members(path, "artifact-change", [current.members[0].member_id], LIMITS)
+
+    assert result.reset
+    assert (result.destination / "same.log").read_text() == "new and different"
+    assert not (result.destination / "removed.log").exists()
+
+
+def test_member_id_is_bound_to_archive_content(tmp_path: Path):
+    path = tmp_path / "changing-id.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("same.log", "old")
+    old_id = inventory_archive(path, "artifact-versioned", LIMITS).members[0].member_id
+
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("same.log", "new content")
+    new_id = inventory_archive(path, "artifact-versioned", LIMITS).members[0].member_id
+
+    assert old_id != new_id
+    with pytest.raises(ArchiveRejected) as caught:
+        extract_archive_members(path, "artifact-versioned", [old_id], LIMITS)
+    assert caught.value.code == "ARCHIVE_MEMBER_ID_INVALID"
+
+
+def test_multi_round_selection_enforces_cumulative_expanded_budget(tmp_path: Path):
+    limits = ArchiveLimits(
+        max_archive_bytes=1024 * 1024,
+        max_members=10,
+        max_member_bytes=10,
+        max_expanded_bytes=6,
+        max_compression_ratio=1000,
+    )
+    path = tmp_path / "budget.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("one.log", "1111")
+        archive.writestr("two.log", "2222")
+    members = _by_path(inventory_archive(path, "artifact-budget", limits))
+    extract_archive_members(path, "artifact-budget", [members["one.log"].member_id], limits)
+
+    with pytest.raises(ArchiveRejected) as caught:
+        extract_archive_members(path, "artifact-budget", [members["two.log"].member_id], limits)
+
+    assert caught.value.code == "ARCHIVE_EXPANDED_LIMIT"
+    assert not (tmp_path / "budget.zip.unpacked" / "two.log").exists()
+
+
+def test_inventory_rejects_reserved_manifest_and_prefix_conflicts(tmp_path: Path):
+    path = tmp_path / "conflicts.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(".extraction-manifest.json", "not metadata")
+        archive.writestr("a", "file")
+        archive.writestr("a/b.log", "child")
+
+    inventory = inventory_archive(path, "artifact-conflicts", LIMITS)
+    by_path = _by_path(inventory)
+
+    assert by_path[".extraction-manifest.json"].reason == "ARCHIVE_RESERVED_PATH"
+    assert by_path["a"].reason == "ARCHIVE_PATH_CONFLICT"
+    assert by_path["a/b.log"].reason == "ARCHIVE_PATH_CONFLICT"
+
+
+def test_extra_user_content_makes_destination_a_conflict(tmp_path: Path):
+    path = tmp_path / "logs.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("one.log", "one")
+        archive.writestr("two.log", "two")
+    inventory = inventory_archive(path, "artifact-conflict", LIMITS)
+    members = _by_path(inventory)
+    result = extract_archive_members(path, "artifact-conflict", [members["one.log"].member_id], LIMITS)
+    (result.destination / "notes.txt").write_text("user content")
+
+    with pytest.raises(ArchiveRejected) as caught:
+        extract_archive_members(path, "artifact-conflict", [members["two.log"].member_id], LIMITS)
+
+    assert caught.value.code == "ARCHIVE_DESTINATION_CONFLICT"
+    assert (result.destination / "notes.txt").read_text() == "user content"

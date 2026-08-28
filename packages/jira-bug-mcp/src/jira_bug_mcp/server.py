@@ -13,6 +13,7 @@ import mcp.types as types
 from .client import JiraClient
 from .config import JiraConfig
 from .domain import (
+    CollectIssueContextInput,
     ExportIssueCaseInput,
     GetCommentsInput,
     GetIssueInput,
@@ -27,17 +28,25 @@ from .service import JiraService
 server = Server("jira-bug")
 
 TOOL_DEFINITIONS = {
+    "test_connection": ("检查 Jira 网络、认证和 REST 版本；不读取业务 Issue。", None),
     "get_issue": ("读取 Jira Issue 的结构化详情；不会修改 Jira。", GetIssueInput),
+    "collect_issue_context": ("聚合收集 Issue 标准字段、完整分页评论、附件元数据和白名单自定义字段。", CollectIssueContextInput),
     "search_issues": ("使用 JQL 分页搜索 Issue，Cloud cursor 与 Data Center startAt 被统一为 cursor。", SearchIssuesInput),
     "get_comments": ("分页读取 Issue 评论，并将 Cloud ADF 转为纯文本。", GetCommentsInput),
     "list_attachments": ("列出附件元数据，不下载附件，也不暴露带认证语义的 content URL。", ListAttachmentsInput),
-    "export_issue_case": ("将 Issue、评论和选定附件导出为本地 Case，供 log-analyzer-mcp 分析。", ExportIssueCaseInput),
+    "export_issue_case": ("将 Issue、评论、附件及有边界的关联 Issue 证据导出为本地 Case。", ExportIssueCaseInput),
 }
 
 
 async def handle_list_tools(ctx, params: types.ListToolsRequest) -> types.ListToolsResult:
     return types.ListToolsResult(tools=[
-        types.Tool(name=name, description=description, inputSchema=model.model_json_schema())
+        types.Tool(
+            name=name,
+            description=description,
+            inputSchema=model.model_json_schema() if model else {
+                "type": "object", "properties": {}, "additionalProperties": False,
+            },
+        )
         for name, (description, model) in TOOL_DEFINITIONS.items()
     ])
 
@@ -88,4 +97,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from .client import JiraClient
 from .domain import (
+    CollectIssueContextInput,
     ExportIssueCaseInput,
     GetCommentsInput,
     GetIssueInput,
@@ -28,12 +29,19 @@ class JiraService:
         self.client = client
         self.exporter = exporter
         self.handlers: dict[str, Callable[..., ToolResult]] = {
+            "test_connection": self.test_connection,
             "get_issue": self.get_issue,
+            "collect_issue_context": self.collect_issue_context,
             "search_issues": self.search_issues,
             "get_comments": self.get_comments,
             "list_attachments": self.list_attachments,
             "export_issue_case": self.export_issue_case,
         }
+
+    def test_connection(self, **kwargs) -> ToolResult:
+        if kwargs:
+            return failure("INVALID_PARAMS", "test_connection 不接受参数")
+        return success({"server": self.client.get_server_info()})
 
     def dispatch(self, name: str, arguments: dict) -> ToolResult:
         handler = self.handlers.get(name)
@@ -52,6 +60,21 @@ class JiraService:
         params = GetIssueInput.model_validate(kwargs)
         issue = self.client.get_issue(params.issue_key.upper(), params.include_comments)
         return success({"issue": issue.model_dump()})
+
+    def collect_issue_context(self, **kwargs) -> ToolResult:
+        params = CollectIssueContextInput.model_validate(kwargs)
+        issue, comments_truncated = self.client.collect_issue_context(
+            params.issue_key.upper(), params.include_comments, params.max_comments,
+        )
+        return success({
+            "issue": issue.model_dump(),
+            "collection": {
+                "comments_collected": len(issue.comments),
+                "comments_truncated": comments_truncated,
+                "attachments_listed": len(issue.attachments),
+                "extra_fields_collected": list(issue.extra_fields),
+            },
+        })
 
     def search_issues(self, **kwargs) -> ToolResult:
         params = SearchIssuesInput.model_validate(kwargs)
@@ -89,5 +112,9 @@ class JiraService:
             params.include_attachments,
             params.attachment_ids,
             params.max_attachments,
+            params.include_related_issues,
+            params.include_related_attachments,
+            params.related_depth,
+            params.max_related_issues,
+            params.max_related_attachments,
         ))
-

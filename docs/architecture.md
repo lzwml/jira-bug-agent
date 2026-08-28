@@ -44,6 +44,21 @@ Log Analysis Core      时间戳、稳定 ID、诊断信号等确定性解析
 Skill 不执行文件操作，也不承担安全控制。Core 不决定某条 Fatal 或 AVC 是否是
 当前 Bug 的根因。MCP 是两者之间的受控执行边界，而不是领域专家本身。
 
+Skill 按职责组合，而不是把整个平台写进一个文件：
+
+```text
+初始分诊（故障类型未知）       android-log-triage
+              │
+              ▼
+主要症状路线                  ANR / Native Crash / Reboot / CAN / OTA / ...
+              +
+平台约束（按需叠加）           mtk-ivi-log-analysis
+```
+
+一个分析 Pass 应选择一个主要症状路线。平台 Skill 补充日志拓扑、平台术语和跨时钟
+规则，但不重复症状路线的调查决策。当前由 CLI 或上层 Workflow 显式选择；未来的
+动态路由器应先输出可审计的路由决定，再启动相应专项 Skill。
+
 ## 两条入口流程
 
 ### Jira Issue
@@ -79,7 +94,7 @@ Harness 负责模型调用、Tool Call 循环、错误观察、状态和终止�
 
 - LLM 与 Jira Token 只从进程环境读取；
 - Jira 工具默认只读，唯一文件写入限制在导出根目录；
-- Log MCP 只读取显式允许的 Case 根目录；
+- Log MCP 只读取显式允许的 Case 根目录，归档展开和索引仅写入服务端隔离工作区；
 - Jira 描述、评论和日志都视为不可信数据；
 - Tool Result 有字符预算，Agent Loop 有步骤预算；
 - 当前 Agent 不会回写 Jira，也不会执行附件。

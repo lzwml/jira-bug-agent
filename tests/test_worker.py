@@ -166,3 +166,51 @@ async def test_unknown_skill_fails_before_provider_or_mcp_start(tmp_path):
     assert "Skill 不存在" in (result.error or "")
     assert harness.provider is None
     assert harness.router is None
+
+
+@pytest.mark.anyio
+async def test_run_record_is_written_with_full_trace(tmp_path):
+    """运行记录应落盘到 <case>/.bug-agent/runs/<task_id>.json，且包含完整 trace。
+
+    即使 task.include_trace=False（result.trace 为空），落盘的 trace 也必须完整，
+    因为复盘依赖的是 run.tool_events，而不是对外契约里的 trace 字段。
+    """
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    result = await worker.execute(BugAnalysisTask(
+        task_id="run-persist-1", source="local", case_path=str(tmp_path),
+        include_trace=False,
+    ))
+
+    run_file = tmp_path / ".bug-agent" / "runs" / "run-persist-1.json"
+    assert run_file.is_file()
+    record = json.loads(run_file.read_text(encoding="utf-8"))
+    assert record["schema_version"] == 1
+    assert record["task"]["task_id"] == "run-persist-1"
+    assert record["task"]["source"] == "local"
+    assert record["result"]["status"] == "completed"
+    # 对外契约 trace 为空，但落盘的 trace 来自 run.tool_events
+    assert result.trace == []
+    assert isinstance(record["trace"], list)
+    assert record["agent_status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_run_record_written_even_when_prepare_fails(tmp_path):
+    """准备阶段失败（如 Case 目录不存在）也应落盘，trace 为空但不报错。"""
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+    missing = tmp_path / "missing"
+
+    result = await worker.execute(BugAnalysisTask(
+        task_id="run-persist-fail", source="local", case_path=str(missing),
+    ))
+
+    assert result.status == "failed"
+    run_file = missing / ".bug-agent" / "runs" / "run-persist-fail.json"
+    assert run_file.is_file()
+    record = json.loads(run_file.read_text(encoding="utf-8"))
+    assert record["result"]["status"] == "failed"
+    assert record["trace"] == []
+    assert record["agent_status"] is None

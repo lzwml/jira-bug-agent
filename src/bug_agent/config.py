@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from jira_bug_mcp.config import load_local_env
+
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -18,6 +20,7 @@ class AgentConfig:
 
     @classmethod
     def from_environment(cls) -> "AgentConfig":
+        load_local_env()
         base_url = os.getenv("BUG_AGENT_LLM_BASE_URL", "").strip().rstrip("/")
         api_key = os.getenv("BUG_AGENT_LLM_API_KEY", "").strip()
         model = os.getenv("BUG_AGENT_LLM_MODEL", "").strip()
