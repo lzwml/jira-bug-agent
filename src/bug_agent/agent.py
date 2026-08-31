@@ -15,6 +15,7 @@ Reasoning(推理) + Acting(行动) 交替进行，直到模型给出最终答案
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Protocol
 
@@ -123,6 +124,20 @@ class BugAnalysisAgent:
         self.config = config
         self.provider = provider
 
+    async def _complete(self, messages: list[dict], tools: list[dict]) -> dict[str, Any]:
+        """Retry transient provider failures without consuming an Agent step."""
+
+        for attempt in range(self.config.llm_max_retries + 1):
+            try:
+                return await self.provider.complete(messages, tools)
+            except ProviderError as exc:
+                if not exc.retryable or attempt >= self.config.llm_max_retries:
+                    raise
+                delay = self.config.llm_retry_base_seconds * (2 ** attempt)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+        raise RuntimeError("unreachable")
+
     async def run(self, task: str, system_prompt: str, router: ToolRouter) -> AgentRunResult:
         """执行 Agent 主循环。
 
@@ -154,11 +169,10 @@ class BugAnalysisAgent:
         # 模型看到历史后会决定是继续调工具还是给出最终答案。
         for step in range(1, self.config.max_steps + 1):
             try:
-                message = await self.provider.complete(messages, tools)
+                message = await self._complete(messages, tools)
             except ProviderError as exc:
-                # Provider 失败(网络/认证/限流)：直接终止，不做重试。
-                # 【学习要点】这里的策略是"快速失败"，把决策权交给 Worker 层。
-                # 未来如果要加重试逻辑，应该在这里检查 exc.retryable 并实现退避。
+                # 认证和参数错误立即失败；限流、5xx 和网络错误已在
+                # _complete 中做有限退避，耗尽预算后保留已有 Trace 返回。
                 return AgentRunResult(
                     status="failed", task=task, final_answer="", steps=step - 1,
                     tool_events=events, error=str(exc),

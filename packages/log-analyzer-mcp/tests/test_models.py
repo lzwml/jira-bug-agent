@@ -214,3 +214,25 @@ class TestReportModels:
         )
         assert len(report.sections) == 1
         assert report.source_logs == ["/var/log/audit/audit.log"]
+
+
+class TestGetCaseCommentInput:
+    """get_case_comment 按 ID 和字符片段读取。"""
+
+    def test_defaults(self):
+        from log_analyzer.domain import GetCaseCommentInput
+
+        params = GetCaseCommentInput(case_id="case_abc", comment_id="10001")
+        assert params.offset == 0
+        assert params.limit == 4000
+
+    def test_bounds_and_required_comment_id(self):
+        import pytest
+        from log_analyzer.domain import GetCaseCommentInput
+
+        with pytest.raises(Exception):
+            GetCaseCommentInput(case_id="case_abc", comment_id="", offset=0)
+        with pytest.raises(Exception):
+            GetCaseCommentInput(case_id="case_abc", comment_id="10001", offset=-1)
+        with pytest.raises(Exception):
+            GetCaseCommentInput(case_id="case_abc", comment_id="10001", limit=20001)

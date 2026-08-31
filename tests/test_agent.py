@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
 from bug_agent.agent import BugAnalysisAgent
 from bug_agent.config import AgentConfig
+from bug_agent.provider import ProviderError
 
 
 CONFIG = AgentConfig(
@@ -23,7 +25,10 @@ class FakeProvider:
 
     async def complete(self, messages, tools):
         self.messages_seen.append(list(messages))
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class FakeRouter:
@@ -99,3 +104,29 @@ async def test_agent_stops_at_step_budget():
     assert result.status == "max_steps"
     assert result.steps == 3
 
+
+@pytest.mark.anyio
+async def test_agent_retries_transient_provider_failure_without_using_step_budget():
+    provider = FakeProvider([
+        ProviderError("模型服务暂时不可用: HTTP 429", True),
+        {"content": "重试后完成"},
+    ])
+    config = replace(CONFIG, llm_retry_base_seconds=0)
+
+    result = await BugAnalysisAgent(config, provider).run("分析", "system", FakeRouter())
+
+    assert result.status == "completed"
+    assert result.steps == 1
+    assert len(provider.messages_seen) == 2
+
+
+@pytest.mark.anyio
+async def test_agent_does_not_retry_non_retryable_provider_failure():
+    provider = FakeProvider([ProviderError("认证失败", False)])
+    config = replace(CONFIG, llm_retry_base_seconds=0)
+
+    result = await BugAnalysisAgent(config, provider).run("分析", "system", FakeRouter())
+
+    assert result.status == "failed"
+    assert result.steps == 0
+    assert len(provider.messages_seen) == 1

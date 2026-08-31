@@ -344,3 +344,19 @@ class ParseDiagnosticsInput(BaseModel):
     )
     artifact_ids: list[str] = Field(default_factory=list, max_length=100)
     max_findings: int = Field(default=100, ge=1, le=500)
+
+
+# ========== Jira Case Comments 领域模型 ==========
+
+
+class GetCaseCommentInput(BaseModel):
+    """按稳定 comment_id 读取原文片段，不接受任何裸文件路径。
+
+    offset/limit 是字符分页，不是评论列表分页。这样即使单条评论很长，模型也能
+    按需精读而不会把整条原文一次塞进上下文。
+    """
+
+    case_id: str = Field(min_length=1, description="已注册的 Case ID")
+    comment_id: str = Field(min_length=1, max_length=200, description="issue.json 中的 comment_id")
+    offset: int = Field(default=0, ge=0, le=10_000_000, description="评论正文字符偏移")
+    limit: int = Field(default=4000, ge=1, le=20_000, description="本页最多返回的字符数")

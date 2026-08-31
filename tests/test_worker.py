@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -15,6 +16,50 @@ CONFIG = AgentConfig(
     llm_model="model",
     max_steps=12,
 )
+
+
+def write_jira_case(path, issue_key="APP-42", comments=None):
+    path.mkdir(parents=True, exist_ok=True)
+    comments = comments or []
+    issue = {
+        "key": issue_key,
+        "summary": "黑屏",
+        "description": "启动后黑屏",
+        "environment": "bench",
+        "comments": comments,
+    }
+    issue_text = json.dumps(issue, ensure_ascii=False, indent=2)
+    issue_bytes = issue_text.encode("utf-8")
+    (path / "issue.json").write_bytes(issue_bytes)
+    (path / "issue.md").write_text("# Issue", encoding="utf-8")
+    (path / "collection-manifest.json").write_text(json.dumps({
+        "schema_version": 2,
+        "source": "jira",
+        "root_issue": issue_key,
+        "root_issue_context": {
+            "version": 1,
+            "comments": {
+                "total": len(comments),
+                "collected": len(comments),
+                "complete": True,
+                "truncated": False,
+            },
+        },
+        "issue_json_sha256": hashlib.sha256(issue_bytes).hexdigest(),
+    }), encoding="utf-8")
+
+
+def compiler_json(comment_ids=None):
+    ids = ["issue-description", *(comment_ids or [])]
+    return json.dumps({"sources": [{
+        "source_id": source_id,
+        "current_status": ["当前黑屏"],
+        "conclusions": [],
+        "attempted_actions": [],
+        "next_steps": [],
+        "clues": ["SurfaceFlinger"],
+        "open_questions": [],
+    } for source_id in ids]}, ensure_ascii=False)
 
 
 def report_json(conclusion_status="confirmed"):
@@ -45,13 +90,13 @@ def report_json(conclusion_status="confirmed"):
 class FakeProvider:
     def __init__(self, config, response):
         self.config = config
-        self.response = response
+        self.responses = list(response) if isinstance(response, list) else [response]
         self.closed = False
         self.messages = []
 
     async def complete(self, messages, tools):
         self.messages.append(messages)
-        return {"content": self.response}
+        return {"content": self.responses.pop(0)}
 
     async def close(self):
         self.closed = True
@@ -117,14 +162,28 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
 @pytest.mark.anyio
 async def test_jira_worker_connects_jira_and_log_and_maps_insufficient_result(tmp_path, monkeypatch):
     monkeypatch.setenv("JIRA_EXPORT_ROOT", str(tmp_path))
-    harness = Harness(report_json("insufficient_evidence"))
-    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+    case_path = tmp_path / "APP-42"
+    write_jira_case(case_path, comments=[{
+        "comment_id": "c-1", "author": "Tester", "body": "复现后黑屏",
+        "created_at": "2026-08-28T10:00:00+08:00", "updated_at": None,
+    }])
+    harness = Harness([compiler_json(["c-1"]), report_json("insufficient_evidence")])
+
+    async def fake_export(task, router):
+        return case_path
+
+    worker = BugAnalysisWorker(
+        CONFIG, harness.provider_factory, harness.router_factory,
+        jira_exporter=fake_export,
+    )
 
     result = await worker.execute(BugAnalysisTask(source="jira", issue_key="app-42"))
 
-    assert result.status == "insufficient_evidence"
+    assert result.status == "insufficient_evidence", result.error
     assert [item[0] for item in harness.router.connections] == ["jira", "log"]
-    assert "APP-42" in harness.provider.messages[0][1]["content"]
+    # 首次模型调用是 Comment Compiler，第二次才是主 Agent。
+    assert "复现后黑屏" in harness.provider.messages[0][1]["content"]
+    assert "COMPILED_JIRA_CONTEXT" in harness.provider.messages[1][1]["content"]
 
 
 @pytest.mark.anyio
@@ -150,7 +209,8 @@ async def test_worker_closes_provider_when_local_path_is_invalid(tmp_path):
 
     assert result.status == "failed"
     assert "Case 目录不存在" in (result.error or "")
-    assert harness.provider.closed is True
+    # 本地输入路径在 Provider 创建前校验，失败时不会建立外部模型连接。
+    assert harness.provider is None
 
 
 @pytest.mark.anyio
@@ -194,6 +254,7 @@ async def test_run_record_is_written_with_full_trace(tmp_path):
     assert result.trace == []
     assert isinstance(record["trace"], list)
     assert record["agent_status"] == "completed"
+    assert list(run_file.parent.glob("*.tmp")) == []
 
 
 @pytest.mark.anyio

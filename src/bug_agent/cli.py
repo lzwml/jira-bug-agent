@@ -216,6 +216,8 @@ def _run_jira_collection(args: argparse.Namespace) -> int:
         if (args.export_case or args.prepare) and context.success:
             exported = service.dispatch("export_issue_case", {
                 "issue_key": args.issue_key.upper(),
+                # 本地 Jira Case 必须带有可验证的完整评论快照。
+                "max_comments": args.max_comments,
                 "include_attachments": not args.no_attachments,
                 "include_related_issues": not args.no_related,
                 "include_related_attachments": not args.no_attachments,

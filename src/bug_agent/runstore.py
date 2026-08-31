@@ -20,13 +20,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from .contracts import BugAnalysisResult, BugAnalysisTask
 from .models import AgentRunResult
 
 logger = logging.getLogger(__name__)
+SAFE_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 
 def resolve_run_dir(task: BugAnalysisTask) -> Path | None:
@@ -60,6 +64,7 @@ def build_run_record(
     task: BugAnalysisTask,
     run: AgentRunResult | None,
     result: BugAnalysisResult,
+    context_metadata: dict | None = None,
 ) -> dict:
     """组装要落盘的完整 run 记录。
 
@@ -78,6 +83,8 @@ def build_run_record(
         "trace": [event.model_dump() for event in (run.tool_events if run else [])],
         "agent_status": run.status if run else None,
         "agent_error": run.error if run else None,
+        # 只保存完整性/编译元数据和压缩摘要，不复制 issue.json 中的评论原文。
+        "jira_context": context_metadata,
     }
 
 
@@ -85,6 +92,7 @@ def write_run_record(
     task: BugAnalysisTask,
     run: AgentRunResult | None,
     result: BugAnalysisResult,
+    context_metadata: dict | None = None,
 ) -> Path | None:
     """把 run 记录写入 .bug-agent/runs/<task_id>.json，返回路径。
 
@@ -98,12 +106,27 @@ def write_run_record(
             logger.warning("无法确定 run 落盘位置，跳过记录 (task_id=%s)", task.task_id)
             return None
         run_dir.mkdir(parents=True, exist_ok=True)
-        record = build_run_record(task, run, result)
-        out_path = run_dir / f"{task.task_id}.json"
-        out_path.write_text(
-            json.dumps(record, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        if SAFE_TASK_ID.fullmatch(task.task_id) is None:
+            logger.warning("task_id 不能安全用作文件名，跳过记录")
+            return None
+        record = build_run_record(task, run, result, context_metadata)
+        resolved_run_dir = run_dir.resolve()
+        out_path = (resolved_run_dir / f"{task.task_id}.json").resolve(strict=False)
+        try:
+            out_path.relative_to(resolved_run_dir)
+        except ValueError:
+            logger.warning("run 记录路径逃出目标目录，跳过记录")
+            return None
+        temp_path = resolved_run_dir / f".{task.task_id}.{uuid4().hex}.tmp"
+        try:
+            with temp_path.open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, indent=2, default=str))
+                stream.flush()
+                os.fsync(stream.fileno())
+            temp_path.replace(out_path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
         return out_path
     except OSError as exc:
         logger.warning("run 记录落盘失败 (task_id=%s): %s", task.task_id, exc)

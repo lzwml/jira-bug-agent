@@ -11,6 +11,7 @@ ToolResult，因此可以脱离 MCP 单独测试，也可以被其他 Runtime �
 from __future__ import annotations
 
 from collections import Counter, deque
+import json
 import sqlite3
 from typing import Callable
 
@@ -38,6 +39,7 @@ from .domain import (
     Evidence,
     ExtractArchiveMembersInput,
     ExtractTimelineInput,
+    GetCaseCommentInput,
     InspectCaseInput,
     InspectArchiveInput,
     OpenCaseInput,
@@ -71,6 +73,7 @@ class LogAnalyzerService:
             "search_evidence": self.search_evidence,
             "extract_timeline": self.extract_timeline,
             "parse_diagnostics": self.parse_diagnostics,
+            "get_case_comment": self.get_case_comment,
         }
 
     def dispatch(self, name: str, arguments: dict) -> ToolResult:
@@ -917,4 +920,54 @@ class LogAnalyzerService:
             "finding_count": len(findings),
             "truncated": truncated,
             "search_mode": "hybrid" if selected_indexed_ids and artifacts else ("index" if selected_indexed_ids else "stream"),
+        })
+
+    # ------------------------------------------------------------------
+    # get_case_comment —— 按 comment_id 精读 Jira 评论原文
+    # ------------------------------------------------------------------
+
+    def get_case_comment(self, **kwargs) -> ToolResult:
+        """从已注册 Case 的 issue.json 读取一条评论，并按字符分页返回。"""
+        params = GetCaseCommentInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        case_root = entry[0]
+        issue_json_path = case_root / "issue.json"
+        if not issue_json_path.is_file():
+            return make_error("ISSUE_JSON_NOT_FOUND", "Case 根目录下不存在 issue.json")
+        try:
+            resolved = issue_json_path.resolve(strict=True)
+            resolved.relative_to(case_root)
+            issue_data = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            return make_error("ISSUE_JSON_INVALID", "issue.json 无法安全读取或解析")
+        raw_comments = issue_data.get("comments") if isinstance(issue_data, dict) else None
+        if not isinstance(raw_comments, list):
+            return make_error("ISSUE_JSON_NO_COMMENTS", "issue.json 中未找到 comments 数组")
+        matched = next((
+            item for item in raw_comments
+            if isinstance(item, dict) and str(item.get("comment_id") or item.get("id") or "") == params.comment_id
+        ), None)
+        if matched is None:
+            return make_error("COMMENT_NOT_FOUND", f"未找到 comment_id={params.comment_id} 的评论")
+        body = str(matched.get("body") or matched.get("comment") or "")
+        fragment = body[params.offset:params.offset + params.limit]
+        next_offset = params.offset + len(fragment)
+        has_more = next_offset < len(body)
+        author = matched.get("author")
+        if isinstance(author, dict):
+            author = author.get("displayName") or author.get("display_name") or author.get("name")
+        return make_success({
+            "case_id": params.case_id,
+            "comment_id": params.comment_id,
+            "author": author,
+            "created_at": matched.get("created_at") or matched.get("created"),
+            "updated_at": matched.get("updated_at") or matched.get("updated"),
+            "body": fragment,
+            "offset": params.offset,
+            "returned_chars": len(fragment),
+            "total_chars": len(body),
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
         })

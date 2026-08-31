@@ -15,7 +15,12 @@ from .models import ToolEvent
 
 
 class BugAnalysisTask(BaseModel):
-    task_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1, max_length=200)
+    task_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
     source: Literal["jira", "local"]
     issue_key: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
     case_path: str | None = None

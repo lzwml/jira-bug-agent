@@ -41,6 +41,7 @@ from .domain import (
     BuildIndexInput,
     ExtractArchiveMembersInput,
     ExtractTimelineInput,
+    GetCaseCommentInput,
     InspectArchiveInput,
     InspectCaseInput,
     OpenCaseInput,
@@ -115,6 +116,10 @@ TOOL_DEFINITIONS = {
     "parse_diagnostics": (
         "从 Case 中提取 SELinux AVC、Kernel Call Trace、Fatal 和 ANR 等结构化诊断发现。",
         ParseDiagnosticsInput,
+    ),
+    "get_case_comment": (
+        "按 comment_id 从已注册 Jira Case 的 issue.json 读取一条评论原文；offset/limit 用于字符分页，不接收裸文件路径。",
+        GetCaseCommentInput,
     ),
 }
 

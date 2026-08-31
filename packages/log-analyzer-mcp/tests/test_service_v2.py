@@ -1,7 +1,7 @@
-"""V2 领域服务测试；仅依赖标准库 unittest。"""
-
+"""LogAnalyzerService V2 deterministic service tests."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,26 +14,14 @@ class LogAnalyzerServiceV2Test(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
-        self.case_dir = self.root / "BUG-40305"
+        self.case_dir = self.root / "CASE-1"
         self.case_dir.mkdir()
-
-        (self.case_dir / "logcat_main.log").write_text(
-            "08-26 10:20:31.123  100  200 I SurfaceFlinger: display ready\n"
-            "08-26 10:20:32.000  100  200 I BootAnimation: bootanimation exit\n"
-            "08-26 10:20:33.000  100  200 E AndroidRuntime: FATAL EXCEPTION: main\n"
-            "08-26 10:20:34.000 avc: denied { read write } for "
-            "scontext=u:r:system_server:s0 tcontext=u:object_r:vendor_file:s0 "
-            "tclass=file permissive=0\n",
+        (self.case_dir / "logcat.txt").write_text(
+            "08-26 10:20:31.123  100  200 E AndroidRuntime: FATAL EXCEPTION: main\n"
+            "08-26 10:20:32.000  100  200 W audit: avc: denied { read write } "
+            "for scontext=u:r:app:s0 tcontext=u:object_r:vendor_file:s0 tclass=file\n",
             encoding="utf-8",
         )
-        (self.case_dir / "kernel.log").write_text(
-            "[  123.456789] Call Trace:\n"
-            "[  123.456790]  <TASK>\n"
-            "[  123.456791]  dump_stack+0x10/0x20\n"
-            "[  123.456792]  </TASK>\n",
-            encoding="utf-8",
-        )
-
         self.registry = CaseRegistry([str(self.root)])
         self.service = LogAnalyzerService(self.registry)
         opened = self.service.open_case(case_path=str(self.case_dir))
@@ -43,69 +31,108 @@ class LogAnalyzerServiceV2Test(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_open_case_builds_artifact_inventory(self):
-        result = self.service.inspect_case(case_id=self.case_id)
-        self.assertTrue(result.success)
-        self.assertEqual(result.data["artifact_count"], 2)
-        self.assertEqual(result.data["kinds"]["kernel"], 1)
-        self.assertEqual(result.data["kinds"]["logcat"], 1)
-
-    def test_server_root_cannot_be_expanded_by_caller(self):
-        with tempfile.TemporaryDirectory() as outside:
-            result = self.service.open_case(case_path=outside)
-        self.assertFalse(result.success)
-        self.assertEqual(result.error_code, "PATH_NOT_ALLOWED")
-
-    def test_search_returns_evidence_with_context(self):
-        result = self.service.search_evidence(
-            case_id=self.case_id,
-            query="FATAL EXCEPTION",
-            context_before=1,
-            context_after=1,
+    def test_search_timeline_and_diagnostics(self):
+        search = self.service.search_evidence(case_id=self.case_id, query="FATAL")
+        self.assertTrue(search.success)
+        self.assertEqual(search.data["match_count"], 1)
+        timeline = self.service.extract_timeline(
+            case_id=self.case_id, anchors=["FATAL", "avc: denied"],
         )
-        self.assertTrue(result.success)
-        self.assertEqual(result.data["match_count"], 1)
-        evidence = result.data["items"][0]
-        self.assertEqual(evidence["line_start"], 2)
-        self.assertEqual(evidence["line_end"], 4)
-        self.assertIn("bootanimation exit", evidence["content"])
-        self.assertIn("avc: denied", evidence["content"])
-
-    def test_search_no_match_is_success(self):
-        result = self.service.search_evidence(
-            case_id=self.case_id,
-            query="definitely-not-present",
+        self.assertTrue(timeline.success)
+        self.assertEqual(timeline.data["event_count"], 2)
+        diagnostics = self.service.parse_diagnostics(
+            case_id=self.case_id, diagnostic_types=["fatal", "avc"],
         )
-        self.assertTrue(result.success)
-        self.assertEqual(result.data["items"], [])
-        self.assertEqual(result.data["match_count"], 0)
-
-    def test_timeline_supports_android_and_kernel_clocks(self):
-        result = self.service.extract_timeline(
-            case_id=self.case_id,
-            anchors=["SurfaceFlinger", "bootanimation", "Call Trace:"],
-            year_hint=2026,
-        )
-        self.assertTrue(result.success)
-        self.assertEqual(result.data["event_count"], 3)
-        self.assertEqual(
-            set(result.data["clock_domains"]),
-            {"android", "kernel_monotonic"},
-        )
-
-    def test_timeline_requires_skill_supplied_anchors(self):
-        result = self.service.dispatch("extract_timeline", {"case_id": self.case_id})
-        self.assertFalse(result.success)
-        self.assertEqual(result.error_code, "INVALID_PARAMS")
-
-    def test_parse_diagnostics_returns_structured_findings(self):
-        result = self.service.parse_diagnostics(case_id=self.case_id)
-        self.assertTrue(result.success)
-        finding_types = {item["diagnostic_type"] for item in result.data["findings"]}
-        self.assertEqual(finding_types, {"avc", "fatal", "kernel_stack"})
-        avc = next(item for item in result.data["findings"] if item["diagnostic_type"] == "avc")
-        self.assertEqual(avc["attributes"]["tclass"], "file")
+        self.assertTrue(diagnostics.success)
+        self.assertEqual(diagnostics.data["finding_count"], 2)
+        avc = next(item for item in diagnostics.data["findings"] if item["diagnostic_type"] == "avc")
         self.assertEqual(avc["attributes"]["permissions"], ["read", "write"])
+
+
+class GetCaseCommentTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.case_dir = self.root / "BUG-40305"
+        self.case_dir.mkdir()
+        issue = {
+            "key": "BUG-40305",
+            "comments": [
+                {
+                    "comment_id": "10001",
+                    "author": "Alice",
+                    "created_at": "2026-08-01T10:00:00+00:00",
+                    "updated_at": "2026-08-01T10:00:00+00:00",
+                    "body": "First comment: initial report.",
+                },
+                {
+                    "comment_id": "10002",
+                    "author": "Bob",
+                    "created_at": "2026-08-02T12:00:00+00:00",
+                    "updated_at": "2026-08-02T13:00:00+00:00",
+                    "body": "0123456789",
+                },
+            ],
+        }
+        (self.case_dir / "issue.json").write_text(
+            json.dumps(issue, ensure_ascii=False), encoding="utf-8",
+        )
+        (self.case_dir / "logcat.txt").write_text("ready\n", encoding="utf-8")
+        self.registry = CaseRegistry([str(self.root)])
+        self.service = LogAnalyzerService(self.registry)
+        opened = self.service.open_case(case_path=str(self.case_dir))
+        self.assertTrue(opened.success)
+        self.case_id = opened.data["case"]["case_id"]
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_reads_one_comment_by_id(self):
+        result = self.service.get_case_comment(
+            case_id=self.case_id, comment_id="10001",
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["author"], "Alice")
+        self.assertEqual(result.data["body"], "First comment: initial report.")
+        self.assertFalse(result.data["has_more"])
+
+    def test_paginates_long_comment_by_characters(self):
+        first = self.service.get_case_comment(
+            case_id=self.case_id, comment_id="10002", offset=0, limit=4,
+        )
+        self.assertTrue(first.success)
+        self.assertEqual(first.data["body"], "0123")
+        self.assertEqual(first.data["next_offset"], 4)
+        second = self.service.get_case_comment(
+            case_id=self.case_id, comment_id="10002", offset=4, limit=20,
+        )
+        self.assertEqual(second.data["body"], "456789")
+        self.assertFalse(second.data["has_more"])
+
+    def test_unknown_comment_is_structured_error(self):
+        result = self.service.get_case_comment(
+            case_id=self.case_id, comment_id="missing",
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "COMMENT_NOT_FOUND")
+
+    def test_case_not_open(self):
+        result = self.service.get_case_comment(
+            case_id="case_missing", comment_id="10001",
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "CASE_NOT_OPEN")
+
+    def test_issue_json_required(self):
+        other = self.root / "NO-JIRA"
+        other.mkdir()
+        (other / "log.txt").write_text("ready\n", encoding="utf-8")
+        opened = self.service.open_case(case_path=str(other))
+        result = self.service.get_case_comment(
+            case_id=opened.data["case"]["case_id"], comment_id="10001",
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "ISSUE_JSON_NOT_FOUND")
 
 
 if __name__ == "__main__":

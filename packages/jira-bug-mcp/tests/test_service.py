@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -157,8 +158,9 @@ class JiraServiceTest(unittest.TestCase):
         self.assertEqual(issue["subtask_keys"], ["APP-43"])
         self.assertEqual(issue["issue_links"][0]["target_key"], "APP-99")
         self.assertEqual(issue["extra_fields"], {"customfield_12345": "IVI"})
-        self.assertEqual(result.data["collection"]["comments_collected"], 1)
-        self.assertFalse(result.data["collection"]["comments_truncated"])
+        self.assertEqual(result.data["collection"]["collected"], 1)
+        self.assertFalse(result.data["collection"]["truncated"])
+        self.assertTrue(result.data["collection"]["complete"])
 
     def test_connection_reports_safe_server_metadata(self):
         result = self.service.dispatch("test_connection", {})
@@ -192,6 +194,20 @@ class JiraServiceTest(unittest.TestCase):
         self.assertFalse((case / "related" / "APP-88" / "issue.json").exists())
         manifest = (case / "collection-manifest.json").read_text(encoding="utf-8")
         self.assertIn('"to_issue": "APP-99"', manifest)
+        manifest_data = json.loads(manifest)
+        self.assertEqual(manifest_data["schema_version"], 2)
+        self.assertIn("root_issue_context", manifest_data)
+        self.assertEqual(manifest_data["root_issue_context"]["version"], 1)
+        self.assertIn("comments", manifest_data["root_issue_context"])
+        self.assertEqual(manifest_data["root_issue_context"]["comments"]["complete"], True)
+        self.assertEqual(manifest_data["root_issue_context"]["comments"]["collected"], 1)
+        self.assertEqual(manifest_data["root_issue_context"]["attachments_listed"], 1)
+        self.assertEqual(manifest_data["root_issue_context"]["extra_fields_collected"], ["customfield_12345"])
+
+        # Also verify root_issue_context in the return data
+        self.assertIn("root_issue_context", result.data)
+        self.assertEqual(result.data["root_issue_context"]["version"], 1)
+        self.assertEqual(result.data["root_issue_context"]["comments"]["complete"], True)
         modes = {item["issue_key"]: item["collection_mode"] for item in result.data["related_issues"]}
         self.assertEqual(modes, {"APP-99": "context", "APP-88": "attachments"})
         self.assertIn("APP-99", {item["source_issue"] for item in result.data["downloaded_attachments"]})
@@ -245,6 +261,48 @@ class JiraServiceTest(unittest.TestCase):
         self.assertEqual(len(attachment_requests), requests_after_first + 1)
         self.assertEqual(len(second.data["downloaded_attachments"]), 1)
         self.assertEqual(len(second.data["reused_attachments"]), 2)
+
+    def test_export_fails_when_root_comments_incomplete(self):
+        """严格导出：根 Issue 评论被截断时必须失败。"""
+        def truncated_transport(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path == "/rest/api/3/issue/APP-42":
+                return httpx.Response(200, json=ISSUE)
+            if path == "/rest/api/3/issue/APP-42/comment":
+                # 返回 5 条 total 但只给了 2 条，模拟截断
+                return httpx.Response(200, json={
+                    "comments": [{
+                        "id": "30001", "author": {"displayName": "Carol"},
+                        "body": {"type": "doc", "content": [{
+                            "type": "paragraph", "content": [{"type": "text", "text": "comment 1"}],
+                        }]},
+                        "created": "2026-08-26T08:00:00.000+0800",
+                    }, {
+                        "id": "30002", "author": {"displayName": "Dave"},
+                        "body": {"type": "doc", "content": [{
+                            "type": "paragraph", "content": [{"type": "text", "text": "comment 2"}],
+                        }]},
+                        "created": "2026-08-26T09:00:00.000+0800",
+                    }],
+                    "total": 5,
+                    "startAt": 0,
+                })
+            return httpx.Response(404)
+
+        config = JiraConfig(
+            base_url="https://jira.test",
+            auth_mode="none",
+            export_root=Path(self.temp.name),
+            extra_fields=("customfield_12345",),
+        )
+        client = JiraClient(config, transport=httpx.MockTransport(truncated_transport))
+        service = JiraService(client, CaseExporter(config, client))
+        try:
+            result = service.dispatch("export_issue_case", {"issue_key": "APP-42", "max_comments": 2})
+        finally:
+            client.close()
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "INCOMPLETE_COMMENTS")
 
     def test_invalid_issue_key_is_a_contract_error(self):
         result = self.service.dispatch("get_issue", {"issue_key": "../../secret"})

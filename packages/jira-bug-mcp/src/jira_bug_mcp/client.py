@@ -13,7 +13,7 @@ from urllib.parse import quote, urljoin, urlparse
 import httpx
 
 from .config import JiraConfig
-from .domain import JiraAttachment, JiraComment, JiraIssue, JiraIssueLink
+from .domain import JiraAttachment, JiraComment, JiraCommentCollection, JiraIssue, JiraIssueLink
 from .errors import JiraApiError
 
 
@@ -252,22 +252,31 @@ class JiraClient:
         issue_key: str,
         include_comments: bool = True,
         max_comments: int = 1000,
-    ) -> tuple[JiraIssue, bool]:
+    ) -> tuple[JiraIssue, JiraCommentCollection]:
         """收集一个 Issue 的完整静态上下文。
 
         get_issue 中内嵌的 comment 可能被 Jira 截断，因此聚合工具
-        单独分页读取。返回值中的 bool 表示是否因 max_comments 截断。
+        单独分页读取，并返回可供导出和 Worker 验证的完整性元数据。
         """
 
         issue = self.get_issue(issue_key, include_comments=False)
         if not include_comments or max_comments == 0:
-            return issue, False
+            return issue, JiraCommentCollection(
+                requested=False,
+                total=None,
+                collected=0,
+                truncated=False,
+                complete=False,
+                max_comments=max_comments,
+            )
         comments: list[JiraComment] = []
         start_at = 0
         truncated = False
+        total: int | None = None
         while len(comments) < max_comments:
             page = self.get_comments(issue_key, min(100, max_comments - len(comments)), start_at)
             comments.extend(page["items"])
+            total = page["total"]
             next_start = page["next_start_at"]
             if next_start is None:
                 break
@@ -276,7 +285,15 @@ class JiraClient:
                 break
             start_at = next_start
         issue.comments = comments
-        return issue, truncated
+        complete = total is not None and not truncated and len(comments) == total
+        return issue, JiraCommentCollection(
+            requested=True,
+            total=total,
+            collected=len(comments),
+            truncated=truncated or not complete,
+            complete=complete,
+            max_comments=max_comments,
+        )
 
     def get_server_info(self) -> dict:
         """验证 Jira 网络、认证与 REST 版本，不读取业务 Issue。"""

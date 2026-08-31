@@ -18,10 +18,15 @@ def test_task_rejects_mixed_jira_and_local_references():
         BugAnalysisTask(source="jira", issue_key="APP-1", case_path="C:/case")
 
 
+@pytest.mark.parametrize("task_id", ["../escape", "folder/name", r"folder\name", "C:target"])
+def test_task_rejects_unsafe_task_id(task_id):
+    with pytest.raises(ValidationError):
+        BugAnalysisTask(task_id=task_id, source="jira", issue_key="APP-1")
+
+
 def test_evidence_rejects_reversed_line_range():
     with pytest.raises(ValidationError):
         EvidenceReference(
             evidence_id="ev-1", relative_path="logcat.txt",
             line_start=20, line_end=10,
         )
-

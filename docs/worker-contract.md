@@ -59,3 +59,21 @@ BugAnalysisResult
 
 Worker 会把成功加载的名称写入 `applied_skills`。不存在、路径不安全、frontmatter
 不完整或超过预算的 Skill 会让任务在调用模型和 MCP 前失败。
+
+## Jira 评论硬前置条件
+
+Jira 模式和 Jira 导出的 Local Case 都必须在主 Agent 启动前证明根 Issue 的评论已
+完整分页收集。`collection-manifest.json` 的 `root_issue_context.comments` 记录 Jira
+报告总数、实际收集数量和截断状态；缺少该元数据、数量不一致、评论被截断或
+`issue.json` 哈希不匹配时，Worker 返回 `failed`，不会让模型基于残缺上下文分析。
+
+完整描述与评论不会直接塞入主 Agent。Worker 先通过 Comment Compiler 分块读取并
+生成带 `comment_id` 来源的结构化摘要；主 Agent只接收摘要。需要核对某条评论原文时，
+可通过 Log MCP 的 `get_case_comment(case_id, comment_id, offset, limit)` 分页读取。
+纯本地日志 Case 不受 Jira 评论完整性规则约束。
+
+旧版导出的 Jira Case 没有完整性元数据，需要重新导出：
+
+```powershell
+uv run bug-agent collect-jira APP-42 --export-case
+```

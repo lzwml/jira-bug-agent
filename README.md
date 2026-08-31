@@ -129,6 +129,12 @@ Workflow 应显式传入一个主要症状 Skill；故障类型未知时先使�
 Skill 决定分析顺序、时间线锚点和证据标准；解析、路径权限和扫描预算仍由
 Core/MCP 代码保证。不要把正则解析器或文件操作写进 Skill。
 
+对于 Jira 模式或 Jira 导出的本地 Case，Worker 会在主分析开始前校验根 Issue 的
+全部评论已经完成分页收集。描述和评论先由 Comment Compiler 分块压缩成带
+`comment_id` 引用的结构化摘要，避免全量原文长期占用主 Agent 上下文；需要核对
+精确措辞时再调用 `get_case_comment` 按 ID 分页读取。旧版 Case 缺少完整性元数据时
+会严格拒绝分析，需要重新执行 `collect-jira <KEY> --export-case`。
+
 Agent 默认不会先把所有附件全量解压。它先用 `inspect_case` 判断 Case 规模，
 再用 `inspect_archive` 查看候选归档的成员清单；结合 Jira 中的问题症状、发生
 时间、日志域、文件名和大小选择成员，通过 `extract_archive_members` 解压，并

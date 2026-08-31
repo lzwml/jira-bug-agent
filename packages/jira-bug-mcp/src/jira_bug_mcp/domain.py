@@ -34,6 +34,15 @@ class JiraComment(BaseModel):
     updated_at: str | None = None
 
 
+class JiraCommentCollection(BaseModel):
+    requested: bool
+    total: int | None = Field(default=None, ge=0)
+    collected: int = Field(ge=0)
+    truncated: bool
+    complete: bool
+    max_comments: int = Field(ge=0)
+
+
 class JiraIssueLink(BaseModel):
     """归一化后的 Issue 关联。
 
@@ -105,6 +114,7 @@ class CollectIssueContextInput(BaseModel):
 
 class ExportIssueCaseInput(BaseModel):
     issue_key: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+    max_comments: int = Field(default=5000, ge=1, le=5000)
     include_attachments: bool = True
     attachment_ids: list[str] = Field(default_factory=list, max_length=100)
     max_attachments: int = Field(default=30, ge=0, le=100)

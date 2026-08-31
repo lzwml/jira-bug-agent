@@ -16,7 +16,13 @@ class AgentConfig:
     llm_model: str
     max_steps: int = 12
     llm_timeout_seconds: float = 120.0
+    llm_max_retries: int = 2
+    llm_retry_base_seconds: float = 1.0
     max_tool_result_chars: int = 40_000
+    # Jira 原文读取硬上限；原文不会直接注入主 Agent，而是先分块编译。
+    jira_initial_context_max_chars: int = 1_000_000
+    jira_context_chunk_chars: int = 24_000
+    jira_context_summary_max_chars: int = 30_000
 
     @classmethod
     def from_environment(cls) -> "AgentConfig":
@@ -39,13 +45,33 @@ class AgentConfig:
         max_tool_chars = int(os.getenv("BUG_AGENT_MAX_TOOL_RESULT_CHARS", "40000"))
         if max_tool_chars < 1000:
             raise ValueError("BUG_AGENT_MAX_TOOL_RESULT_CHARS 不能小于 1000")
+        max_retries = int(os.getenv("BUG_AGENT_LLM_MAX_RETRIES", "2"))
+        if not 0 <= max_retries <= 10:
+            raise ValueError("BUG_AGENT_LLM_MAX_RETRIES 必须在 0..10 之间")
+        retry_base_seconds = float(os.getenv("BUG_AGENT_LLM_RETRY_BASE_SECONDS", "1"))
+        if not 0 <= retry_base_seconds <= 60:
+            raise ValueError("BUG_AGENT_LLM_RETRY_BASE_SECONDS 必须在 0..60 之间")
+        jira_context_max_chars = int(os.getenv("BUG_AGENT_JIRA_CONTEXT_MAX_CHARS", "1000000"))
+        if not 4000 <= jira_context_max_chars <= 10_000_000:
+            raise ValueError("BUG_AGENT_JIRA_CONTEXT_MAX_CHARS 必须在 4000..10000000 之间")
+        jira_chunk_chars = int(os.getenv("BUG_AGENT_JIRA_CONTEXT_CHUNK_CHARS", "24000"))
+        if not 4000 <= jira_chunk_chars <= 100_000:
+            raise ValueError("BUG_AGENT_JIRA_CONTEXT_CHUNK_CHARS 必须在 4000..100000 之间")
+        jira_summary_chars = int(os.getenv("BUG_AGENT_JIRA_CONTEXT_SUMMARY_MAX_CHARS", "30000"))
+        if not 4000 <= jira_summary_chars <= 200_000:
+            raise ValueError("BUG_AGENT_JIRA_CONTEXT_SUMMARY_MAX_CHARS 必须在 4000..200000 之间")
         return cls(
             llm_base_url=base_url,
             llm_api_key=api_key,
             llm_model=model,
             max_steps=max_steps,
             llm_timeout_seconds=float(os.getenv("BUG_AGENT_LLM_TIMEOUT_SECONDS", "120")),
+            llm_max_retries=max_retries,
+            llm_retry_base_seconds=retry_base_seconds,
             max_tool_result_chars=max_tool_chars,
+            jira_initial_context_max_chars=jira_context_max_chars,
+            jira_context_chunk_chars=jira_chunk_chars,
+            jira_context_summary_max_chars=jira_summary_chars,
         )
 
 

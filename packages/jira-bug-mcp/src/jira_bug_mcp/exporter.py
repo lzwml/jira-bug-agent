@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import re
@@ -131,6 +133,7 @@ class CaseExporter:
     def export(
         self,
         issue_key: str,
+        max_comments: int,
         include_attachments: bool,
         attachment_ids: list[str],
         max_attachments: int,
@@ -141,9 +144,18 @@ class CaseExporter:
         max_related_attachments: int = 30,
     ) -> dict:
         # 复用聚合收集逻辑，确保 MCP 查询与本地 Case 中的字段语义一致。
-        issue, _comments_truncated = self.client.collect_issue_context(
-            issue_key, include_comments=True, max_comments=1000,
+        issue, root_comment_collection = self.client.collect_issue_context(
+            issue_key, include_comments=True, max_comments=max_comments,
         )
+        # 严格导出：根 Issue 评论不完整则拒绝导出，避免 Agent 基于截断数据做出错误判断。
+        if root_comment_collection.requested and not root_comment_collection.complete:
+            raise JiraApiError(
+                "INCOMPLETE_COMMENTS",
+                f"根 Issue {issue.key} 评论收集不完整 "
+                f"(total={root_comment_collection.total}, collected={root_comment_collection.collected}, "
+                f"truncated={root_comment_collection.truncated})；请提高 max_comments 后重试。",
+                True,
+            )
         root = self.config.export_root.resolve()
         root.mkdir(parents=True, exist_ok=True)
         case_dir = (root / issue.key.upper()).resolve()
@@ -153,7 +165,8 @@ class CaseExporter:
 
         issue_json = case_dir / "issue.json"
         issue_md = case_dir / "issue.md"
-        _atomic_text(issue_json, json.dumps(issue.model_dump(), ensure_ascii=False, indent=2))
+        issue_json_text = json.dumps(issue.model_dump(), ensure_ascii=False, indent=2)
+        _atomic_text(issue_json, issue_json_text)
         _atomic_text(issue_md, _markdown(issue))
         exported = [issue_json.name, issue_md.name]
         downloaded: list[dict] = []
@@ -290,10 +303,10 @@ class CaseExporter:
             try:
                 if collection_mode == "attachments":
                     related = self.client.get_issue_attachment_source(related_key)
-                    comments_truncated = False
+                    comment_collection = None
                 else:
-                    related, comments_truncated = self.client.collect_issue_context(
-                        related_key, include_comments=True, max_comments=1000,
+                    related, comment_collection = self.client.collect_issue_context(
+                        related_key, include_comments=True, max_comments=max_comments,
                     )
             except JiraApiError as exc:
                 related_skipped.append({
@@ -329,7 +342,7 @@ class CaseExporter:
                 "depth": depth,
                 "collection_mode": collection_mode,
                 "discovered_from": discovery,
-                "comments_truncated": comments_truncated,
+                "comment_collection": comment_collection.model_dump() if comment_collection else None,
                 "attachment_count": len(related.attachments),
             })
 
@@ -357,7 +370,20 @@ class CaseExporter:
             } for key, _depth, discovery in queue if key not in seen)
 
         manifest = {
+            "schema_version": 2,
+            "source": "jira",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
             "root_issue": issue.key,
+            "root_issue_updated_at": issue.updated_at,
+            "root_issue_context": {
+                "version": 1,
+                "comments": root_comment_collection.model_dump(),
+                "attachments_listed": len(issue.attachments),
+                "extra_fields_collected": list(issue.extra_fields),
+            },
+            # _atomic_text 在 Windows 上会把 \n 写成 \r\n；对最终落盘字节取哈希，
+            # 确保 Worker 跨平台校验时不会误报篡改。
+            "issue_json_sha256": hashlib.sha256(issue_json.read_bytes()).hexdigest(),
             "relationships": relationships,
             "related_issues": related_issues,
             "related_skipped": related_skipped,
@@ -375,6 +401,12 @@ class CaseExporter:
             "skipped_attachments": skipped,
             "downloaded_bytes": network_downloaded,
             "attachment_bytes": total,
+            "root_issue_context": {
+                "version": 1,
+                "comments": root_comment_collection.model_dump(),
+                "attachments_listed": len(issue.attachments),
+                "extra_fields_collected": list(issue.extra_fields),
+            },
             "related_issues": related_issues,
             "related_skipped": related_skipped,
             "relationship_count": len(relationships),

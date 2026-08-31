@@ -63,14 +63,16 @@ class JiraService:
 
     def collect_issue_context(self, **kwargs) -> ToolResult:
         params = CollectIssueContextInput.model_validate(kwargs)
-        issue, comments_truncated = self.client.collect_issue_context(
+        issue, comment_collection = self.client.collect_issue_context(
             params.issue_key.upper(), params.include_comments, params.max_comments,
         )
         return success({
             "issue": issue.model_dump(),
             "collection": {
-                "comments_collected": len(issue.comments),
-                "comments_truncated": comments_truncated,
+                "total": comment_collection.total,
+                "collected": comment_collection.collected,
+                "truncated": comment_collection.truncated,
+                "complete": comment_collection.complete,
                 "attachments_listed": len(issue.attachments),
                 "extra_fields_collected": list(issue.extra_fields),
             },
@@ -109,6 +111,7 @@ class JiraService:
         params = ExportIssueCaseInput.model_validate(kwargs)
         return success(self.exporter.export(
             params.issue_key.upper(),
+            params.max_comments,
             params.include_attachments,
             params.attachment_ids,
             params.max_attachments,
