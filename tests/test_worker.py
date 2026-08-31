@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
 from bug_agent.config import AgentConfig
 from bug_agent.contracts import BugAnalysisTask
+from bug_agent.provider import ProviderError
 from bug_agent.worker import BugAnalysisWorker
 
 
@@ -18,7 +20,7 @@ CONFIG = AgentConfig(
 )
 
 
-def write_jira_case(path, issue_key="APP-42", comments=None):
+def write_jira_case(path, issue_key="APP-42", comments=None, *, complete=True):
     path.mkdir(parents=True, exist_ok=True)
     comments = comments or []
     issue = {
@@ -41,8 +43,8 @@ def write_jira_case(path, issue_key="APP-42", comments=None):
             "comments": {
                 "total": len(comments),
                 "collected": len(comments),
-                "complete": True,
-                "truncated": False,
+                "complete": complete,
+                "truncated": not complete,
             },
         },
         "issue_json_sha256": hashlib.sha256(issue_bytes).hexdigest(),
@@ -96,7 +98,10 @@ class FakeProvider:
 
     async def complete(self, messages, tools):
         self.messages.append(messages)
-        return {"content": self.responses.pop(0)}
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return {"content": response}
 
     async def close(self):
         self.closed = True
@@ -167,7 +172,7 @@ async def test_jira_worker_connects_jira_and_log_and_maps_insufficient_result(tm
         "comment_id": "c-1", "author": "Tester", "body": "复现后黑屏",
         "created_at": "2026-08-28T10:00:00+08:00", "updated_at": None,
     }])
-    harness = Harness([compiler_json(["c-1"]), report_json("insufficient_evidence")])
+    harness = Harness(report_json("insufficient_evidence"))
 
     async def fake_export(task, router):
         return case_path
@@ -181,9 +186,141 @@ async def test_jira_worker_connects_jira_and_log_and_maps_insufficient_result(tm
 
     assert result.status == "insufficient_evidence", result.error
     assert [item[0] for item in harness.router.connections] == ["jira", "log"]
-    # 首次模型调用是 Comment Compiler，第二次才是主 Agent。
+    assert len(harness.provider.messages) == 1
     assert "复现后黑屏" in harness.provider.messages[0][1]["content"]
+    assert "DIRECT_JIRA_CONTEXT" in harness.provider.messages[0][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_large_jira_context_uses_bounded_compiler(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIRA_EXPORT_ROOT", str(tmp_path))
+    case_path = tmp_path / "APP-42"
+    write_jira_case(case_path, comments=[{
+        "comment_id": "c-1", "author": "Tester", "body": "X" * 5000,
+        "created_at": "2026-08-28T10:00:00+08:00", "updated_at": None,
+    }])
+    harness = Harness([compiler_json(["c-1"]), report_json()])
+
+    async def fake_export(task, router):
+        return case_path
+
+    worker = BugAnalysisWorker(
+        replace(CONFIG, jira_direct_context_max_chars=4000),
+        harness.provider_factory, harness.router_factory,
+        jira_exporter=fake_export,
+    )
+    result = await worker.execute(BugAnalysisTask(
+        task_id="compiled-mode", source="jira", issue_key="APP-42",
+    ))
+
+    assert result.status == "completed", result.error
+    assert len(harness.provider.messages) == 2
     assert "COMPILED_JIRA_CONTEXT" in harness.provider.messages[1][1]["content"]
+    record = json.loads((
+        case_path / ".bug-agent" / "runs" / "compiled-mode.json"
+    ).read_text(encoding="utf-8"))
+    assert record["jira_context"]["context_mode"] == "compiled"
+    assert record["jira_context"]["compiler_attempt_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_local_jira_case_directly_injects_all_comments(tmp_path):
+    write_jira_case(tmp_path, comments=[
+        {"comment_id": "first", "body": "FIRST_MARKER"},
+        {"comment_id": "middle", "body": "MIDDLE_MARKER"},
+        {"comment_id": "last", "body": "LAST_MARKER"},
+    ])
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    result = await worker.execute(BugAnalysisTask(source="local", case_path=str(tmp_path)))
+
+    assert result.status == "completed"
+    initial_context = harness.provider.messages[0][1]["content"]
+    assert all(marker in initial_context for marker in (
+        "FIRST_MARKER", "MIDDLE_MARKER", "LAST_MARKER",
+    ))
+
+
+@pytest.mark.anyio
+async def test_incomplete_jira_export_fails_before_log_or_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIRA_EXPORT_ROOT", str(tmp_path))
+    case_path = tmp_path / "APP-42"
+    write_jira_case(case_path, comments=[], complete=False)
+    harness = Harness(report_json())
+
+    async def fake_export(task, router):
+        return case_path
+
+    worker = BugAnalysisWorker(
+        CONFIG, harness.provider_factory, harness.router_factory,
+        jira_exporter=fake_export,
+    )
+    result = await worker.execute(BugAnalysisTask(
+        task_id="incomplete-export", source="jira", issue_key="APP-42",
+    ))
+
+    assert result.status == "failed"
+    assert "JIRA_COMMENTS_INCOMPLETE" in (result.error or "")
+    assert harness.provider is None
+    assert [item[0] for item in harness.router.connections] == ["jira"]
+    record = json.loads((
+        case_path / ".bug-agent" / "runs" / "incomplete-export.json"
+    ).read_text(encoding="utf-8"))
+    assert record["failure"]["phase"] == "context_validation"
+
+
+@pytest.mark.anyio
+async def test_jira_export_path_outside_root_is_rejected_before_provider(tmp_path, monkeypatch):
+    export_root = tmp_path / "exports"
+    outside = tmp_path / "outside" / "APP-42"
+    export_root.mkdir()
+    write_jira_case(outside)
+    monkeypatch.setenv("JIRA_EXPORT_ROOT", str(export_root))
+    harness = Harness(report_json())
+
+    async def fake_export(task, router):
+        return outside
+
+    worker = BugAnalysisWorker(
+        CONFIG, harness.provider_factory, harness.router_factory,
+        jira_exporter=fake_export,
+    )
+    result = await worker.execute(BugAnalysisTask(source="jira", issue_key="APP-42"))
+
+    assert result.status == "failed"
+    assert "超出配置的导出根目录" in (result.error or "")
+    assert harness.provider is None
+    assert [item[0] for item in harness.router.connections] == ["jira"]
+
+
+@pytest.mark.anyio
+async def test_compiler_provider_error_keeps_safe_message_and_phase(tmp_path):
+    write_jira_case(tmp_path, comments=[{
+        "comment_id": "c-1", "body": "X" * 5000,
+    }])
+    harness = Harness(ProviderError("模型服务认证或权限失败", retryable=False))
+    worker = BugAnalysisWorker(
+        replace(CONFIG, jira_direct_context_max_chars=4000),
+        harness.provider_factory, harness.router_factory,
+    )
+
+    result = await worker.execute(BugAnalysisTask(
+        task_id="compiler-provider-fail", source="local", case_path=str(tmp_path),
+    ))
+
+    assert result.status == "failed"
+    assert result.error == "模型服务认证或权限失败"
+    record = json.loads((
+        tmp_path / ".bug-agent" / "runs" / "compiler-provider-fail.json"
+    ).read_text(encoding="utf-8"))
+    assert record["failure"] == {
+        "phase": "context_compilation",
+        "error_type": "ProviderError",
+        "retryable": False,
+    }
+    assert record["jira_context"]["context_mode"] == "compiled"
+    assert record["jira_context"]["compiler_attempt_count"] == 1
 
 
 @pytest.mark.anyio
@@ -275,3 +412,4 @@ async def test_run_record_written_even_when_prepare_fails(tmp_path):
     assert record["result"]["status"] == "failed"
     assert record["trace"] == []
     assert record["agent_status"] is None
+    assert record["failure"]["phase"] == "local_validation"

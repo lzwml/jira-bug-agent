@@ -270,19 +270,43 @@ class JiraClient:
                 max_comments=max_comments,
             )
         comments: list[JiraComment] = []
+        seen_comment_ids: set[str] = set()
         start_at = 0
         truncated = False
         total: int | None = None
         while len(comments) < max_comments:
             page = self.get_comments(issue_key, min(100, max_comments - len(comments)), start_at)
-            comments.extend(page["items"])
-            total = page["total"]
+            page_items = page["items"]
+            page_total = page["total"]
+            if total is None:
+                total = page_total
+            elif page_total != total:
+                raise JiraApiError(
+                    "COMMENTS_PAGINATION_INCONSISTENT",
+                    f"Jira 评论总数在分页期间发生变化 ({total} -> {page_total})，请重试",
+                    True,
+                )
+            for comment in page_items:
+                if not comment.comment_id or comment.comment_id in seen_comment_ids:
+                    raise JiraApiError(
+                        "COMMENTS_PAGINATION_INCONSISTENT",
+                        "Jira 评论分页返回空或重复 comment_id，请重试",
+                        True,
+                    )
+                seen_comment_ids.add(comment.comment_id)
+                comments.append(comment)
             next_start = page["next_start_at"]
             if next_start is None:
                 break
             if len(comments) >= max_comments:
                 truncated = True
                 break
+            if not page_items or next_start <= start_at:
+                raise JiraApiError(
+                    "COMMENTS_PAGINATION_NO_PROGRESS",
+                    "Jira 评论分页没有向前推进，请重试",
+                    True,
+                )
             start_at = next_start
         issue.comments = comments
         complete = total is not None and not truncated and len(comments) == total

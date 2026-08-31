@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -74,9 +75,23 @@ class GetCaseCommentTest(unittest.TestCase):
                 },
             ],
         }
-        (self.case_dir / "issue.json").write_text(
-            json.dumps(issue, ensure_ascii=False), encoding="utf-8",
-        )
+        issue_bytes = json.dumps(issue, ensure_ascii=False).encode("utf-8")
+        (self.case_dir / "issue.json").write_bytes(issue_bytes)
+        (self.case_dir / "collection-manifest.json").write_text(json.dumps({
+            "schema_version": 2,
+            "source": "jira",
+            "root_issue": "BUG-40305",
+            "root_issue_context": {
+                "version": 1,
+                "comments": {
+                    "total": 2,
+                    "collected": 2,
+                    "complete": True,
+                    "truncated": False,
+                },
+            },
+            "issue_json_sha256": hashlib.sha256(issue_bytes).hexdigest(),
+        }), encoding="utf-8")
         (self.case_dir / "logcat.txt").write_text("ready\n", encoding="utf-8")
         self.registry = CaseRegistry([str(self.root)])
         self.service = LogAnalyzerService(self.registry)
@@ -115,6 +130,23 @@ class GetCaseCommentTest(unittest.TestCase):
         )
         self.assertFalse(result.success)
         self.assertEqual(result.error_code, "COMMENT_NOT_FOUND")
+
+    def test_revalidates_issue_hash_on_every_read(self):
+        issue_path = self.case_dir / "issue.json"
+        issue_path.write_text(issue_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        result = self.service.get_case_comment(
+            case_id=self.case_id, comment_id="10001",
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "JIRA_CASE_CONTEXT_TAMPERED")
+
+    def test_legacy_case_without_manifest_requires_reexport(self):
+        (self.case_dir / "collection-manifest.json").unlink()
+        result = self.service.get_case_comment(
+            case_id=self.case_id, comment_id="10001",
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "JIRA_CASE_REEXPORT_REQUIRED")
 
     def test_case_not_open(self):
         result = self.service.get_case_comment(

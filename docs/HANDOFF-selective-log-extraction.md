@@ -1,6 +1,6 @@
 # Jira Bug Agent 新会话交接
 
-更新时间：2026-08-28
+更新时间：2026-08-31
 
 ## 新会话建议开场
 
@@ -49,8 +49,8 @@ Agent Prompt、MCP 描述和 MTK Skill 已统一为：
 ```text
 完整分页收集 Jira 描述和评论
 → 写入并校验评论完整性 Manifest
-→ Comment Compiler 分块压缩，保留 comment_id 来源
-→ 主 Agent 接收结构化摘要（必要时 get_case_comment 精读原文）
+→ 小上下文直接注入完整原文；大上下文才由 Comment Compiler 有预算地分块压缩
+→ 主 Agent 接收 DIRECT/COMPILED 上下文（必要时 get_case_comment 复验后精读原文）
 → open_case
 → inspect_case
 → inspect_archive
@@ -64,6 +64,11 @@ Agent Prompt、MCP 描述和 MTK Skill 已统一为：
 
 Jira 评论现在是 Worker 的硬前置条件。旧版导出 Case 缺少完整性元数据时会拒绝分析，
 需要重新执行 `collect-jira <KEY> --export-case`；已有附件会按元数据复用。
+
+2026-08-31 的硬化还包括：Jira 评论分页无进展、重复 ID 或 total 变化时返回可重试
+错误；`get_case_comment` 每次读取都复验 Manifest、完整性元数据和 `issue.json` 哈希；
+Jira 导出与校验先于 Log MCP 和 Provider 启动；运行记录保存上下文模式、字符数、
+编译分块/尝试/重试数及失败阶段，不保存原始评论副本或 Provider 响应正文。
 
 以下仍是显式全量入口，不是 Agent 默认策略：
 
@@ -175,7 +180,7 @@ uv run bug-agent collect-jira BAIC-41409 --prepare
 最后一次完整回归：
 
 ```text
-177 passed, 1 skipped
+189 passed, 1 skipped
 ```
 
 新会话首先重新运行完整命令确认环境状态：
@@ -201,6 +206,6 @@ Skill Creator 的 `quick_validate.py` 因当前运行时没有 `PyYAML` 无法�
 
 ## 工作树注意事项
 
-工作树包含本轮以及之前 Jira MCP、Skills、安全解压、索引等大量未提交修改。
-这些都属于当前项目进度，不要使用 `git reset --hard`、`git checkout --` 或覆盖式回滚。
-先用 `git status --short` 和定向 diff 了解范围，再继续修改。
+工作树包含 2026-08-31 的 Jira 上下文硬化修改，尚未提交。它们都属于当前项目进度，
+不要使用 `git reset --hard`、`git checkout --` 或覆盖式回滚。先用 `git status --short`
+和定向 diff 了解范围，再继续修改或提交。

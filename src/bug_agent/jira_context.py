@@ -24,6 +24,7 @@ class JiraInitialContext:
     issue_key: str
     issue: dict
     comments_total: int
+    raw_text: str
 
 
 def _reexport(issue_key: str | None) -> JiraCaseValidationError:
@@ -72,6 +73,8 @@ def load_jira_initial_context(
         raise JiraCaseValidationError("JIRA_CASE_CONTEXT_MISSING", "导出 Case 缺少 issue.json")
 
     root_context = manifest.get("root_issue_context")
+    if not isinstance(root_context, dict) or root_context.get("version") != 1:
+        raise _reexport(issue_key)
     collection = root_context.get("comments") if isinstance(root_context, dict) else None
     if not isinstance(collection, dict):
         raise _reexport(issue_key)
@@ -98,7 +101,11 @@ def load_jira_initial_context(
     try:
         issue_bytes = issue_path.read_bytes()
         expected_hash = manifest["issue_json_sha256"]
-        if not isinstance(expected_hash, str):
+        if (
+            not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+            or any(char not in "0123456789abcdef" for char in expected_hash.lower())
+        ):
             raise KeyError("issue_json_sha256")
         if hashlib.sha256(issue_bytes).hexdigest() != expected_hash:
             raise JiraCaseValidationError("JIRA_CASE_CONTEXT_TAMPERED", "issue.json 与 Manifest 哈希不一致")
@@ -111,20 +118,35 @@ def load_jira_initial_context(
         raise JiraCaseValidationError("JIRA_CASE_CONTEXT_INVALID", "issue.json 必须是 JSON 对象")
     actual_key = str(issue.get("key") or "").upper()
     comments = issue.get("comments")
-    if actual_key != issue_key or not isinstance(comments, list) or len(comments) != collected:
+    comment_ids = [
+        str(item.get("comment_id") or "") if isinstance(item, dict) else ""
+        for item in comments
+    ] if isinstance(comments, list) else []
+    if (
+        actual_key != issue_key
+        or not isinstance(comments, list)
+        or len(comments) != collected
+        or any(not comment_id for comment_id in comment_ids)
+        or len(set(comment_ids)) != len(comment_ids)
+    ):
         raise JiraCaseValidationError(
-            "JIRA_CASE_CONTEXT_MISMATCH", "Issue Key 或评论数与 Manifest 不一致",
+            "JIRA_CASE_CONTEXT_MISMATCH",
+            "Issue Key、评论数或 comment_id 与 Manifest 不一致",
         )
 
-    # max_chars 只保护本地读取边界，不代表这些原文会直接注入主 Agent。
-    # 后续 Comment Compiler 会分块阅读并生成紧凑摘要。
-    context_size = len(json.dumps({
+    raw_text = json.dumps({
+        "issue_key": actual_key,
+        "summary": issue.get("summary"),
         "description": issue.get("description"),
+        "environment": issue.get("environment"),
+        "created_at": issue.get("created_at"),
+        "updated_at": issue.get("updated_at"),
         "comments": comments,
-    }, ensure_ascii=False))
+    }, ensure_ascii=False, indent=2)
+    context_size = len(raw_text)
     if context_size > max_chars:
         raise JiraCaseValidationError(
             "JIRA_CONTEXT_TOO_LARGE",
             f"完整 Jira 描述与评论共 {context_size} 字符，超过读取上限 {max_chars}",
         )
-    return JiraInitialContext(actual_key, issue, total)
+    return JiraInitialContext(actual_key, issue, total, raw_text)

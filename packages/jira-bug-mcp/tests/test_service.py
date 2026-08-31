@@ -304,6 +304,73 @@ class JiraServiceTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.error_code, "INCOMPLETE_COMMENTS")
 
+    def test_comment_pagination_fails_when_page_makes_no_progress(self):
+        def no_progress_transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/issue/APP-42":
+                return httpx.Response(200, json=ISSUE)
+            if request.url.path == "/rest/api/3/issue/APP-42/comment":
+                return httpx.Response(200, json={"comments": [], "total": 1, "startAt": 0})
+            return httpx.Response(404)
+
+        client = JiraClient(self.config, transport=httpx.MockTransport(no_progress_transport))
+        service = JiraService(client, CaseExporter(self.config, client))
+        try:
+            result = service.dispatch("collect_issue_context", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "COMMENTS_PAGINATION_NO_PROGRESS")
+        self.assertTrue(result.retryable)
+
+    def test_comment_pagination_rejects_duplicate_ids(self):
+        comment = {
+            "id": "30001", "author": {"displayName": "Carol"},
+            "body": "same", "created": "2026-08-26T08:00:00.000+0800",
+        }
+
+        def duplicate_transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/issue/APP-42":
+                return httpx.Response(200, json=ISSUE)
+            if request.url.path == "/rest/api/3/issue/APP-42/comment":
+                start = int(request.url.params.get("startAt", "0"))
+                return httpx.Response(200, json={"comments": [comment], "total": 2, "startAt": start})
+            return httpx.Response(404)
+
+        client = JiraClient(self.config, transport=httpx.MockTransport(duplicate_transport))
+        service = JiraService(client, CaseExporter(self.config, client))
+        try:
+            result = service.dispatch("collect_issue_context", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "COMMENTS_PAGINATION_INCONSISTENT")
+        self.assertTrue(result.retryable)
+
+    def test_comment_pagination_rejects_total_changes(self):
+        def changing_total_transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/issue/APP-42":
+                return httpx.Response(200, json=ISSUE)
+            if request.url.path == "/rest/api/3/issue/APP-42/comment":
+                start = int(request.url.params.get("startAt", "0"))
+                comment = {
+                    "id": str(30001 + start), "author": {"displayName": "Carol"},
+                    "body": "page", "created": "2026-08-26T08:00:00.000+0800",
+                }
+                return httpx.Response(200, json={
+                    "comments": [comment], "total": 2 if start == 0 else 3, "startAt": start,
+                })
+            return httpx.Response(404)
+
+        client = JiraClient(self.config, transport=httpx.MockTransport(changing_total_transport))
+        service = JiraService(client, CaseExporter(self.config, client))
+        try:
+            result = service.dispatch("collect_issue_context", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "COMMENTS_PAGINATION_INCONSISTENT")
+        self.assertTrue(result.retryable)
+
     def test_invalid_issue_key_is_a_contract_error(self):
         result = self.service.dispatch("get_issue", {"issue_key": "../../secret"})
         self.assertFalse(result.success)

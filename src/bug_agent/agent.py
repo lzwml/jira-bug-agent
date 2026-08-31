@@ -176,6 +176,7 @@ class BugAnalysisAgent:
                 return AgentRunResult(
                     status="failed", task=task, final_answer="", steps=step - 1,
                     tool_events=events, error=str(exc),
+                    error_type=type(exc).__name__, retryable=exc.retryable,
                 )
 
             tool_calls = message.get("tool_calls") or []

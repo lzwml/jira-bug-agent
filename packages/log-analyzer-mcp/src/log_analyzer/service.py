@@ -11,6 +11,7 @@ ToolResult，因此可以脱离 MCP 单独测试，也可以被其他 Runtime �
 from __future__ import annotations
 
 from collections import Counter, deque
+import hashlib
 import json
 import sqlite3
 from typing import Callable
@@ -934,17 +935,87 @@ class LogAnalyzerService:
             return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
         case_root = entry[0]
         issue_json_path = case_root / "issue.json"
+        manifest_path = case_root / "collection-manifest.json"
         if not issue_json_path.is_file():
             return make_error("ISSUE_JSON_NOT_FOUND", "Case 根目录下不存在 issue.json")
+        if not manifest_path.is_file():
+            return make_error(
+                "JIRA_CASE_REEXPORT_REQUIRED",
+                "Case 缺少评论完整性证明，请重新导出 Jira Case",
+            )
         try:
-            resolved = issue_json_path.resolve(strict=True)
-            resolved.relative_to(case_root)
-            issue_data = json.loads(resolved.read_text(encoding="utf-8"))
+            resolved_root = case_root.resolve(strict=True)
+            resolved_issue = issue_json_path.resolve(strict=True)
+            resolved_manifest = manifest_path.resolve(strict=True)
+            resolved_issue.relative_to(resolved_root)
+            resolved_manifest.relative_to(resolved_root)
+            manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            return make_error("JIRA_CASE_MANIFEST_INVALID", "Manifest 无法安全读取或解析")
+        if not isinstance(manifest, dict):
+            return make_error("JIRA_CASE_MANIFEST_INVALID", "Manifest 必须是 JSON 对象")
+        if manifest.get("source") != "jira" or manifest.get("schema_version") != 2:
+            return make_error(
+                "JIRA_CASE_REEXPORT_REQUIRED",
+                "Case 缺少受支持的评论完整性证明，请重新导出 Jira Case",
+            )
+        root_context = manifest.get("root_issue_context")
+        if not isinstance(root_context, dict) or root_context.get("version") != 1:
+            return make_error(
+                "JIRA_CASE_REEXPORT_REQUIRED",
+                "Case 缺少受支持的根 Issue 上下文证明，请重新导出 Jira Case",
+            )
+        collection = root_context.get("comments")
+        total = collection.get("total") if isinstance(collection, dict) else None
+        collected = collection.get("collected") if isinstance(collection, dict) else None
+        if (
+            not isinstance(total, int)
+            or isinstance(total, bool)
+            or not isinstance(collected, int)
+            or isinstance(collected, bool)
+            or total < 0
+            or collected < 0
+            or collection.get("complete") is not True
+            or collection.get("truncated") is not False
+            or collected != total
+        ):
+            return make_error(
+                "JIRA_COMMENTS_INCOMPLETE",
+                f"Jira 评论未完整收集 (total={total}, collected={collected})",
+            )
+        try:
+            issue_bytes = resolved_issue.read_bytes()
+            expected_hash = manifest.get("issue_json_sha256")
+            if (
+                not isinstance(expected_hash, str)
+                or len(expected_hash) != 64
+                or any(char not in "0123456789abcdef" for char in expected_hash.lower())
+            ):
+                return make_error("JIRA_CASE_MANIFEST_INVALID", "Manifest 缺少 issue.json 哈希")
+            if hashlib.sha256(issue_bytes).hexdigest() != expected_hash:
+                return make_error("JIRA_CASE_CONTEXT_TAMPERED", "issue.json 与 Manifest 哈希不一致")
+            issue_data = json.loads(issue_bytes.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return make_error("ISSUE_JSON_INVALID", "issue.json 无法安全读取或解析")
+        actual_key = str(issue_data.get("key") or "").upper() if isinstance(issue_data, dict) else ""
+        expected_key = str(manifest.get("root_issue") or "").upper()
         raw_comments = issue_data.get("comments") if isinstance(issue_data, dict) else None
         if not isinstance(raw_comments, list):
             return make_error("ISSUE_JSON_NO_COMMENTS", "issue.json 中未找到 comments 数组")
+        comment_ids = [
+            str(item.get("comment_id") or "") if isinstance(item, dict) else ""
+            for item in raw_comments
+        ]
+        if (
+            actual_key != expected_key
+            or len(raw_comments) != collected
+            or any(not comment_id for comment_id in comment_ids)
+            or len(set(comment_ids)) != len(comment_ids)
+        ):
+            return make_error(
+                "JIRA_CASE_CONTEXT_MISMATCH",
+                "Issue Key、评论数或 comment_id 与 Manifest 不一致",
+            )
         matched = next((
             item for item in raw_comments
             if isinstance(item, dict) and str(item.get("comment_id") or item.get("id") or "") == params.comment_id

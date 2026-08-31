@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import json
+import time
 from typing import Any
 
 from .agent import ModelProvider
@@ -35,6 +36,8 @@ class CompiledJiraContext:
     text: str
     source_ids: tuple[str, ...]
     chunk_count: int
+    attempt_count: int
+    retry_count: int
 
 
 COMPILER_SYSTEM_PROMPT = """你是 Jira 上下文编译器，不负责判断根因。
@@ -130,41 +133,81 @@ def _normalize_strings(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-async def _complete_with_retry(
-    provider: ModelProvider,
-    config: AgentConfig,
-    messages: list[dict],
-) -> dict[str, Any]:
-    """Compiler 复用 Agent 的临时 Provider 重试语义，但不消耗主 Agent 步骤。"""
-    for attempt in range(config.llm_max_retries + 1):
-        try:
-            return await provider.complete(messages, [])
-        except ProviderError as exc:
-            if not exc.retryable or attempt >= config.llm_max_retries:
-                raise
-            delay = config.llm_retry_base_seconds * (2 ** attempt)
-            if delay > 0:
-                await asyncio.sleep(delay)
-    raise RuntimeError("unreachable")
-
-
 async def compile_jira_context(
     provider: ModelProvider,
     config: AgentConfig,
     *,
     issue_key: str,
     issue: dict[str, Any],
+    metrics: dict[str, int] | None = None,
 ) -> CompiledJiraContext:
     """分块编译完整上下文；任何 source 未覆盖或输出过大都明确失败。"""
     sources = sources_from_issue(issue)
     expected_ids = {item.source_id for item in sources}
     merged: dict[str, dict[str, Any]] = {}
     chunks = _chunks(sources, config.jira_context_chunk_chars)
+    if metrics is not None:
+        metrics.update(chunk_count=len(chunks), attempt_count=0, retry_count=0)
+    if len(chunks) > config.jira_compiler_max_chunks:
+        raise ValueError(
+            "JIRA_CONTEXT_COMPILATION_BUDGET_EXCEEDED: "
+            f"需要 {len(chunks)} 个分块，超过上限 {config.jira_compiler_max_chunks}"
+        )
+    if len(chunks) > config.jira_compiler_max_attempts:
+        raise ValueError(
+            "JIRA_CONTEXT_COMPILATION_BUDGET_EXCEEDED: "
+            f"至少需要 {len(chunks)} 次模型调用，超过上限 {config.jira_compiler_max_attempts}"
+        )
+    started_at = time.monotonic()
+    attempt_count = 0
+    retry_count = 0
+
+    def remaining_seconds() -> float:
+        return config.jira_compiler_timeout_seconds - (time.monotonic() - started_at)
+
+    async def complete_with_budget(messages: list[dict]) -> dict[str, Any]:
+        nonlocal attempt_count, retry_count
+        for retry_index in range(config.llm_max_retries + 1):
+            remaining = remaining_seconds()
+            if remaining <= 0:
+                raise ValueError("JIRA_CONTEXT_COMPILATION_TIMEOUT: 评论编译超过总耗时上限")
+            if attempt_count >= config.jira_compiler_max_attempts:
+                raise ValueError(
+                    "JIRA_CONTEXT_COMPILATION_BUDGET_EXCEEDED: "
+                    f"模型调用达到上限 {config.jira_compiler_max_attempts}"
+                )
+            attempt_count += 1
+            if metrics is not None:
+                metrics["attempt_count"] = attempt_count
+            try:
+                return await asyncio.wait_for(
+                    provider.complete(messages, []),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError as exc:
+                raise ValueError(
+                    "JIRA_CONTEXT_COMPILATION_TIMEOUT: 评论编译超过总耗时上限"
+                ) from exc
+            except ProviderError as exc:
+                if not exc.retryable or retry_index >= config.llm_max_retries:
+                    raise
+                retry_count += 1
+                if metrics is not None:
+                    metrics["retry_count"] = retry_count
+                delay = config.llm_retry_base_seconds * (2 ** retry_index)
+                if delay > 0:
+                    remaining = remaining_seconds()
+                    if remaining <= delay:
+                        raise ValueError(
+                            "JIRA_CONTEXT_COMPILATION_TIMEOUT: 评论编译超过总耗时上限"
+                        ) from exc
+                    await asyncio.sleep(delay)
+        raise RuntimeError("unreachable")
 
     for index, chunk in enumerate(chunks, 1):
         expected_chunk_ids = {str(item["source_id"]) for item in chunk}
         try:
-            message = await _complete_with_retry(provider, config, [
+            message = await complete_with_budget([
                 {"role": "system", "content": COMPILER_SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps({
                     "issue_key": issue_key,
@@ -179,8 +222,8 @@ async def compile_jira_context(
         returned_ids = {str(item.get("source_id") or "") for item in items if isinstance(item, dict)}
         if returned_ids != expected_chunk_ids:
             raise ValueError(
-                f"评论编译器 source_id 覆盖不完整: expected={sorted(expected_chunk_ids)}, "
-                f"actual={sorted(returned_ids)}",
+                "评论编译器 source_id 覆盖不完整 "
+                f"(expected_count={len(expected_chunk_ids)}, actual_count={len(returned_ids)})",
             )
         for item in items:
             source_id = str(item["source_id"])
@@ -217,4 +260,11 @@ async def compile_jira_context(
         raise ValueError(
             f"编译后的 Jira 上下文共 {len(text)} 字符，超过上限 {config.jira_context_summary_max_chars}",
         )
-    return CompiledJiraContext(issue_key, text, tuple(s.source_id for s in sources), len(chunks))
+    return CompiledJiraContext(
+        issue_key,
+        text,
+        tuple(s.source_id for s in sources),
+        len(chunks),
+        attempt_count,
+        retry_count,
+    )

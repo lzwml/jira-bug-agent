@@ -65,6 +65,7 @@ def build_run_record(
     run: AgentRunResult | None,
     result: BugAnalysisResult,
     context_metadata: dict | None = None,
+    failure_metadata: dict | None = None,
 ) -> dict:
     """组装要落盘的完整 run 记录。
 
@@ -85,6 +86,7 @@ def build_run_record(
         "agent_error": run.error if run else None,
         # 只保存完整性/编译元数据和压缩摘要，不复制 issue.json 中的评论原文。
         "jira_context": context_metadata,
+        "failure": failure_metadata,
     }
 
 
@@ -93,6 +95,7 @@ def write_run_record(
     run: AgentRunResult | None,
     result: BugAnalysisResult,
     context_metadata: dict | None = None,
+    failure_metadata: dict | None = None,
 ) -> Path | None:
     """把 run 记录写入 .bug-agent/runs/<task_id>.json，返回路径。
 
@@ -109,7 +112,7 @@ def write_run_record(
         if SAFE_TASK_ID.fullmatch(task.task_id) is None:
             logger.warning("task_id 不能安全用作文件名，跳过记录")
             return None
-        record = build_run_record(task, run, result, context_metadata)
+        record = build_run_record(task, run, result, context_metadata, failure_metadata)
         resolved_run_dir = run_dir.resolve()
         out_path = (resolved_run_dir / f"{task.task_id}.json").resolve(strict=False)
         try:

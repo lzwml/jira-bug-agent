@@ -23,4 +23,5 @@ class AgentRunResult(BaseModel):
     steps: int = Field(ge=0)
     tool_events: list[ToolEvent] = Field(default_factory=list)
     error: str | None = None
-
+    error_type: str | None = None
+    retryable: bool = False

@@ -12,7 +12,8 @@ BugAnalysisTask
       ▼
 BugAnalysisWorker
       ├── 配置本次步骤预算
-      ├── 按 source 连接 MCP
+      ├── 导出并验证 Jira Case
+      ├── 按 source 连接 Log MCP
       ├── 选择 Jira/Local Prompt
       ├── 运行 BugAnalysisAgent
       └── 校验 RCAReport
@@ -67,10 +68,18 @@ Jira 模式和 Jira 导出的 Local Case 都必须在主 Agent 启动前证明�
 报告总数、实际收集数量和截断状态；缺少该元数据、数量不一致、评论被截断或
 `issue.json` 哈希不匹配时，Worker 返回 `failed`，不会让模型基于残缺上下文分析。
 
-完整描述与评论不会直接塞入主 Agent。Worker 先通过 Comment Compiler 分块读取并
-生成带 `comment_id` 来源的结构化摘要；主 Agent只接收摘要。需要核对某条评论原文时，
-可通过 Log MCP 的 `get_case_comment(case_id, comment_id, offset, limit)` 分页读取。
-纯本地日志 Case 不受 Jira 评论完整性规则约束。
+不超过 `BUG_AGENT_JIRA_DIRECT_CONTEXT_MAX_CHARS`（默认 60,000 字符）的完整描述与
+评论会直接放入 `DIRECT_JIRA_CONTEXT`。更大的上下文才通过 Comment Compiler 分块
+生成带 `comment_id` 来源的 `COMPILED_JIRA_CONTEXT`；这是有损摘要，受最大分块数、
+模型调用次数和总耗时硬预算约束。需要核对某条评论原文时，可通过 Log MCP 的
+`get_case_comment(case_id, comment_id, offset, limit)` 分页读取；每次读取都会重新
+验证 Manifest、评论数量与 `issue.json` 哈希。纯本地日志 Case 不受 Jira 评论完整性
+规则约束。
+
+Jira 路径严格按“连接 Jira MCP → 确定性导出 → 验证导出路径和上下文 → 连接 Log MCP
+→ 创建 Provider”的顺序执行。运行记录的 `jira_context` 保存 direct/compiled 模式、
+原始字符数、分块数、模型尝试数和重试数；失败记录的 `failure.phase` 标明失败阶段，
+但不保存第三方响应正文或凭据。
 
 旧版导出的 Jira Case 没有完整性元数据，需要重新导出：
 

@@ -47,6 +47,7 @@ def test_verified_jira_case_returns_structured_issue(tmp_path):
     assert context.issue_key == "APP-42"
     assert context.comments_total == 1
     assert context.issue["comments"][0]["comment_id"] == "c1"
+    assert "check display" in context.raw_text
 
 
 def test_incomplete_comments_fail_strictly(tmp_path):
