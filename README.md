@@ -35,6 +35,7 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - 可替换的 OpenAI-compatible 模型服务；
 - 步骤预算、Tool Result 预算和统一错误观察。
 - 稳定的 `BugAnalysisTask → BugAnalysisResult` Worker 契约。
+- 异步 HTTP 任务 API：SQLite 状态、幂等提交、受控并发和重启恢复。
 
 当前尚未实现 Code Search MCP、RAG 和 Jira 回写；路线见下方 Roadmap。
 
@@ -143,6 +144,24 @@ Agent 默认不会先把所有附件全量解压。它先用 `inspect_case` 判�
 只对相关文本调用 `build_index`。如果首轮证据不足，Agent 会逐步扩大时间窗口、
 日志域或成员范围，再继续检索。`prepare_case` 只作为用户明确要求或渐进式调查
 仍无法确定必要成员时的全量兜底。
+
+## 作为异步 HTTP 服务运行
+
+HTTP 入口适合 Jira 自动化、内部平台和部门 Workflow。请求提交后立即返回
+`task_id`，分析在后台受控执行，调用方通过 `GET /tasks/{task_id}` 查询结果：
+
+```powershell
+$env:BUG_AGENT_API_ALLOWED_LOCAL_ROOTS = 'D:\bug-cases'
+$env:BUG_AGENT_API_KEY = 'replace-with-a-secret'
+$env:BUG_AGENT_API_CONCURRENCY = '2'
+
+uv run bug-agent-api
+```
+
+服务默认只监听 `127.0.0.1:8000`。本地 Case 必须位于
+`BUG_AGENT_API_ALLOWED_LOCAL_ROOTS` 中；未配置允许目录时，API 会拒绝本地路径任务。
+任务状态持久化在 SQLite 中，相同 `task_id` 的相同请求具有幂等性。接口、配置和
+安全部署说明见 [HTTP API](docs/http-api.md)。
 
 ## 作为 Worker 调用
 
@@ -257,6 +276,7 @@ uv run pytest -q packages/log-analyzer-mcp/tests
 - [x] 通用日志分诊与黑屏分析 Skills
 - [x] Jira / Local 双入口 CLI
 - [x] 可嵌入部门 Workflow 的 Worker Facade 与稳定输入输出契约
+- [x] 异步 HTTP API、SQLite 任务状态与有界并发调度
 - [ ] Code Search / Git MCP
 - [ ] 根据 Issue 分类动态选择专项 Skill
 - [ ] 历史 Bug RAG

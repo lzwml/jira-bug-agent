@@ -31,6 +31,18 @@ BugAnalysisAgent        Agent Loop、步骤预算、内部 Trace、Prompt
 
 Worker 契约与内部 Agent Trace 的边界见 [Worker Contract](worker-contract.md)。
 
+当前 HTTP 入口在 Worker 之上增加 SQLite 状态存储和有界并发调度器。它只负责
+任务生命周期、幂等和恢复，不介入 Prompt、工具选择或 RCA 生成：
+
+```text
+POST /tasks → queued → running → BugAnalysisWorker → completed / failed
+     │                                             │
+     └──────────── SQLite Task Store ──────────────┘
+```
+
+详细接口和部署边界见 [HTTP API](http-api.md)。当前实现面向单服务进程；未来接入
+分布式队列时，应替换 Dispatcher，而不是改变 Worker 契约。
+
 ## Core、MCP 与 Skill
 
 ```text
