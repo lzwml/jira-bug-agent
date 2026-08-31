@@ -17,6 +17,7 @@ from .mcp_router import McpToolRouter
 from .prompts import JIRA_WORKFLOW_PROMPT, LOCAL_WORKFLOW_PROMPT, REPORT_FORMAT_PROMPT
 from .provider import OpenAICompatibleProvider, ProviderError
 from .runstore import write_run_record
+from .rca_reconciliation import reconcile
 from .skill_router import SkillAwareToolRouter
 from .skills import SkillDocument, SkillRegistry
 
@@ -141,11 +142,21 @@ class BugAnalysisWorker:
         # 落盘时仍能记录 task 与失败结果，只是没有 trace。
         run = None
         try:
-            initial_skills = task.skills or ["android-log-triage"]
+            # 稳定性 RCA 报告规范是内置强制能力，不由模型决定是否启用。
+            # 自定义 Skill 根目录无需复制它，避免破坏团队自定义目录的兼容性。
+            requested_skills = task.skills or ["android-log-triage"]
+            skill_prompt, applied_skills = self.skill_registry.render(requested_skills)
+            builtin_skills_root = Path(__file__).resolve().parents[2] / "skills"
+            report_registry = SkillRegistry(builtin_skills_root)
+            report_prompt, _ = report_registry.render(["stability-rca-report"])
+            skill_prompt += "\n\n" + report_prompt
+            applied_skills = list(dict.fromkeys([
+                *applied_skills,
+                "stability-rca-report",
+            ]))
             initial_source: Literal["default", "explicit"] = (
                 "explicit" if task.skills is not None else "default"
             )
-            skill_prompt, applied_skills = self.skill_registry.render(initial_skills)
             if task.auto_select_skills:
                 # 在启动 Provider/MCP 前验证完整目录；损坏的自定义 Skill 不应等到
                 # Agent 中途激活时才暴露，也不能造成已产生外部调用后的半失败。
@@ -154,9 +165,13 @@ class BugAnalysisWorker:
                 name=name,
                 source=initial_source,
                 reason=(
-                    "调用方显式指定"
-                    if initial_source == "explicit"
-                    else "Worker 默认启用通用日志分诊"
+                    "Worker 强制启用稳定性 RCA 报告规范"
+                    if name == "stability-rca-report"
+                    else (
+                        "调用方显式指定"
+                        if initial_source == "explicit"
+                        else "Worker 默认启用通用日志分诊"
+                    )
                 ),
             ) for name in applied_skills]
             # Local Jira Case 的评论完整性校验发生在 Provider/MCP 启动前。
@@ -302,6 +317,7 @@ class BugAnalysisWorker:
                 ),
                 failure_metadata,
             )
+            reconcile(task, result, run, self.config)
             return result
 
         report, structured = _extract_report(run.final_answer)
@@ -337,6 +353,7 @@ class BugAnalysisWorker:
                 "retryable": run.retryable,
             } if run.status == "failed" else None),
         )
+        reconcile(task, result, run, self.config)
         return result
 
     @staticmethod
