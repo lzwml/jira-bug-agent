@@ -88,7 +88,11 @@ uv run bug-agent analyze-local 'D:\bug-cases\APP-42'
 uv run bug-agent --json analyze-local 'D:\bug-cases\APP-42'
 ```
 
-针对明确的黑屏问题激活专项 Skill；多个 `--skill` 可以组合：
+默认情况下，Worker 先加载 `android-log-triage`。Agent 会看到可信 Skill 目录，并在
+Issue 或首轮日志证据明确属于某个专项时自动调用 `activate_skill` 加载对应方法。
+自动激活的名称和理由会出现在结果及完整 Trace 中。
+
+如果调用方已经知道路线，也可以用 `--skill` 预先激活；多个 `--skill` 可以组合：
 
 ```powershell
 uv run bug-agent `
@@ -122,10 +126,11 @@ Android、Linux、时钟域与安全解压细节拆分在其 `references/` 目�
 | CAN/MCU 信号缺失、过期或异常 | `can-mcu-signal-analysis` |
 | OTA、PKI、认证或连接失败 | `ota-pki-connectivity` |
 
-当前 Worker 不会因为一个 Skill 提到了另一个 Skill 就自动切换路线。CLI 或上层
-Workflow 应显式传入一个主要症状 Skill；故障类型未知时先使用默认的
-`android-log-triage`。每条路线遵循相同的触发条件、事件身份、首轮证据、决策分支、
-反证/停止条件和输出契约，后续可以根据真实 Case 分别增强。
+CLI 或上层 Workflow 显式指定的路线优先；未指定时，Agent 可根据已验证的 Issue 上下文和首轮
+诊断证据自动激活一个主要症状 Skill，并按需叠加平台 Skill。系统不允许同时激活
+两个主要症状 Skill；低置信度场景继续使用 `android-log-triage`。如需完全禁止运行时
+激活，可添加 `--no-auto-skills`。每条路线遵循相同的触发条件、事件身份、首轮证据、
+决策分支、反证/停止条件和输出契约。
 
 Skill 决定分析顺序、时间线锚点和证据标准；解析、路径权限和扫描预算仍由
 Core/MCP 代码保证。不要把正则解析器或文件操作写进 Skill。
@@ -278,7 +283,7 @@ uv run pytest -q packages/log-analyzer-mcp/tests
 - [x] 可嵌入部门 Workflow 的 Worker Facade 与稳定输入输出契约
 - [x] 异步 HTTP API、SQLite 任务状态与有界并发调度
 - [ ] Code Search / Git MCP
-- [ ] 根据 Issue 分类动态选择专项 Skill
+- [x] 根据 Issue 与首轮证据自动激活专项 Skill，并记录可审计理由
 - [ ] 历史 Bug RAG
 - [x] RCAReport Schema、兼容解析与 Markdown Renderer
 - [ ] 使用模型原生 constrained output 强制 RCAReport

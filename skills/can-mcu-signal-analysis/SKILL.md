@@ -1,6 +1,7 @@
 ---
 name: can-mcu-signal-analysis
 description: Analyze missing, stale, invalid, duplicated, or mistimed CAN/MCU signals and their application-visible effects using signal identity, capture timing, MCU state, transport, decoding, and consumer evidence.
+category: symptom
 ---
 
 # CAN and MCU Signal Analysis

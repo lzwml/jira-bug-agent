@@ -3,6 +3,8 @@
 .uv-python/
 .pytest_cache/
 .pytest_tmp/
+.test-cache/
+.test-tmp/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -12,4 +14,3 @@ dist/
 build/
 .coverage
 htmlcov/
-

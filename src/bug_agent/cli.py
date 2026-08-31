@@ -33,7 +33,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, help="覆盖本次任务的 Agent 步骤预算")
     parser.add_argument(
         "--skill", dest="skills", action="append",
-        help="激活项目 Skill；可重复指定，默认 android-log-triage",
+        help="预先激活项目 Skill；可重复指定，未指定时默认 android-log-triage",
+    )
+    parser.add_argument(
+        "--no-auto-skills", action="store_true",
+        help="禁止 Agent 根据 Issue 和日志证据自动激活专项 Skill",
     )
     sub = parser.add_subparsers(dest="command", required=True)
     jira = sub.add_parser("analyze-jira", help="从 Jira Issue 开始分析")
@@ -265,6 +269,7 @@ async def _run(args: argparse.Namespace) -> int:
         "objective": args.objective,
         "max_steps": args.max_steps,
         "include_trace": args.json,
+        "auto_select_skills": not args.no_auto_skills,
     }
     if args.task_id:
         common["task_id"] = args.task_id

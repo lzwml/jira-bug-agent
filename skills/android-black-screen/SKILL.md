@@ -1,6 +1,7 @@
 ---
 name: android-black-screen
 description: Analyze Android black-screen, no-display, delayed-display, or display-freeze bugs across app buffers, SurfaceFlinger, HWC, display driver, power, and backlight layers.
+category: symptom
 ---
 
 # Android Black Screen Analysis
@@ -33,4 +34,3 @@ Use `parse_diagnostics` when Fatal, ANR, AVC, or Call Trace signals exist. Use `
 A supported conclusion should connect at least: the user-visible symptom window, the last successful upstream event, and the first failed or missing downstream transition. Prefer two independent artifacts when crossing framework/kernel boundaries.
 
 Report `insufficient_evidence` if the necessary layer boundary cannot be observed. Keep plausible alternatives in `hypotheses`; do not label a component as root cause solely because its name appears near an error.
-

@@ -34,7 +34,8 @@ BugAnalysisResult
 | `case_path` | Local 模式必填 |
 | `objective` | 本次分析目标，不扩大 Worker 权限 |
 | `max_steps` | 可选的单任务步骤预算 |
-| `skills` | 本次激活的团队 Skill 名称；默认通用 Android 日志分诊 |
+| `skills` | 可选的预激活 Skill；省略时 Worker 默认加载通用 Android 日志分诊 |
+| `auto_select_skills` | 是否允许 Agent 根据 Issue 和证据调用 `activate_skill`，默认 `true` |
 | `include_trace` | 是否在结果中包含内部 Tool Event |
 | `metadata` | 上游关联信息，Agent 当前不消费 |
 
@@ -60,6 +61,11 @@ BugAnalysisResult
 
 Worker 会把成功加载的名称写入 `applied_skills`。不存在、路径不安全、frontmatter
 不完整或超过预算的 Skill 会让任务在调用模型和 MCP 前失败。
+
+`skill_activations` 记录每个 Skill 的来源（`default`、`explicit` 或 `agent`）及原因。
+自动模式只允许一个 `category=symptom` 的主要症状 Skill，但允许叠加
+`category=platform`；显式预激活的症状路线具有优先权。动态加载由 Worker 本地完成，
+不会扩大 MCP 工具或文件路径权限。
 
 ## Jira 评论硬前置条件
 

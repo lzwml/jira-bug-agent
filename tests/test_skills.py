@@ -13,8 +13,20 @@ SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"
 def test_registry_loads_builtin_skill_and_frontmatter():
     item = SkillRegistry(SKILLS_ROOT).load("android-black-screen")
     assert item.name == "android-black-screen"
+    assert item.category == "symptom"
     assert "SurfaceFlinger" in item.instructions
     assert "black-screen" in item.description
+
+
+def test_registry_discovers_categorized_skill_catalog():
+    catalog = SkillRegistry(SKILLS_ROOT).discover()
+
+    assert {item.name for item in catalog} >= {
+        "android-log-triage", "android-black-screen", "mtk-ivi-log-analysis",
+    }
+    categories = {item.name: item.category for item in catalog}
+    assert categories["android-log-triage"] == "base"
+    assert categories["mtk-ivi-log-analysis"] == "platform"
 
 
 def test_registry_deduplicates_skills_in_stable_order():
@@ -23,6 +35,13 @@ def test_registry_deduplicates_skills_in_stable_order():
     ])
     assert names == ["android-log-triage", "android-black-screen"]
     assert prompt.index("android-log-triage") < prompt.index("android-black-screen")
+
+
+def test_registry_rejects_multiple_preconfigured_symptom_skills():
+    with pytest.raises(ValueError, match="一个主要症状"):
+        SkillRegistry(SKILLS_ROOT).render([
+            "android-black-screen", "android-anr-ui-freeze",
+        ])
 
 
 def test_mtk_ivi_skill_keeps_route_selection_in_the_runtime_entrypoint():

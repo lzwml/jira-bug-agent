@@ -1,6 +1,7 @@
 ---
 name: linux-virtualization-failure
 description: Analyze Linux guest, host, hypervisor, SCP, sensor, or cross-VM service failures where startup, IPC, resource, interrupt, or virtualization boundaries affect an Android/IVI symptom.
+category: symptom
 ---
 
 # Linux and Virtualization Failure

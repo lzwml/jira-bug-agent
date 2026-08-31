@@ -6,18 +6,19 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import re
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, Literal, Protocol
 
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .comment_compiler import CompiledJiraContext, compile_jira_context, sources_from_issue
 from .config import AgentConfig, default_export_root
-from .contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
+from .contracts import BugAnalysisResult, BugAnalysisTask, RCAReport, SkillActivation
 from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
 from .prompts import JIRA_WORKFLOW_PROMPT, LOCAL_WORKFLOW_PROMPT, REPORT_FORMAT_PROMPT
 from .provider import OpenAICompatibleProvider, ProviderError
 from .runstore import write_run_record
-from .skills import SkillRegistry
+from .skill_router import SkillAwareToolRouter
+from .skills import SkillDocument, SkillRegistry
 
 
 class CloseableProvider(ModelProvider, Protocol):
@@ -128,6 +129,9 @@ class BugAnalysisWorker:
         )
         provider = None
         applied_skills: list[str] = []
+        skill_activations: list[SkillActivation] = []
+        skill_router: SkillAwareToolRouter | None = None
+        skill_catalog: list[SkillDocument] = []
         jira_context: JiraInitialContext | None = None
         compiled_context: CompiledJiraContext | None = None
         context_mode: str | None = None
@@ -137,7 +141,24 @@ class BugAnalysisWorker:
         # 落盘时仍能记录 task 与失败结果，只是没有 trace。
         run = None
         try:
-            skill_prompt, applied_skills = self.skill_registry.render(task.skills)
+            initial_skills = task.skills or ["android-log-triage"]
+            initial_source: Literal["default", "explicit"] = (
+                "explicit" if task.skills is not None else "default"
+            )
+            skill_prompt, applied_skills = self.skill_registry.render(initial_skills)
+            if task.auto_select_skills:
+                # 在启动 Provider/MCP 前验证完整目录；损坏的自定义 Skill 不应等到
+                # Agent 中途激活时才暴露，也不能造成已产生外部调用后的半失败。
+                skill_catalog = self.skill_registry.discover()
+            skill_activations = [SkillActivation(
+                name=name,
+                source=initial_source,
+                reason=(
+                    "调用方显式指定"
+                    if initial_source == "explicit"
+                    else "Worker 默认启用通用日志分诊"
+                ),
+            ) for name in applied_skills]
             # Local Jira Case 的评论完整性校验发生在 Provider/MCP 启动前。
             # 纯本地日志目录返回 None，不受 Jira 评论硬约束影响。
             if task.source == "local":
@@ -221,12 +242,26 @@ class BugAnalysisWorker:
                     instruction = self._append_jira_context(
                         instruction, jira_context, compiled_context,
                     )
+                    skill_router = SkillAwareToolRouter(
+                        router,
+                        self.skill_registry,
+                        applied_skills,
+                        initial_source=initial_source,
+                        auto_enabled=task.auto_select_skills,
+                        documents=skill_catalog,
+                    )
+                    skill_activations = skill_router.activations
+                    catalog_prompt = skill_router.catalog_prompt()
                     phase = "agent"
                     run = await BugAnalysisAgent(run_config, provider).run(
                         instruction,
-                        prompt + "\n\n" + skill_prompt + REPORT_FORMAT_PROMPT,
-                        router,
+                        prompt
+                        + "\n\n" + skill_prompt
+                        + ("\n\n" + catalog_prompt if catalog_prompt else "")
+                        + REPORT_FORMAT_PROMPT,
+                        skill_router,
                     )
+                    applied_skills = skill_router.activated_names
                 finally:
                     await provider.close()
         except Exception as exc:
@@ -242,6 +277,8 @@ class BugAnalysisWorker:
                 "error_type": type(exc).__name__,
                 "retryable": bool(getattr(exc, "retryable", False)),
             }
+            if skill_router is not None:
+                applied_skills = skill_router.activated_names
             result = BugAnalysisResult(
                 task_id=task.task_id,
                 status="failed",
@@ -254,6 +291,7 @@ class BugAnalysisWorker:
                 steps=0,
                 structured_output=False,
                 applied_skills=applied_skills,
+                skill_activations=skill_activations,
                 error=message,
             )
             # 失败也要落盘（此时 run 为 None，trace 为空），便于排查准备阶段问题。
@@ -282,6 +320,7 @@ class BugAnalysisWorker:
             steps=run.steps,
             structured_output=structured,
             applied_skills=applied_skills,
+            skill_activations=skill_activations,
             trace=run.tool_events if task.include_trace else [],
             error=run.error,
         )

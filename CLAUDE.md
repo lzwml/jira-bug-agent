@@ -105,7 +105,8 @@ docs/
 `BugAnalysisTask` → `BugAnalysisWorker.execute()` → `BugAnalysisResult`
 
 - `source`: `"jira"` or `"local"` — mutually exclusive fields (`issue_key` vs `case_path`)
-- `skills`: defaults to `["android-log-triage"]`, max 5
+- `skills`: optional pre-activated list; omission loads `android-log-triage`, max 5
+- `auto_select_skills`: lets the Agent load one symptom Skill plus compatible platform Skills
 - `include_trace`: controls whether internal `ToolEvent` list is returned
 - Result `status`: `completed`, `insufficient_evidence`, `max_steps`, `failed`
 - `structured_output=false` means the model didn't return valid RCA JSON — upstream should treat this as degraded

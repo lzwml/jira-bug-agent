@@ -8,6 +8,14 @@ from .contracts import BugAnalysisResult
 def render_markdown(result: BugAnalysisResult) -> str:
     report = result.report
     lines = [f"# Bug 分析结果：{result.status}", "", report.summary, ""]
+    if result.skill_activations:
+        source_labels = {"default": "默认", "explicit": "显式", "agent": "自动"}
+        lines.extend(["## 使用的 Skills", ""])
+        for item in result.skill_activations:
+            lines.append(
+                f"- `{item.name}`（{source_labels[item.source]}）：{item.reason}"
+            )
+        lines.append("")
     sections = [
         ("已确认事实", report.confirmed_facts),
         ("缺失证据", report.missing_evidence),
@@ -36,4 +44,3 @@ def render_markdown(result: BugAnalysisResult) -> str:
     if not result.structured_output:
         lines.extend(["> 警告：模型未返回标准 RCA JSON，本结果使用了兼容降级。", ""])
     return "\n".join(lines).rstrip()
-

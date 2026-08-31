@@ -1,6 +1,7 @@
 ---
 name: system-reboot-watchdog
 description: Analyze unexpected reboot, boot loop, watchdog reset, kernel panic, or system-server watchdog cases across reboot identity, previous-boot evidence, kernel, pstore, Android, MCU, and hypervisor domains.
+category: symptom
 ---
 
 # System Reboot and Watchdog

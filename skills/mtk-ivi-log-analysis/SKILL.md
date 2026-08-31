@@ -1,6 +1,7 @@
 ---
 name: mtk-ivi-log-analysis
 description: Analyze MTK automotive IVI evidence spanning Android VM, Linux VM/TBox, hypervisor, SCP, MCU, CAN, OTA, or PKI logs. Use for MTK platform cases; do not activate for generic Android logs without MTK or cross-domain evidence.
+category: platform
 ---
 
 # MTK IVI Log Analysis

@@ -1,6 +1,7 @@
 ---
 name: android-native-crash
 description: Analyze Android native crashes and native service deaths from tombstones, debuggerd or AEE records, signals, abort messages, native stacks, process lifecycle, and downstream effects.
+category: symptom
 ---
 
 # Android Native Crash

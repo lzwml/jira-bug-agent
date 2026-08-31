@@ -1,6 +1,7 @@
 ---
 name: android-anr-ui-freeze
 description: Analyze Android ANR, frozen UI, input timeout, or application-not-responding symptoms using process identity, ANR traces, thread states, Binder dependencies, locks, I/O, and same-window logs.
+category: symptom
 ---
 
 # Android ANR and UI Freeze

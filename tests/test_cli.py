@@ -64,6 +64,14 @@ def test_collect_prepare_implies_export_case():
     assert args.no_index is True
 
 
+def test_analysis_cli_can_disable_automatic_skill_activation():
+    args = cli._parser().parse_args([
+        "--no-auto-skills", "analyze-local", "D:/cases/APP-42",
+    ])
+
+    assert args.no_auto_skills is True
+
+
 @pytest.mark.anyio
 async def test_prepare_local_accepts_explicit_sibling_work_dir(tmp_path, capsys):
     case_dir = tmp_path / "CASE-2"

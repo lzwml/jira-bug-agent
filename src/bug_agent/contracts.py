@@ -26,7 +26,10 @@ class BugAnalysisTask(BaseModel):
     case_path: str | None = None
     objective: str = Field(default="定位 Bug 根因并给出下一步建议", min_length=1, max_length=2000)
     max_steps: int | None = Field(default=None, ge=1, le=100)
-    skills: list[str] = Field(default_factory=lambda: ["android-log-triage"], max_length=5)
+    # None 表示使用默认分诊 Skill，并允许 Agent 按证据自动激活专项 Skill；
+    # 非空列表表示调用方预先指定的 Skill，自动激活仍可补充兼容的专项/平台 Skill。
+    skills: list[str] | None = Field(default=None, min_length=1, max_length=5)
+    auto_select_skills: bool = True
     include_trace: bool = False
     metadata: dict[str, str] = Field(default_factory=dict)
 
@@ -76,6 +79,12 @@ class RCAReport(BaseModel):
     next_actions: list[str] = Field(default_factory=list)
 
 
+class SkillActivation(BaseModel):
+    name: str
+    source: Literal["default", "explicit", "agent"]
+    reason: str = Field(max_length=500)
+
+
 class BugAnalysisResult(BaseModel):
     task_id: str
     status: Literal["completed", "insufficient_evidence", "max_steps", "failed"]
@@ -83,5 +92,6 @@ class BugAnalysisResult(BaseModel):
     steps: int = Field(ge=0)
     structured_output: bool
     applied_skills: list[str] = Field(default_factory=list)
+    skill_activations: list[SkillActivation] = Field(default_factory=list)
     trace: list[ToolEvent] = Field(default_factory=list)
     error: str | None = None

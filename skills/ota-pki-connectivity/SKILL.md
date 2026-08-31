@@ -1,6 +1,7 @@
 ---
 name: ota-pki-connectivity
 description: Analyze OTA, PKI, authentication, certificate, download, and connectivity failures by following the operation state machine across HMI, application, transport, trust, storage, and installation stages.
+category: symptom
 ---
 
 # OTA, PKI and Connectivity Failure

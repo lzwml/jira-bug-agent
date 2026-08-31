@@ -9,6 +9,7 @@ import pytest
 from bug_agent.config import AgentConfig
 from bug_agent.contracts import BugAnalysisTask
 from bug_agent.provider import ProviderError
+from bug_agent.skills import SkillRegistry
 from bug_agent.worker import BugAnalysisWorker
 
 
@@ -101,6 +102,8 @@ class FakeProvider:
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        if isinstance(response, dict):
+            return response
         return {"content": response}
 
     async def close(self):
@@ -162,6 +165,37 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
     assert harness.provider.closed is True
     assert harness.router.connections[0][0:2] == ("log", "log_analyzer.server")
     assert "Skill: android-log-triage" in harness.provider.messages[0][0]["content"]
+
+
+@pytest.mark.anyio
+async def test_worker_allows_agent_to_activate_specialized_skill(tmp_path):
+    harness = Harness([{
+        "content": "",
+        "tool_calls": [{
+            "id": "activate-1",
+            "function": {
+                "name": "activate_skill",
+                "arguments": json.dumps({
+                    "name": "android-black-screen",
+                    "reason": "Issue 报告黑屏，首轮证据指向 SurfaceFlinger",
+                }, ensure_ascii=False),
+            },
+        }],
+    }, report_json()])
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    result = await worker.execute(BugAnalysisTask(
+        task_id="auto-skill-1", source="local", case_path=str(tmp_path),
+        include_trace=True,
+    ))
+
+    assert result.status == "completed"
+    assert result.applied_skills == ["android-log-triage", "android-black-screen"]
+    assert [item.source for item in result.skill_activations] == ["default", "agent"]
+    assert result.skill_activations[-1].reason.startswith("Issue 报告黑屏")
+    assert result.trace[0].tool_name == "activate_skill"
+    assert result.trace[0].success is True
+    assert "SurfaceFlinger" in harness.provider.messages[1][-1]["content"]
 
 
 @pytest.mark.anyio
@@ -361,6 +395,37 @@ async def test_unknown_skill_fails_before_provider_or_mcp_start(tmp_path):
 
     assert result.status == "failed"
     assert "Skill 不存在" in (result.error or "")
+    assert harness.provider is None
+    assert harness.router is None
+
+
+@pytest.mark.anyio
+async def test_invalid_auto_skill_catalog_fails_before_provider_or_mcp_start(tmp_path):
+    case_path = tmp_path / "case"
+    case_path.mkdir()
+    skills_root = tmp_path / "skills"
+    triage = skills_root / "android-log-triage"
+    triage.mkdir(parents=True)
+    (triage / "SKILL.md").write_text(
+        "---\nname: android-log-triage\ndescription: Triage logs\ncategory: base\n---\n"
+        "Use open_case and inspect_case.",
+        encoding="utf-8",
+    )
+    broken = skills_root / "broken-skill"
+    broken.mkdir()
+    (broken / "SKILL.md").write_text("missing frontmatter", encoding="utf-8")
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(
+        CONFIG,
+        harness.provider_factory,
+        harness.router_factory,
+        skill_registry=SkillRegistry(skills_root),
+    )
+
+    result = await worker.execute(BugAnalysisTask(source="local", case_path=str(case_path)))
+
+    assert result.status == "failed"
+    assert "YAML frontmatter" in (result.error or "")
     assert harness.provider is None
     assert harness.router is None
 

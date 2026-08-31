@@ -6,6 +6,18 @@ from pydantic import ValidationError
 from bug_agent.contracts import BugAnalysisTask, EvidenceReference
 
 
+def test_task_defaults_to_automatic_skill_selection():
+    task = BugAnalysisTask(source="jira", issue_key="APP-1")
+
+    assert task.skills is None
+    assert task.auto_select_skills is True
+
+
+def test_task_rejects_empty_explicit_skill_list():
+    with pytest.raises(ValidationError):
+        BugAnalysisTask(source="jira", issue_key="APP-1", skills=[])
+
+
 def test_task_requires_reference_for_selected_source():
     with pytest.raises(ValidationError):
         BugAnalysisTask(source="jira")

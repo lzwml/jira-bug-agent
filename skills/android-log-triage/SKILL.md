@@ -1,6 +1,7 @@
 ---
 name: android-log-triage
 description: Triage an Android bug from logcat, kernel, ANR, tombstone, trace, or mixed diagnostic artifacts when the failure family is not yet known.
+category: base
 ---
 
 # Android Log Triage
@@ -15,7 +16,6 @@ Establish what evidence exists before choosing a root-cause theory.
 
 Keep Android/wall time separate from kernel monotonic time unless a synchronization point is present. A repeated error, nearby timestamp, AVC, Fatal, or stack trace does not by itself establish causality.
 
-If the symptom clearly belongs to a specialized family such as black screen, ANR, native crash, or kernel panic, the caller should activate a corresponding specialized Skill for the next analysis run.
+If the Issue or first evidence pass clearly identifies a specialized family such as black screen, ANR, native crash, or kernel panic, call `activate_skill` for the matching symptom Skill before continuing this analysis run. Do not activate a specialist from an isolated keyword without matching incident identity.
 
 Return `insufficient_evidence` when required artifacts or time ranges are missing. Every confirmed fact must cite an Evidence ID or a diagnostic finding with file and line information.
-
