@@ -66,16 +66,58 @@ class Hypothesis(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     status: Literal["candidate", "supported", "rejected"] = "candidate"
     supporting_evidence_ids: list[str] = Field(default_factory=list)
+    contradicting_evidence_ids: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
     falsification: str | None = None
+
+
+class TimelineEntry(BaseModel):
+    timestamp: str
+    clock_domain: Literal["wall", "android", "kernel_monotonic", "reported", "unknown"]
+    event: str
+    interpretation: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class CoverageItem(BaseModel):
+    layer: str
+    status: Literal["covered", "partial", "not_covered", "not_applicable"]
+    finding: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    gap: str | None = None
+
+
+class NegativeFinding(BaseModel):
+    statement: str
+    scope: str
+    limitation: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ActionItem(BaseModel):
+    priority: Literal["P0", "P1", "P2", "P3"]
+    action: str
+    owner: str | None = None
+    expected_artifact: str
+    completion_criteria: str
 
 
 class RCAReport(BaseModel):
     conclusion_status: Literal["confirmed", "hypothesis_only", "insufficient_evidence"]
     summary: str
+    observed_symptom: str | None = None
+    failure_mechanism: str | None = None
+    root_cause: str | None = None
+    trigger_conditions: list[str] = Field(default_factory=list)
+    timeline: list[TimelineEntry] = Field(default_factory=list)
+    coverage: list[CoverageItem] = Field(default_factory=list)
     confirmed_facts: list[str] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
+    negative_findings: list[NegativeFinding] = Field(default_factory=list)
     evidence: list[EvidenceReference] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
+    actions: list[ActionItem] = Field(default_factory=list)
+    # 兼容旧调用方；Renderer 优先使用结构化 actions。
     next_actions: list[str] = Field(default_factory=list)
 
 

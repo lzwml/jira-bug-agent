@@ -1,46 +1,170 @@
-"""把稳定业务结果渲染成人类可读文本；不参与 Agent 推理。"""
+"""把稳定业务结果渲染成人类可读的正式稳定性 RCA；不参与 Agent 推理。"""
 
 from __future__ import annotations
 
 from .contracts import BugAnalysisResult
 
 
+STATUS_LABELS = {
+    "confirmed": "根因已确认",
+    "hypothesis_only": "已形成候选根因",
+    "insufficient_evidence": "根因未确认（证据不足）",
+}
+COVERAGE_LABELS = {
+    "covered": "已覆盖",
+    "partial": "部分覆盖",
+    "not_covered": "未覆盖",
+    "not_applicable": "不适用",
+}
+CLOCK_LABELS = {
+    "wall": "Wall Clock",
+    "android": "Android",
+    "kernel_monotonic": "Kernel Monotonic",
+    "reported": "Jira/人工转述",
+    "unknown": "未知",
+}
+
+
+def _confidence_label(value: float) -> str:
+    if value >= 0.85:
+        return "高"
+    if value >= 0.70:
+        return "中高"
+    if value >= 0.45:
+        return "中"
+    return "低"
+
+
+def _ids(values: list[str]) -> str:
+    return "、".join(f"`{value}`" for value in values) if values else "-"
+
+
 def render_markdown(result: BugAnalysisResult) -> str:
     report = result.report
-    lines = [f"# Bug 分析结果：{result.status}", "", report.summary, ""]
-    if result.skill_activations:
-        source_labels = {"default": "默认", "explicit": "显式", "agent": "自动"}
-        lines.extend(["## 使用的 Skills", ""])
-        for item in result.skill_activations:
+    lines = [
+        f"# 阶段性 RCA：{result.task_id}",
+        "",
+        "## 1. 执行摘要",
+        "",
+        f"- **结论状态**：{STATUS_LABELS[report.conclusion_status]}",
+        f"- **用户可见现象**：{report.observed_symptom or '未结构化记录'}",
+        f"- **直接故障机制**：{report.failure_mechanism or '尚未确认'}",
+        f"- **技术根因**：{report.root_cause or '尚未确认'}",
+        "",
+        report.summary,
+        "",
+    ]
+
+    if report.trigger_conditions:
+        lines.extend(["### 触发或促成条件", ""])
+        lines.extend(f"- {item}" for item in report.trigger_conditions)
+        lines.append("")
+
+    if report.timeline:
+        lines.extend([
+            "## 2. 关键时间线", "",
+            "| 时间 | 时钟域 | 事件 | 解释 | 证据 |",
+            "|---|---|---|---|---|",
+        ])
+        for item in report.timeline:
             lines.append(
-                f"- `{item.name}`（{source_labels[item.source]}）：{item.reason}"
+                f"| {item.timestamp} | {CLOCK_LABELS[item.clock_domain]} | "
+                f"{item.event} | {item.interpretation or '-'} | {_ids(item.evidence_ids)} |"
             )
         lines.append("")
-    sections = [
-        ("已确认事实", report.confirmed_facts),
-        ("缺失证据", report.missing_evidence),
-        ("下一步动作", report.next_actions),
-    ]
-    for title, items in sections:
-        if items:
-            lines.extend([f"## {title}", ""])
-            lines.extend(f"- {item}" for item in items)
-            lines.append("")
-    if report.hypotheses:
-        lines.extend(["## 假设", ""])
-        for item in report.hypotheses:
-            lines.append(f"- [{item.status} / {item.confidence:.0%}] {item.statement}")
+
+    if report.coverage:
+        lines.extend([
+            "## 3. 分层调查覆盖", "",
+            "| 层级 | 覆盖状态 | 当前结论 | 剩余缺口 | 证据 |",
+            "|---|---|---|---|---|",
+        ])
+        for item in report.coverage:
+            lines.append(
+                f"| {item.layer} | {COVERAGE_LABELS[item.status]} | {item.finding} | "
+                f"{item.gap or '-'} | {_ids(item.evidence_ids)} |"
+            )
         lines.append("")
+
+    if report.confirmed_facts:
+        lines.extend(["## 4. 已确认事实", ""])
+        lines.extend(f"- {item}" for item in report.confirmed_facts)
+        lines.append("")
+
+    if report.hypotheses:
+        lines.extend(["## 5. 假设与证伪", ""])
+        for index, item in enumerate(report.hypotheses, 1):
+            lines.extend([
+                f"### 假设 {index}：{item.statement}", "",
+                f"- **状态**：{item.status}",
+                f"- **置信度**：{_confidence_label(item.confidence)}",
+                f"- **支持证据**：{_ids(item.supporting_evidence_ids)}",
+                f"- **反对证据**：{_ids(item.contradicting_evidence_ids)}",
+                f"- **证伪方法**：{item.falsification or '-'}",
+            ])
+            if item.missing_evidence:
+                lines.append("- **尚缺证据**：" + "；".join(item.missing_evidence))
+            lines.append("")
+
+    if report.negative_findings:
+        lines.extend(["## 6. 反证与负向结果", ""])
+        for item in report.negative_findings:
+            lines.extend([
+                f"- **{item.statement}**",
+                f"  - 范围：{item.scope}",
+                f"  - 限制：{item.limitation}",
+                f"  - 证据：{_ids(item.evidence_ids)}",
+            ])
+        lines.extend(["", "> 零匹配只表示当前证据范围内未命中，不等于事件未发生。", ""])
+
+    if report.missing_evidence:
+        lines.extend(["## 7. 缺失证据", ""])
+        lines.extend(f"- {item}" for item in report.missing_evidence)
+        lines.append("")
+
+    if report.actions or report.next_actions:
+        lines.extend(["## 8. 下一步动作", ""])
+        if report.actions:
+            lines.extend([
+                "| 优先级 | 动作 | 模块/负责人 | 预期产物 | 完成标准 |",
+                "|---|---|---|---|---|",
+            ])
+            for item in report.actions:
+                lines.append(
+                    f"| {item.priority} | {item.action} | {item.owner or '-'} | "
+                    f"{item.expected_artifact} | {item.completion_criteria} |"
+                )
+        else:
+            lines.extend(f"- {item}" for item in report.next_actions)
+        lines.append("")
+
     if report.evidence:
-        lines.extend(["## 证据引用", ""])
+        lines.extend(["## 9. 证据附录", ""])
         for item in report.evidence:
             location = item.relative_path
             if item.line_start:
                 location += f":{item.line_start}"
                 if item.line_end and item.line_end != item.line_start:
                     location += f"-{item.line_end}"
-            lines.append(f"- `{item.evidence_id}` {location}")
+            excerpt = f" — {item.excerpt}" if item.excerpt else ""
+            lines.append(f"- `{item.evidence_id}` {location}{excerpt}")
         lines.append("")
+
+    if result.skill_activations:
+        source_labels = {"default": "默认", "explicit": "显式", "agent": "自动"}
+        lines.extend(["## 10. 分析元数据", ""])
+        lines.extend([
+            f"- **Task ID**：`{result.task_id}`",
+            f"- **执行步数**：{result.steps}",
+            f"- **结构化输出**：{'是' if result.structured_output else '否'}",
+            "- **使用的 Skills**：",
+        ])
+        for item in result.skill_activations:
+            lines.append(
+                f"  - `{item.name}`（{source_labels[item.source]}）：{item.reason}"
+            )
+        lines.append("")
+
     if not result.structured_output:
         lines.extend(["> 警告：模型未返回标准 RCA JSON，本结果使用了兼容降级。", ""])
     return "\n".join(lines).rstrip()

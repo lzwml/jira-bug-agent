@@ -160,7 +160,7 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
     assert result.status == "completed"
     assert result.structured_output is True
     assert result.report.evidence[0].relative_path == "logcat.txt"
-    assert result.applied_skills == ["android-log-triage"]
+    assert result.applied_skills == ["android-log-triage", "stability-rca-report"]
     assert harness.provider.config.max_steps == 5
     assert harness.provider.closed is True
     assert harness.router.connections[0][0:2] == ("log", "log_analyzer.server")
@@ -190,8 +190,12 @@ async def test_worker_allows_agent_to_activate_specialized_skill(tmp_path):
     ))
 
     assert result.status == "completed"
-    assert result.applied_skills == ["android-log-triage", "android-black-screen"]
-    assert [item.source for item in result.skill_activations] == ["default", "agent"]
+    assert result.applied_skills == [
+        "android-log-triage", "stability-rca-report", "android-black-screen",
+    ]
+    assert [item.source for item in result.skill_activations] == [
+        "default", "default", "agent",
+    ]
     assert result.skill_activations[-1].reason.startswith("Issue 报告黑屏")
     assert result.trace[0].tool_name == "activate_skill"
     assert result.trace[0].success is True
