@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .config import AgentConfig
 from .models import AgentRunResult, ToolEvent
@@ -138,13 +138,22 @@ class BugAnalysisAgent:
                     await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
 
-    async def run(self, task: str, system_prompt: str, router: ToolRouter) -> AgentRunResult:
+    async def run(
+        self,
+        task: str,
+        system_prompt: str,
+        router: ToolRouter,
+        on_tool_event: Callable[[ToolEvent], None] | None = None,
+        goal_mode: bool = False,
+    ) -> AgentRunResult:
         """执行 Agent 主循环。
 
         【学习要点】参数设计：
         - task: 用户任务描述(如"分析 APP-42 黑屏问题")；
         - system_prompt: 系统提示词，包含领域知识、工作流、输出格式要求；
-        - router: 工具路由器，提供可调用的工具。
+        - router: 工具路由器，提供可调用的工具；
+        - on_tool_event: 可选回调，每次工具调用完成后立即通知（用于实时落盘）；
+        - goal_mode: True 时不限制工具调用次数，循环直到模型给出最终答案。
 
         【学习要点】返回值 AgentRunResult 是内部状态，包含：
         - status: completed/failed/max_steps，表示如何结束；
@@ -164,10 +173,24 @@ class BugAnalysisAgent:
         # 获取所有可用工具的 OpenAI 格式定义。
         tools = router.openai_tools()
 
-        # 【学习要点】主循环：最多执行 max_steps 步。
+        # 【学习要点】主循环：goal_mode 下不限制步数，否则最多执行 max_steps 步。
         # 每一步：调用模型 → 处理工具调用 → 将结果追加到消息历史。
         # 模型看到历史后会决定是继续调工具还是给出最终答案。
-        for step in range(1, self.config.max_steps + 1):
+        step = 0
+        while True:
+            step += 1
+            if not goal_mode and step > self.config.max_steps:
+                # 达到步骤上限：模型还没给出最终答案。
+                # 【学习要点】这不是"失败"，而是"预算耗尽"。
+                # Bug 分析可能需要多轮证据收集，如果步骤太少会频繁触发这个状态。
+                # Worker 会把这个状态映射为 BugAnalysisResult.status="max_steps"。
+                return AgentRunResult(
+                    status="max_steps",
+                    task=task,
+                    final_answer="达到最大步骤数，尚未形成可靠结论。",
+                    steps=self.config.max_steps,
+                    tool_events=events,
+                )
             try:
                 message = await self._complete(messages, tools)
             except ProviderError as exc:
@@ -245,28 +268,24 @@ class BugAnalysisAgent:
                 result = _bounded_result(result, self.config.max_tool_result_chars)
 
                 # 记录这次工具调用事件。
-                events.append(ToolEvent(
+                event = ToolEvent(
                     step=step,
                     tool_call_id=call_id,
                     tool_name=name,
                     arguments=arguments,
                     result=result,
                     success=_result_success(result),
-                ))
+                )
+                events.append(event)
+
+                # 实时通知外部观察者（如 RunRecorder），失败不影响主流程。
+                if on_tool_event is not None:
+                    try:
+                        on_tool_event(event)
+                    except Exception:
+                        pass
 
                 # 将工具结果作为 tool 消息追加到对话历史。
                 # 【学习要点】tool_call_id 是关键：它告诉模型"这个结果对应你刚才的哪次调用"。
                 # 模型在下一轮会看到这个结果，并据此决定下一步行动。
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
-
-        # 达到步骤上限：模型还没给出最终答案。
-        # 【学习要点】这不是"失败"，而是"预算耗尽"。
-        # Bug 分析可能需要多轮证据收集，如果步骤太少会频繁触发这个状态。
-        # Worker 会把这个状态映射为 BugAnalysisResult.status="max_steps"。
-        return AgentRunResult(
-            status="max_steps",
-            task=task,
-            final_answer="达到最大步骤数，尚未形成可靠结论。",
-            steps=self.config.max_steps,
-            tool_events=events,
-        )

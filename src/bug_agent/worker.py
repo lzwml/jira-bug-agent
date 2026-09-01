@@ -11,12 +11,17 @@ from typing import Awaitable, Callable, Literal, Protocol
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .comment_compiler import CompiledJiraContext, compile_jira_context, sources_from_issue
 from .config import AgentConfig, default_export_root
-from .contracts import BugAnalysisResult, BugAnalysisTask, RCAReport, SkillActivation
+from .contracts import AnalysisGuide, BugAnalysisResult, BugAnalysisTask, RCAReport, SkillActivation
 from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
-from .prompts import JIRA_WORKFLOW_PROMPT, LOCAL_WORKFLOW_PROMPT, REPORT_FORMAT_PROMPT
+from .prompts import (
+    ANALYSIS_GUIDE_PROMPT,
+    JIRA_WORKFLOW_PROMPT,
+    LOCAL_WORKFLOW_PROMPT,
+    REPORT_FORMAT_PROMPT,
+)
 from .provider import OpenAICompatibleProvider, ProviderError
-from .runstore import write_run_record
+from .runstore import RunRecorder, write_run_record
 from .rca_reconciliation import reconcile
 from .skill_router import SkillAwareToolRouter
 from .skills import SkillDocument, SkillRegistry
@@ -57,6 +62,44 @@ def _extract_report(raw: str) -> tuple[RCAReport, bool]:
         ), False
 
 
+def _extract_analysis_guide(raw: str, evidence_ids: set[str]) -> AnalysisGuide:
+    """解析讲解并丢弃模型虚构的证据引用。"""
+
+    candidate = raw.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1)
+    else:
+        start, end = candidate.find("{"), candidate.rfind("}")
+        if start >= 0 and end > start:
+            candidate = candidate[start:end + 1]
+    guide = AnalysisGuide.model_validate(json.loads(candidate))
+    safe_steps = [step.model_copy(update={
+        "evidence_ids": [item for item in step.evidence_ids if item in evidence_ids],
+    }) for step in guide.reasoning_steps]
+    return guide.model_copy(update={"reasoning_steps": safe_steps})
+
+
+def _analysis_guide_input(report: RCAReport, run_events: list) -> str:
+    """将报告和有限、可审计的调查顺序提供给讲解生成器。"""
+
+    trace = [{
+        "step": event.step,
+        "tool_name": event.tool_name,
+        "arguments": event.arguments,
+        "success": event.success,
+        # 讲解只需知道每步获得了什么类别的观察，避免再次塞入大段原始日志。
+        "result_excerpt": event.result[:1500],
+    } for event in run_events[:30]]
+    return (
+        "BEGIN_RCA_REPORT\n"
+        + json.dumps(report.model_dump(), ensure_ascii=False, indent=2)
+        + "\nEND_RCA_REPORT\nBEGIN_INVESTIGATION_TRACE\n"
+        + json.dumps(trace, ensure_ascii=False, indent=2)
+        + "\nEND_INVESTIGATION_TRACE"
+    )
+
+
 class BugAnalysisWorker:
     """对外稳定 Worker；内部创建并约束一个 BugAnalysisAgent。"""
 
@@ -73,6 +116,37 @@ class BugAnalysisWorker:
         self.router_factory = router_factory
         self.skill_registry = skill_registry or SkillRegistry.default()
         self.jira_exporter = jira_exporter or self._export_jira_case
+
+    async def _generate_analysis_guide(
+        self,
+        report: RCAReport,
+        run_events: list,
+        config: AgentConfig,
+    ) -> tuple[AnalysisGuide | None, str | None]:
+        """讲解是附加能力：失败时保留已完成的 RCA。"""
+
+        provider = None
+        try:
+            provider = self.provider_factory(config)
+            message = await provider.complete(
+                [
+                    {"role": "system", "content": ANALYSIS_GUIDE_PROMPT},
+                    {"role": "user", "content": _analysis_guide_input(report, run_events)},
+                ],
+                [],
+            )
+            raw = str(message.get("content") or "").strip()
+            if not raw:
+                raise ValueError("模型未输出问题分析讲解")
+            return _extract_analysis_guide(raw, {item.evidence_id for item in report.evidence}), None
+        except (json.JSONDecodeError, ValueError):
+            return None, "模型未按 AnalysisGuide Schema 返回结构化讲解"
+        except Exception as exc:
+            # 不把 Provider 或第三方的错误正文暴露到上游结果中。
+            return None, f"问题分析讲解生成失败：{type(exc).__name__}"
+        finally:
+            if provider is not None:
+                await provider.close()
 
     @staticmethod
     async def _export_jira_case(task: BugAnalysisTask, router: ToolRouter) -> Path:
@@ -141,6 +215,10 @@ class BugAnalysisWorker:
         # run 初始化为 None：若在 Agent 运行前（Skill 加载/准备阶段）就失败，
         # 落盘时仍能记录 task 与失败结果，只是没有 trace。
         run = None
+        recorder = RunRecorder(task)
+        recorder_active = recorder.start()
+        # 不在此处调用 recorder.on_phase("skills")——recorder 首次 _flush() 会
+        # 创建 .bug-agent/runs/ 目录，如果 case_path 尚未校验，可能意外创建目录。
         try:
             # 稳定性 RCA 报告规范是内置强制能力，不由模型决定是否启用。
             # 自定义 Skill 根目录无需复制它，避免破坏团队自定义目录的兼容性。
@@ -181,6 +259,8 @@ class BugAnalysisWorker:
                 case_path = Path(task.case_path or "").expanduser().resolve()
                 if not case_path.is_dir():
                     raise ValueError(f"Case 目录不存在: {case_path}")
+                if recorder_active:
+                    recorder.on_phase(phase)
                 jira_context = load_jira_initial_context(
                     case_path,
                     require_jira=False,
@@ -196,11 +276,15 @@ class BugAnalysisWorker:
                 connect = getattr(router, "connect_python_server")
                 if task.source == "jira":
                     phase = "jira_export"
+                    if recorder_active:
+                        recorder.on_phase(phase)
                     export_root = default_export_root()
                     export_root.mkdir(parents=True, exist_ok=True)
                     await connect("jira", "jira_bug_mcp.server")
                     case_path = (await self.jira_exporter(task, router)).resolve()
                     phase = "context_validation"
+                    if recorder_active:
+                        recorder.on_phase(phase)
                     try:
                         case_path.relative_to(export_root)
                     except ValueError as exc:
@@ -216,6 +300,8 @@ class BugAnalysisWorker:
                         else "compiled"
                     )
                     phase = "log_setup"
+                    if recorder_active:
+                        recorder.on_phase(phase)
                     await connect(
                         "log", "log_analyzer.server",
                         {"LOG_ANALYZER_ALLOWED_ROOTS": str(export_root)},
@@ -229,6 +315,8 @@ class BugAnalysisWorker:
                     )
                 else:
                     phase = "log_setup"
+                    if recorder_active:
+                        recorder.on_phase(phase)
                     await connect(
                         "log", "log_analyzer.server",
                         {"LOG_ANALYZER_ALLOWED_ROOTS": str(case_path)},
@@ -240,6 +328,8 @@ class BugAnalysisWorker:
                     )
 
                 phase = "provider_setup"
+                if recorder_active:
+                    recorder.on_phase(phase)
                 provider = self.provider_factory(run_config)
                 try:
                     if (
@@ -247,6 +337,8 @@ class BugAnalysisWorker:
                         and len(jira_context.raw_text) > run_config.jira_direct_context_max_chars
                     ):
                         phase = "context_compilation"
+                        if recorder_active:
+                            recorder.on_phase(phase)
                         compiled_context = await compile_jira_context(
                             provider,
                             run_config,
@@ -268,6 +360,8 @@ class BugAnalysisWorker:
                     skill_activations = skill_router.activations
                     catalog_prompt = skill_router.catalog_prompt()
                     phase = "agent"
+                    if recorder_active:
+                        recorder.on_phase(phase)
                     run = await BugAnalysisAgent(run_config, provider).run(
                         instruction,
                         prompt
@@ -275,6 +369,8 @@ class BugAnalysisWorker:
                         + ("\n\n" + catalog_prompt if catalog_prompt else "")
                         + REPORT_FORMAT_PROMPT,
                         skill_router,
+                        on_tool_event=recorder.on_tool_event if recorder_active else None,
+                        goal_mode=task.goal_mode,
                     )
                     applied_skills = skill_router.activated_names
                 finally:
@@ -310,13 +406,19 @@ class BugAnalysisWorker:
                 error=message,
             )
             # 失败也要落盘（此时 run 为 None，trace 为空），便于排查准备阶段问题。
-            write_run_record(
-                task, run, result,
-                self._context_metadata(
-                    jira_context, compiled_context, context_mode, compiler_metrics,
-                ),
-                failure_metadata,
+            context_meta = self._context_metadata(
+                jira_context, compiled_context, context_mode, compiler_metrics,
             )
+            if recorder_active:
+                recorder.set_context(context_meta)
+                recorder.set_failure(failure_metadata)
+                recorder.finish(run, result)
+            else:
+                write_run_record(
+                    task, run, result,
+                    context_meta,
+                    failure_metadata,
+                )
             reconcile(task, result, run, self.config)
             return result
 
@@ -340,19 +442,36 @@ class BugAnalysisWorker:
             trace=run.tool_events if task.include_trace else [],
             error=run.error,
         )
+        if task.include_analysis_guide and run.status != "failed":
+            guide, guide_error = await self._generate_analysis_guide(
+                report, run.tool_events, run_config,
+            )
+            result = result.model_copy(update={
+                "analysis_guide": guide,
+                "analysis_guide_error": guide_error,
+            })
         # 落盘完整 trace（来自 run.tool_events，与 include_trace 无关），
         # 保证默认运行也能复盘。失败只警告，不影响返回给上游的结果。
-        write_run_record(
-            task, run, result,
-            self._context_metadata(
-                jira_context, compiled_context, context_mode, compiler_metrics,
-            ),
-            ({
+        context_meta = self._context_metadata(
+            jira_context, compiled_context, context_mode, compiler_metrics,
+        )
+        failure_meta = (
+            {
                 "phase": "agent",
                 "error_type": run.error_type or "AgentRunError",
                 "retryable": run.retryable,
-            } if run.status == "failed" else None),
+            } if run.status == "failed" else None
         )
+        if recorder_active:
+            recorder.set_context(context_meta)
+            recorder.set_failure(failure_meta)
+            recorder.finish(run, result)
+        else:
+            write_run_record(
+                task, run, result,
+                context_meta,
+                failure_meta,
+            )
         reconcile(task, result, run, self.config)
         return result
 

@@ -42,3 +42,21 @@ def test_evidence_rejects_reversed_line_range():
             evidence_id="ev-1", relative_path="logcat.txt",
             line_start=20, line_end=10,
         )
+
+
+def test_goal_mode_defaults_to_false():
+    task = BugAnalysisTask(source="jira", issue_key="APP-1")
+    assert task.goal_mode is False
+
+
+def test_goal_mode_disables_step_limit():
+    """goal_mode=True 时 max_steps 不参与循环控制，但可为零或未设置。"""
+    task = BugAnalysisTask(source="jira", issue_key="APP-1", goal_mode=True)
+    assert task.goal_mode is True
+    assert task.max_steps is None
+
+
+def test_max_steps_no_longer_capped_at_100():
+    """max_steps 不再有 le=100 上限，goal_mode 下可设置为任意正整数。"""
+    task = BugAnalysisTask(source="jira", issue_key="APP-1", max_steps=500)
+    assert task.max_steps == 500

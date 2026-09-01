@@ -130,3 +130,49 @@ async def test_agent_does_not_retry_non_retryable_provider_failure():
     assert result.status == "failed"
     assert result.steps == 0
     assert len(provider.messages_seen) == 1
+
+
+@pytest.mark.anyio
+async def test_goal_mode_runs_beyond_max_steps():
+    """Goal 模式下忽略 max_steps 限制，模型可以无限调用工具直到给出答案。"""
+    tool_message = {
+        "tool_calls": [{
+            "id": "repeat",
+            "type": "function",
+            "function": {"name": "open_case", "arguments": "{}"},
+        }],
+    }
+    # 5 次工具调用后给出最终答案
+    provider = FakeProvider([
+        tool_message,
+        tool_message,
+        tool_message,
+        tool_message,
+        {"content": "调查完成，已确认根因。"},
+    ])
+    config = replace(CONFIG, max_steps=3)  # 只有 3 步预算
+    result = await BugAnalysisAgent(config, provider).run(
+        "分析", "system", FakeRouter(), goal_mode=True,
+    )
+
+    assert result.status == "completed"
+    assert result.steps == 5  # 远超 max_steps=3
+    assert "调查完成" in result.final_answer
+
+
+@pytest.mark.anyio
+async def test_non_goal_mode_still_stops_at_max_steps():
+    """非 goal 模式下 max_steps 限制仍然生效。"""
+    tool_message = {
+        "tool_calls": [{
+            "id": "repeat",
+            "type": "function",
+            "function": {"name": "open_case", "arguments": "{}"},
+        }],
+    }
+    provider = FakeProvider([tool_message, tool_message, tool_message, tool_message])
+    config = replace(CONFIG, max_steps=3)
+    result = await BugAnalysisAgent(config, provider).run("分析", "system", FakeRouter())
+
+    assert result.status == "max_steps"
+    assert result.steps == 3

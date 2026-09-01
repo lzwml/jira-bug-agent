@@ -20,8 +20,8 @@ from log_analyzer.service import LogAnalyzerService
 
 from .config import AgentConfig
 from .contracts import BugAnalysisTask
-from .renderer import render_markdown
-from .runstore import resolve_run_dir
+from .renderer import render_analysis_guide, render_markdown
+from .runstore import resolve_run_dir, write_analysis_guide
 from .worker import BugAnalysisWorker
 
 
@@ -31,6 +31,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-id", help="由上游 Workflow 提供的稳定任务 ID")
     parser.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
     parser.add_argument("--max-steps", type=int, help="覆盖本次任务的 Agent 步骤预算")
+    parser.add_argument(
+        "--goal", action="store_true",
+        help="Goal 模式：不限制工具调用次数，Agent 循环直到给出最终答案或发生不可恢复错误",
+    )
+    parser.add_argument(
+        "--analysis-guide", action="store_true",
+        help="额外生成独立的问题分析讲解，不写入正式 RCA",
+    )
     parser.add_argument(
         "--skill", dest="skills", action="append",
         help="预先激活项目 Skill；可重复指定，未指定时默认 android-log-triage",
@@ -268,8 +276,10 @@ async def _run(args: argparse.Namespace) -> int:
     common = {
         "objective": args.objective,
         "max_steps": args.max_steps,
+        "goal_mode": args.goal,
         "include_trace": args.json,
         "auto_select_skills": not args.no_auto_skills,
+        "include_analysis_guide": args.analysis_guide,
     }
     if args.task_id:
         common["task_id"] = args.task_id
@@ -286,10 +296,20 @@ async def _run(args: argparse.Namespace) -> int:
         print(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
     else:
         print(render_markdown(result))
+        if result.analysis_guide is not None:
+            guide_path = write_analysis_guide(
+                task, render_analysis_guide(result.analysis_guide, result.task_id),
+            )
+            if guide_path is not None:
+                print(f"\n问题分析讲解已保存: {guide_path}")
+        elif args.analysis_guide and result.analysis_guide_error:
+            print(f"\n问题分析讲解未生成: {result.analysis_guide_error}")
         # 人类可读模式下提示完整 trace 的落盘位置，便于复盘与 Skill 迭代。
         run_dir = resolve_run_dir(task)
         if run_dir is not None:
-            print(f"\n完整执行轨迹已保存: {run_dir / (task.task_id + '.json')}")
+            # 文件名格式：{local_time}_{task_id}.json（由 RunRecorder 实时生成）
+            print(f"\n完整执行轨迹已保存到: {run_dir}")
+            print(f"  （文件名格式：<时间戳>_{task.task_id}.json）")
     return 0 if result.status in {"completed", "insufficient_evidence"} else 1
 
 

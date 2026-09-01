@@ -25,12 +25,17 @@ class BugAnalysisTask(BaseModel):
     issue_key: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
     case_path: str | None = None
     objective: str = Field(default="定位 Bug 根因并给出下一步建议", min_length=1, max_length=2000)
-    max_steps: int | None = Field(default=None, ge=1, le=100)
+    max_steps: int | None = Field(default=None, ge=1)
+    # goal_mode=True 时不限制工具调用次数，循环直到模型给出最终答案。
+    # 此时 max_steps 仅用于对外报告（如果设置的话），不参与循环控制。
+    goal_mode: bool = False
     # None 表示使用默认分诊 Skill，并允许 Agent 按证据自动激活专项 Skill；
     # 非空列表表示调用方预先指定的 Skill，自动激活仍可补充兼容的专项/平台 Skill。
     skills: list[str] | None = Field(default=None, min_length=1, max_length=5)
     auto_select_skills: bool = True
     include_trace: bool = False
+    # 生成独立的、面向工程师的问题分析讲解；不改变正式 RCA 内容。
+    include_analysis_guide: bool = False
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -102,6 +107,26 @@ class ActionItem(BaseModel):
     completion_criteria: str
 
 
+class ReasoningStep(BaseModel):
+    """面向工程师的、可核验的问题分析步骤；不是模型内部推理记录。"""
+
+    observation: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    reasoning: str = Field(min_length=1)
+    verification: str = Field(min_length=1)
+    outcome: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class AnalysisGuide(BaseModel):
+    """独立于正式 RCA 的调查思路讲解。"""
+
+    overview: str = Field(min_length=1)
+    reasoning_steps: list[ReasoningStep] = Field(default_factory=list)
+    reusable_approach: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 class RCAReport(BaseModel):
     conclusion_status: Literal["confirmed", "hypothesis_only", "insufficient_evidence"]
     summary: str
@@ -135,5 +160,7 @@ class BugAnalysisResult(BaseModel):
     structured_output: bool
     applied_skills: list[str] = Field(default_factory=list)
     skill_activations: list[SkillActivation] = Field(default_factory=list)
+    analysis_guide: AnalysisGuide | None = None
+    analysis_guide_error: str | None = None
     trace: list[ToolEvent] = Field(default_factory=list)
     error: str | None = None

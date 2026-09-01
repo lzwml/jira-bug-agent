@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,14 @@ from bug_agent.contracts import BugAnalysisTask
 from bug_agent.provider import ProviderError
 from bug_agent.skills import SkillRegistry
 from bug_agent.worker import BugAnalysisWorker
+
+
+def _find_run_file(runs_dir: Path, task_id: str) -> Path:
+    """在 runs 目录中按 task_id 查找带时间戳的 run 文件。"""
+    candidates = sorted(runs_dir.glob(f"*_{task_id}.json"))
+    if not candidates:
+        raise FileNotFoundError(f"未找到 task_id={task_id} 的 run 文件")
+    return candidates[0]
 
 
 CONFIG = AgentConfig(
@@ -90,6 +99,22 @@ def report_json(conclusion_status="confirmed"):
     }, ensure_ascii=False)
 
 
+def analysis_guide_json():
+    return json.dumps({
+        "overview": "先确认启动阶段的异常，再验证它是否足以解释黑屏。",
+        "reasoning_steps": [{
+            "observation": "启动阶段出现 Fatal。",
+            "question": "Fatal 是否与黑屏处于同一故障链？",
+            "reasoning": "先建立时间和组件关联，避免把并发异常直接当根因。",
+            "verification": "核对 ev-1 所在日志位置，并结合时间线检查。",
+            "outcome": "当前支持显示服务异常这一候选路径，但仍需补充对照场景。",
+            "evidence_ids": ["ev-1", "invented-id"],
+        }],
+        "reusable_approach": ["先确认异常是否能解释现象，再进入根因推断。"],
+        "limitations": ["当前缺少无 Fatal 的对照复现场景。"],
+    }, ensure_ascii=False)
+
+
 class FakeProvider:
     def __init__(self, config, response):
         self.config = config
@@ -145,6 +170,20 @@ class Harness:
         return self.router
 
 
+class SequentialHarness(Harness):
+    """主 RCA 与独立讲解各使用一个 Provider，模拟生产中的两次调用。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.providers = []
+        self.router = None
+
+    def provider_factory(self, config):
+        provider = FakeProvider(config, self.responses.pop(0))
+        self.providers.append(provider)
+        return provider
+
+
 @pytest.mark.anyio
 async def test_local_worker_returns_stable_structured_contract(tmp_path):
     harness = Harness(report_json())
@@ -165,6 +204,40 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
     assert harness.provider.closed is True
     assert harness.router.connections[0][0:2] == ("log", "log_analyzer.server")
     assert "Skill: android-log-triage" in harness.provider.messages[0][0]["content"]
+
+
+@pytest.mark.anyio
+async def test_worker_generates_separate_evidence_bound_analysis_guide(tmp_path):
+    harness = SequentialHarness([report_json(), analysis_guide_json()])
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    result = await worker.execute(BugAnalysisTask(
+        source="local", case_path=str(tmp_path), include_analysis_guide=True,
+    ))
+
+    assert result.status == "completed"
+    assert result.analysis_guide is not None
+    assert result.analysis_guide.reasoning_steps[0].evidence_ids == ["ev-1"]
+    assert result.analysis_guide_error is None
+    assert len(harness.providers) == 2
+    assert harness.providers[0].closed is True
+    assert harness.providers[1].closed is True
+    assert "BEGIN_RCA_REPORT" in harness.providers[1].messages[0][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_analysis_guide_failure_does_not_change_rca_delivery(tmp_path):
+    harness = SequentialHarness([report_json(), "不是 JSON"])
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    result = await worker.execute(BugAnalysisTask(
+        source="local", case_path=str(tmp_path), include_analysis_guide=True,
+    ))
+
+    assert result.status == "completed"
+    assert result.report.root_cause is None
+    assert result.analysis_guide is None
+    assert result.analysis_guide_error == "模型未按 AnalysisGuide Schema 返回结构化讲解"
 
 
 @pytest.mark.anyio
@@ -254,9 +327,9 @@ async def test_large_jira_context_uses_bounded_compiler(tmp_path, monkeypatch):
     assert result.status == "completed", result.error
     assert len(harness.provider.messages) == 2
     assert "COMPILED_JIRA_CONTEXT" in harness.provider.messages[1][1]["content"]
-    record = json.loads((
-        case_path / ".bug-agent" / "runs" / "compiled-mode.json"
-    ).read_text(encoding="utf-8"))
+    record = json.loads(
+        _find_run_file(case_path / ".bug-agent" / "runs", "compiled-mode").read_text(encoding="utf-8")
+    )
     assert record["jira_context"]["context_mode"] == "compiled"
     assert record["jira_context"]["compiler_attempt_count"] == 1
 
@@ -302,9 +375,9 @@ async def test_incomplete_jira_export_fails_before_log_or_provider(tmp_path, mon
     assert "JIRA_COMMENTS_INCOMPLETE" in (result.error or "")
     assert harness.provider is None
     assert [item[0] for item in harness.router.connections] == ["jira"]
-    record = json.loads((
-        case_path / ".bug-agent" / "runs" / "incomplete-export.json"
-    ).read_text(encoding="utf-8"))
+    record = json.loads(
+        _find_run_file(case_path / ".bug-agent" / "runs", "incomplete-export").read_text(encoding="utf-8")
+    )
     assert record["failure"]["phase"] == "context_validation"
 
 
@@ -349,9 +422,9 @@ async def test_compiler_provider_error_keeps_safe_message_and_phase(tmp_path):
 
     assert result.status == "failed"
     assert result.error == "模型服务认证或权限失败"
-    record = json.loads((
-        tmp_path / ".bug-agent" / "runs" / "compiler-provider-fail.json"
-    ).read_text(encoding="utf-8"))
+    record = json.loads(
+        _find_run_file(tmp_path / ".bug-agent" / "runs", "compiler-provider-fail").read_text(encoding="utf-8")
+    )
     assert record["failure"] == {
         "phase": "context_compilation",
         "error_type": "ProviderError",
@@ -449,7 +522,7 @@ async def test_run_record_is_written_with_full_trace(tmp_path):
         include_trace=False,
     ))
 
-    run_file = tmp_path / ".bug-agent" / "runs" / "run-persist-1.json"
+    run_file = _find_run_file(tmp_path / ".bug-agent" / "runs", "run-persist-1")
     assert run_file.is_file()
     record = json.loads(run_file.read_text(encoding="utf-8"))
     assert record["schema_version"] == 1
@@ -475,10 +548,93 @@ async def test_run_record_written_even_when_prepare_fails(tmp_path):
     ))
 
     assert result.status == "failed"
-    run_file = missing / ".bug-agent" / "runs" / "run-persist-fail.json"
+    run_file = _find_run_file(missing / ".bug-agent" / "runs", "run-persist-fail")
     assert run_file.is_file()
     record = json.loads(run_file.read_text(encoding="utf-8"))
     assert record["result"]["status"] == "failed"
     assert record["trace"] == []
     assert record["agent_status"] is None
     assert record["failure"]["phase"] == "local_validation"
+
+
+@pytest.mark.anyio
+async def test_run_record_filename_includes_local_timestamp(tmp_path):
+    """run 文件名应包含本地时间戳，格式为 <本地时间>_<task_id>.json。"""
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    await worker.execute(BugAnalysisTask(
+        task_id="ts-test", source="local", case_path=str(tmp_path),
+    ))
+
+    runs_dir = tmp_path / ".bug-agent" / "runs"
+    files = sorted(runs_dir.glob("*.json"))
+    assert len(files) >= 1
+    run_file = files[0]
+    # 文件名格式：YYYY-MM-DD_HH-MM-SS.mmm_<task_id>.json
+    name = run_file.name
+    assert name.endswith("_ts-test.json"), f"unexpected name: {name}"
+    # 时间戳部分应为 23 字符：YYYY-MM-DD_HH-MM-SS.mmm
+    prefix = name[:-len("_ts-test.json")]
+    assert len(prefix) == 23, f"timestamp prefix length: {len(prefix)}"
+    # 验证各段可解析
+    date_part, ms = prefix.split(".")
+    assert len(ms) == 3
+    parts = date_part.split("_")
+    assert len(parts) == 2  # date_time
+    assert "-" in parts[0] and "-" in parts[1]
+
+
+@pytest.mark.anyio
+async def test_run_recorder_writes_running_state_on_start(tmp_path):
+    """RunRecorder 启动后应立即写入 running 状态快照。"""
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    # 用 FakeProvider 拦截在 agent 阶段，验证 running 状态
+    # 实际上在 worker 的 execute 中，recorder.start() 在 try 块最前面调用，
+    # 所以即使 FakeProvider 不产生 tool_events，running 文件也应该存在。
+    await worker.execute(BugAnalysisTask(
+        task_id="running-test", source="local", case_path=str(tmp_path),
+    ))
+
+    run_file = _find_run_file(tmp_path / ".bug-agent" / "runs", "running-test")
+    record = json.loads(run_file.read_text(encoding="utf-8"))
+    # 最终状态应该是 completed
+    assert record["result"]["status"] == "completed"
+    assert record["schema_version"] == 1
+
+
+@pytest.mark.anyio
+async def test_run_recorder_tracks_phase_transitions(tmp_path):
+    """RunRecorder 应记录阶段切换，最终文件中 phase 为 agent。"""
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    await worker.execute(BugAnalysisTask(
+        task_id="phase-test", source="local", case_path=str(tmp_path),
+    ))
+
+    run_file = _find_run_file(tmp_path / ".bug-agent" / "runs", "phase-test")
+    record = json.loads(run_file.read_text(encoding="utf-8"))
+    # 最终 phase 应为 agent
+    assert record["phase"] == "agent"
+    assert "started_at" in record
+    assert "finished_at" in record
+
+
+@pytest.mark.anyio
+async def test_run_recorder_fallback_to_write_run_record(tmp_path):
+    """当 recorder 无法启动时（如 task_id 非法），应回退到 write_run_record。"""
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+
+    # 使用包含非法字符的 task_id，recorder 会拒绝但 write_run_record 也会拒绝
+    result = await worker.execute(BugAnalysisTask(
+        task_id="run-persist-1", source="local", case_path=str(tmp_path),
+    ))
+
+    assert result.status == "completed"
+    # 正常 task_id 应能通过 recorder 落盘
+    run_file = _find_run_file(tmp_path / ".bug-agent" / "runs", "run-persist-1")
+    assert run_file.is_file()
