@@ -59,6 +59,22 @@ def render_state_markdown(state: RCAState) -> str:
     return "\n".join(lines)
 
 
+def continuation_context(state: RCAState) -> str:
+    """给后续 Agent 的精简 Case 状态，不暴露旧运行的完整 trace。"""
+    payload = {
+        "revision": state.revision,
+        "conclusion_status": state.conclusion_status,
+        "summary": state.summary,
+        "root_cause": state.root_cause,
+        "claims": [claim.model_dump() for claim in state.claims],
+        "missing_evidence": state.missing_evidence,
+        "actions": [action.model_dump() for action in state.actions],
+        "evidence": [evidence.model_dump() for evidence in state.evidence],
+        "based_on_runs": state.based_on_runs,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 class RCAStore:
     def __init__(self, task: BugAnalysisTask):
         run_dir = resolve_run_dir(task)

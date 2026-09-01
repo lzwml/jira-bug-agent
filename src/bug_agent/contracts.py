@@ -25,6 +25,13 @@ class BugAnalysisTask(BaseModel):
     issue_key: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
     case_path: str | None = None
     objective: str = Field(default="定位 Bug 根因并给出下一步建议", min_length=1, max_length=2000)
+    # 续分析时指向上一轮任务。它是审计关系，不改变 Case 的来源或权限边界。
+    continuation_of: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
     max_steps: int | None = Field(default=None, ge=1)
     # goal_mode=True 时不限制工具调用次数，循环直到模型给出最终答案。
     # 此时 max_steps 仅用于对外报告（如果设置的话），不参与循环控制。
@@ -48,6 +55,8 @@ class BugAnalysisTask(BaseModel):
             raise ValueError("source=jira 时不能同时提供 case_path")
         if self.source == "local" and self.issue_key:
             raise ValueError("source=local 时不能同时提供 issue_key")
+        if self.continuation_of == self.task_id:
+            raise ValueError("continuation_of 不能指向任务自身")
         return self
 
 

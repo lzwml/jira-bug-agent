@@ -33,6 +33,7 @@ BugAnalysisResult
 | `issue_key` | Jira 模式必填 |
 | `case_path` | Local 模式必填 |
 | `objective` | 本次分析目标，不扩大 Worker 权限 |
+| `continuation_of` | 可选的父任务 ID；声明本次是同一 Case 的续分析，Worker 会把已有 RCA 状态作为待验证上下文 |
 | `max_steps` | 可选的单任务步骤预算 |
 | `skills` | 可选的预激活 Skill；省略时 Worker 默认加载通用 Android 日志分诊 |
 | `auto_select_skills` | 是否允许 Agent 根据 Issue 和证据调用 `activate_skill`，默认 `true` |

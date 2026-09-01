@@ -82,6 +82,24 @@ class SqliteTaskStore:
             ).fetchone()
         return self._record(row) if row is not None else None
 
+    def create_continuation(
+        self, previous_task_id: str, task: BugAnalysisTask,
+    ) -> tuple[TaskRecord, bool]:
+        """原子校验上一轮并创建续分析任务。"""
+        if task.continuation_of != previous_task_id:
+            raise ValueError("续分析任务必须指向请求路径中的上一轮 task_id")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute(
+                "SELECT * FROM analysis_tasks WHERE task_id = ?", (previous_task_id,),
+            ).fetchone()
+            if previous is None:
+                raise KeyError(previous_task_id)
+            if previous["status"] != "completed":
+                raise RuntimeError("上一轮任务尚未完成，不能发起续分析")
+        # submit 自己使用短事务；上一轮完成后不会再变化，故不需要持锁跨调用。
+        return self.submit(task)
+
     def queued_task_ids(self) -> list[str]:
         with self._connect() as connection:
             rows = connection.execute(

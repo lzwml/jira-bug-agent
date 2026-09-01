@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 import secrets
+from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
@@ -13,7 +14,7 @@ from ..contracts import BugAnalysisTask
 from ..worker import BugAnalysisWorker
 from .config import ApiConfig
 from .dispatcher import TaskDispatcher, WorkerFactory
-from .models import TaskRecord, TaskSubmission
+from .models import ContinuationRequest, TaskRecord, TaskSubmission
 from .task_store import SqliteTaskStore, TaskConflictError
 
 
@@ -101,5 +102,35 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
         return record
+
+    @app.post("/tasks/{task_id}/continuations", response_model=TaskSubmission, status_code=status.HTTP_202_ACCEPTED)
+    async def continue_task(
+        task_id: str,
+        request_body: ContinuationRequest,
+        request: Request,
+        x_api_key: str | None = Header(default=None),
+    ) -> TaskSubmission:
+        """创建同一 Case 的下一轮调查，并把上一轮作为可审计父任务。"""
+        authorize(x_api_key)
+        previous = store.get(task_id)
+        if previous is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+        inherited = previous.task
+        changes = request_body.model_dump(exclude_none=True)
+        changes.pop("metadata", None)
+        changes["continuation_of"] = task_id
+        changes["metadata"] = {**inherited.metadata, **request_body.metadata}
+        # 续分析是新的运行，不能默认复用父任务的幂等键。
+        changes["task_id"] = request_body.task_id or str(uuid4())
+        task = BugAnalysisTask.model_validate({**inherited.model_dump(), **changes})
+        try:
+            record, created = await request.app.state.dispatcher.continue_from(task_id, task)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except (TaskConflictError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return TaskSubmission(task_id=record.task_id, status=record.status, created=created)
 
     return app

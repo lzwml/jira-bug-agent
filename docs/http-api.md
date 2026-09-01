@@ -69,6 +69,28 @@ Invoke-RestMethod `
 `completed`；具体是成功定位、证据不足还是达到步骤上限，继续查看内层
 `result.status`。
 
+## 续分析同一 Case
+
+当有新日志、复现结果或需要验证已有假设时，调用续分析接口。它会继承上一轮的
+来源、Case 路径、Skill 设置和元数据，只允许本次请求补充目标及可选运行参数；同时
+生成新的 `task_id` 并记录 `continuation_of`。Worker 会读取同一 Case 的阶段性 RCA，
+把已有 Claims、缺失证据与行动项作为待核验上下文，而不会把旧结论当作事实。
+
+```powershell
+$body = @{ objective = '新增 SurfaceFlinger 日志后，验证此前的背光时序假设' } | ConvertTo-Json
+Invoke-RestMethod `
+  -Method Post `
+  -Uri 'http://127.0.0.1:8000/tasks/workflow-2026-001/continuations' `
+  -Headers $headers `
+  -ContentType 'application/json' `
+  -Body $body
+```
+
+只有外层状态为 `completed` 的任务可以续分析；正在排队、运行或失败的任务返回
+HTTP `409`。如需请求幂等，可在 Body 中提供新的、稳定的 `task_id`；同一 ID 配合相同
+请求不会重复执行。每一轮仍保留独立运行记录，而同一 Case 的 `RCA.md`、
+`rca-state.json` 与 `rca-events.jsonl` 会被协调更新。
+
 ## 幂等、恢复和当前边界
 
 - 相同 `task_id` 和完全相同的任务内容重复提交时，不会重复执行，返回

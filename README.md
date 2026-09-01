@@ -36,6 +36,7 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - 步骤预算、Tool Result 预算和统一错误观察。
 - 稳定的 `BugAnalysisTask → BugAnalysisResult` Worker 契约。
 - 异步 HTTP 任务 API：SQLite 状态、幂等提交、受控并发和重启恢复。
+- Case 级 RCA 迭代：续分析会继承已有证据状态，并保留完整任务链与变更审计。
 
 当前尚未实现 Code Search MCP、RAG 和 Jira 回写；路线见下方 Roadmap。
 
@@ -167,6 +168,11 @@ uv run bug-agent-api
 `BUG_AGENT_API_ALLOWED_LOCAL_ROOTS` 中；未配置允许目录时，API 会拒绝本地路径任务。
 任务状态持久化在 SQLite 中，相同 `task_id` 的相同请求具有幂等性。接口、配置和
 安全部署说明见 [HTTP API](docs/http-api.md)。
+
+当拿到新日志、复现结果或想验证上一轮假设时，使用
+`POST /tasks/{task_id}/continuations` 创建同一 Case 的下一轮分析。它会继承来源和
+权限边界、生成新的任务 ID，并将阶段性 `RCA.md` 作为待验证上下文；每一轮的轨迹、
+父子关系和 RCA 变更都会保留，避免把 Bug 分析变成彼此孤立的一次性输出。
 
 ## 作为 Worker 调用
 

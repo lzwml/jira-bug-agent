@@ -140,6 +140,96 @@ async def test_http_api_submits_queries_and_reuses_same_task(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_http_api_continuation_inherits_case_and_links_previous_task(tmp_path):
+    case_root = tmp_path / "cases"
+    case_path = case_root / "APP-42"
+    case_path.mkdir(parents=True)
+    app = create_app(
+        ApiConfig(
+            database_path=tmp_path / "tasks.sqlite3",
+            concurrency=1,
+            allowed_local_roots=(case_root.resolve(),),
+        ),
+        ImmediateWorker,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            parent = await client.post("/tasks", json={
+                "task_id": "first-pass", "source": "local", "case_path": str(case_path),
+                "objective": "首次分析", "metadata": {"issue": "APP-42"},
+            })
+            assert parent.status_code == 202
+            for _ in range(50):
+                parent_record = await client.get("/tasks/first-pass")
+                if parent_record.json()["status"] == "completed":
+                    break
+                await asyncio.sleep(0)
+
+            continuation = await client.post("/tasks/first-pass/continuations", json={
+                "task_id": "second-pass",
+                "objective": "新增日志后验证根因",
+                "metadata": {"source": "new-log"},
+            })
+            assert continuation.status_code == 202
+            assert continuation.json() == {
+                "task_id": "second-pass", "status": "queued", "created": True,
+            }
+            record = await client.get("/tasks/second-pass")
+            payload = record.json()["task"]
+            assert payload["continuation_of"] == "first-pass"
+            assert payload["case_path"] == str(case_path.resolve())
+            assert payload["objective"] == "新增日志后验证根因"
+            assert payload["metadata"] == {"issue": "APP-42", "source": "new-log"}
+
+            duplicate = await client.post("/tasks/first-pass/continuations", json={
+                "task_id": "second-pass",
+                "objective": "新增日志后验证根因",
+                "metadata": {"source": "new-log"},
+            })
+            assert duplicate.status_code == 202
+            assert duplicate.json()["created"] is False
+
+
+@pytest.mark.anyio
+async def test_http_api_cannot_continue_running_task(tmp_path):
+    case_root = tmp_path / "cases"
+    case_path = case_root / "APP-42"
+    case_path.mkdir(parents=True)
+    release = asyncio.Event()
+
+    class WaitingWorker:
+        async def execute(self, task: BugAnalysisTask) -> BugAnalysisResult:
+            await release.wait()
+            return completed_result(task.task_id)
+
+    app = create_app(
+        ApiConfig(
+            database_path=tmp_path / "tasks.sqlite3", allowed_local_roots=(case_root.resolve(),),
+        ),
+        WaitingWorker,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            await client.post("/tasks", json={
+                "task_id": "running-pass", "source": "local", "case_path": str(case_path),
+            })
+            for _ in range(50):
+                record = await client.get("/tasks/running-pass")
+                if record.json()["status"] == "running":
+                    break
+                await asyncio.sleep(0)
+            response = await client.post("/tasks/running-pass/continuations", json={
+                "objective": "继续分析",
+            })
+            assert response.status_code == 409
+            release.set()
+
+
+@pytest.mark.anyio
 async def test_http_api_rejects_local_path_outside_allowed_roots(tmp_path):
     allowed = tmp_path / "allowed"
     outside = tmp_path / "outside"

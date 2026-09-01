@@ -53,6 +53,14 @@ class TaskDispatcher:
             await self._queue.put(task.task_id)
         return record, created
 
+    async def continue_from(
+        self, previous_task_id: str, task: BugAnalysisTask,
+    ) -> tuple[TaskRecord, bool]:
+        record, created = self.store.create_continuation(previous_task_id, task)
+        if created:
+            await self._queue.put(task.task_id)
+        return record, created
+
     async def _run_loop(self) -> None:
         while True:
             task_id = await self._queue.get()
