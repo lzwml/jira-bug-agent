@@ -1,5 +1,5 @@
-from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis, RCAReport
-from bug_agent.rca_reconciliation import compare_claims, initialize_state, reconcile_state
+from bug_agent.contracts import ActionItem, BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis, RCAReport
+from bug_agent.rca_reconciliation import _validate_actions, compare_claims, initialize_state, reconcile_state
 from bug_agent.rca_state import Claim
 
 
@@ -31,3 +31,41 @@ def test_confirmed_root_cause_is_not_auto_overwritten():
     assert updated.root_cause == "A"
     assert any(c.statement == "B" and c.status == "candidate" for c in updated.claims)
     assert events
+
+
+def _action(text: str, priority="P1"):
+    return ActionItem(priority=priority, action=text, expected_artifact="日志", completion_criteria="完成")
+
+
+def test_validate_actions_demotes_hallucinated_aplog_refs():
+    evidence = [EvidenceReference(
+        evidence_id="e1", relative_path="outer.zip!/APLog_2026_0831_061532__79.tar.gz",
+    )]
+
+    result = _validate_actions([_action("展开 APLog_88~APLog_92 嵌套 tar.gz")], evidence)
+
+    assert result[0].priority == "P3"
+    assert "引用未在证据中出现" in result[0].action
+
+
+def test_validate_actions_preserves_valid_aplog_refs():
+    evidence = [EvidenceReference(
+        evidence_id="e1", relative_path="outer.zip!/APLog_2026_0831_061532__79.tar.gz",
+    )]
+
+    result = _validate_actions([_action("复核 APLog_79 中的 SuspendAll 证据")], evidence)
+
+    assert result[0].priority == "P1"
+    assert "引用未在证据中出现" not in result[0].action
+
+
+def test_validate_actions_demotes_unverifiable_file_refs_but_keeps_general_actions():
+    evidence = [EvidenceReference(evidence_id="e1", relative_path="logs/main_log.txt")]
+
+    result = _validate_actions([
+        _action("复核 logs/main_log.txt 的异常"),
+        _action("展开 missing/crash.tar.gz"),
+        _action("补充 GC SuspendAll 的线程栈"),
+    ], evidence)
+
+    assert [item.priority for item in result] == ["P1", "P3", "P1"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from .contracts import BugAnalysisResult, BugAnalysisTask, Hypothesis
+from .contracts import ActionItem, BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis
 from .rca_state import Claim, RCAEvent, RCAEventDetail, RCAState, RCAMetadata, stable_claim_id
 
 
@@ -89,6 +89,64 @@ def _merge_list(old: list, new: list, key) -> list:
     return result
 
 
+_UNVERIFIED_ACTION_MARKER = "（⚠ 引用未在证据中出现，需人工确认）"
+_APLOG_REFERENCE_RE = re.compile(r"\bAPLog(?:[_\s-]+)(\d{1,3})(?![\d_])", re.IGNORECASE)
+_APLOG_MEMBER_RE = re.compile(
+    r"(?:^|[!/])APLog_\d{4}_\d{4}_\d{6}__(\d+)(?:\.[^/]+)*(?:$|/)", re.IGNORECASE,
+)
+_FILE_REFERENCE_RE = re.compile(
+    r"(?<![\w.])([\w-]+(?:[\\/][\w.-]+)*\.(?:tar\.gz|zip|tar|tgz|gz|log|txt|trace))(?![\w.])",
+    re.IGNORECASE,
+)
+
+
+def _extract_aplog_refs(text: str) -> set[str]:
+    """Extract short APLog sequence references, never the YYYY portion of a full name."""
+
+    return {match.group(1).lstrip("0") or "0" for match in _APLOG_REFERENCE_RE.finditer(text)}
+
+
+def _evidence_aplog_sequences(evidence: list[EvidenceReference]) -> set[str]:
+    sequences: set[str] = set()
+    for item in evidence:
+        sequences.update(match.group(1).lstrip("0") or "0" for match in _APLOG_MEMBER_RE.finditer(item.relative_path))
+    return sequences
+
+
+def _extract_file_refs(text: str) -> set[str]:
+    return {match.group(1).replace("\\", "/").casefold() for match in _FILE_REFERENCE_RE.finditer(text)}
+
+
+def _validate_actions(actions: list[ActionItem], evidence: list[EvidenceReference]) -> list[ActionItem]:
+    """Demote actions that name APLog volumes or files absent from registered evidence.
+
+    This is intentionally a lexical guard, not a natural-language truth detector.  Actions
+    with no identifiable resource reference remain actionable; an action that explicitly
+    names a resource must be grounded in a tool-returned relative path.
+    """
+
+    evidence_paths = {item.relative_path.replace("\\", "/").casefold() for item in evidence}
+    aplog_sequences = _evidence_aplog_sequences(evidence)
+    validated: list[ActionItem] = []
+    for item in actions:
+        aplog_refs = _extract_aplog_refs(item.action)
+        file_refs = _extract_file_refs(item.action)
+        missing_aplogs = aplog_refs - aplog_sequences
+        missing_files = {
+            ref for ref in file_refs
+            if not any(ref in path for path in evidence_paths)
+        }
+        if missing_aplogs or missing_files:
+            action = item.action if _UNVERIFIED_ACTION_MARKER in item.action else item.action + _UNVERIFIED_ACTION_MARKER
+            item = item.model_copy(update={"action": action, "priority": "P3"})
+        validated.append(item)
+    return validated
+
+
+def _action_key(item: ActionItem) -> tuple[str, str]:
+    return item.priority, re.sub(r"\s+", " ", item.action.strip()).casefold()
+
+
 def _event(revision: int, kind: str, run_id: str, claim_id=None, **kwargs) -> RCAEvent:
     return RCAEvent(revision=revision, event=kind, run_id=run_id, detail=RCAEventDetail(claim_id=claim_id, **kwargs))
 
@@ -103,7 +161,7 @@ def initialize_state(task: BugAnalysisTask, result: BugAnalysisResult) -> tuple[
         trigger_conditions=list(report.trigger_conditions), timeline=list(report.timeline), coverage=list(report.coverage),
         confirmed_facts=list(report.confirmed_facts), claims=claims_from_result(task, result),
         negative_findings=list(report.negative_findings), missing_evidence=list(report.missing_evidence),
-        actions=list(report.actions), evidence=list(report.evidence), metadata=RCAMetadata(task_id=task.task_id, steps=result.steps, skills=list(result.applied_skills)),
+        actions=_validate_actions(report.actions, report.evidence), evidence=list(report.evidence), metadata=RCAMetadata(task_id=task.task_id, steps=result.steps, skills=list(result.applied_skills)),
     )
     return state, [_event(1, "state_initialized", task.task_id, reason="首次运行初始化 RCA 状态")]
 
@@ -171,7 +229,8 @@ def reconcile_state(current: RCAState, task: BugAnalysisTask, result: BugAnalysi
     state.confirmed_facts = _merge_list(state.confirmed_facts, incoming.confirmed_facts, lambda x: x)
     state.missing_evidence = _merge_list(state.missing_evidence, incoming.missing_evidence, lambda x: x)
     state.negative_findings = _merge_list(state.negative_findings, incoming.negative_findings, lambda x: (x.statement, x.scope))
-    state.actions = _merge_list(state.actions, incoming.actions, lambda x: (x.priority, x.action))
+    incoming_actions = _validate_actions(incoming.actions, state.evidence)
+    state.actions = _merge_list(state.actions, incoming_actions, _action_key)
     state.timeline = _merge_list(state.timeline, incoming.timeline, lambda x: (x.timestamp, x.event))
     coverage_by_layer = {item.layer: item for item in state.coverage}
     coverage_rank = {"not_applicable": 0, "not_covered": 1, "partial": 2, "covered": 3}
