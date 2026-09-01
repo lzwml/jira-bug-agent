@@ -176,3 +176,115 @@ async def test_non_goal_mode_still_stops_at_max_steps():
 
     assert result.status == "max_steps"
     assert result.steps == 3
+
+
+@pytest.mark.anyio
+async def test_run_with_messages_continues_from_existing_history():
+    """run_with_messages 应从已有消息历史继续执行，并返回更新后的消息列表。"""
+    provider = FakeProvider([
+        {
+            "content": "",
+            "tool_calls": [{
+                "id": "call-2",
+                "type": "function",
+                "function": {"name": "open_case", "arguments": '{"case_path":"C:/case2"}'},
+            }],
+        },
+        {"content": "第二轮分析完成。"},
+    ])
+    router = FakeRouter()
+    original_count = 4
+    messages = [
+        {"role": "system", "content": "你是 Bug 分析助手。"},
+        {"role": "user", "content": "分析 APP-42"},
+        {"role": "assistant", "content": "第一轮分析：已确认日志中存在 SurfaceFlinger 错误。"},
+        {"role": "user", "content": "能详细看看 SurfaceFlinger 吗？"},
+    ]
+
+    result, updated_messages = await BugAnalysisAgent(CONFIG, provider).run_with_messages(
+        messages, router,
+    )
+
+    assert result.status == "completed"
+    assert result.steps == 2
+    assert "第二轮分析完成" in result.final_answer
+    # 消息列表在原有基础上追加了 tool + assistant 消息
+    assert len(updated_messages) > original_count
+    assert any("SurfaceFlinger" in str(m.get("content", "")) for m in updated_messages if m["role"] == "user")
+
+
+@pytest.mark.anyio
+async def test_run_with_messages_respects_max_steps_override():
+    """run_with_messages 的 max_steps_override 应覆盖配置中的步数预算。"""
+    tool_message = {
+        "tool_calls": [{
+            "id": "repeat",
+            "type": "function",
+            "function": {"name": "open_case", "arguments": "{}"},
+        }],
+    }
+    provider = FakeProvider([tool_message, tool_message, tool_message, tool_message])
+    messages = [
+        {"role": "system", "content": "你是助手。"},
+        {"role": "user", "content": "分析"},
+    ]
+
+    result, _ = await BugAnalysisAgent(CONFIG, provider).run_with_messages(
+        messages, FakeRouter(), max_steps_override=2,
+    )
+
+    assert result.status == "max_steps"
+    assert result.steps == 2  # 只用了 2 步，而不是 config 的 3 步
+
+
+@pytest.mark.anyio
+async def test_run_with_messages_accumulates_tool_events():
+    """run_with_messages 应正确累积工具调用事件。"""
+    provider = FakeProvider([
+        {
+            "tool_calls": [{
+                "id": "ev-1",
+                "type": "function",
+                "function": {"name": "open_case", "arguments": '{"case_path":"C:/a"}'},
+            }],
+        },
+        {"content": "完成。"},
+    ])
+    messages = [
+        {"role": "system", "content": "助手"},
+        {"role": "user", "content": "分析"},
+    ]
+
+    result, _ = await BugAnalysisAgent(CONFIG, provider).run_with_messages(messages, FakeRouter())
+
+    assert result.status == "completed"
+    assert len(result.tool_events) == 1
+    assert result.tool_events[0].tool_name == "open_case"
+    assert result.tool_events[0].success is True
+
+
+@pytest.mark.anyio
+async def test_run_with_messages_with_starting_step():
+    """run_with_messages 的 starting_step 参数应正确偏移步号。"""
+    provider = FakeProvider([
+        {
+            "tool_calls": [{
+                "id": "ev-x",
+                "type": "function",
+                "function": {"name": "open_case", "arguments": "{}"},
+            }],
+        },
+        {"content": "完成。"},
+    ])
+    messages = [
+        {"role": "system", "content": "助手"},
+        {"role": "user", "content": "分析"},
+    ]
+
+    result, _ = await BugAnalysisAgent(CONFIG, provider).run_with_messages(
+        messages, FakeRouter(), starting_step=5,
+    )
+
+    assert result.status == "completed"
+    assert result.steps == 2  # 相对步数，从 1 开始计数
+    assert result.tool_events[0].step == 6  # 绝对步号 = starting_step + 1

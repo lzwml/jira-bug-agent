@@ -12,6 +12,7 @@ from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .comment_compiler import CompiledJiraContext, compile_jira_context, sources_from_issue
 from .config import AgentConfig, default_export_root
 from .contracts import AnalysisGuide, BugAnalysisResult, BugAnalysisTask, RCAReport, SkillActivation
+from .conversation import ConversationSession
 from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
 from .prompts import (
@@ -531,3 +532,163 @@ class BugAnalysisWorker:
             + compiled.text
             + "\nEND_COMPILED_JIRA_CONTEXT"
         )
+
+    async def create_conversation(
+        self,
+        task: BugAnalysisTask,
+        *,
+        max_turns: int = 5,
+        max_steps_per_turn: int | None = None,
+    ) -> tuple[ConversationSession, str]:
+        """创建单次会话的连续问答会话。
+
+        【学习要点】与 execute() 的区别：
+        - execute() 是一次性分析：运行 → 返回结果 → 结束；
+        - create_conversation() 创建交互式会话：发送多轮消息 → 每轮得到回答 → 手动结束。
+
+        这个方法的职责是完成 Worker 层的准备工作（Skill 加载、Jira 导出、
+        MCP 连接、Provider 创建），然后返回一个可交互的 ConversationSession。
+
+        注意：Provider 和 MCP Router 的生命周期由 ConversationSession 持有，
+        调用方不需要管理它们的关闭。
+
+        Args:
+            task: 分析任务配置。
+            max_turns: 最大对话轮次（默认 5）。
+            max_steps_per_turn: 每轮最大步数（默认使用 config.max_steps）。
+
+        Returns:
+            已初始化的 ConversationSession，可调用 send() 进行多轮对话。
+
+        Raises:
+            ValueError: Case 路径不存在、Skill 加载失败等准备阶段错误。
+        """
+        run_config = replace(
+            self.config,
+            max_steps=task.max_steps if task.max_steps is not None else self.config.max_steps,
+        )
+
+        # 1. 加载 Skills
+        requested_skills = task.skills or ["android-log-triage"]
+        skill_prompt, applied_skills = self.skill_registry.render(requested_skills)
+        builtin_skills_root = Path(__file__).resolve().parents[2] / "skills"
+        report_registry = SkillRegistry(builtin_skills_root)
+        report_prompt, _ = report_registry.render(["stability-rca-report"])
+        skill_prompt += "\n\n" + report_prompt
+        applied_skills = list(dict.fromkeys([
+            *applied_skills,
+            "stability-rca-report",
+        ]))
+
+        # 2. 确定 Case 路径和 Jira 上下文
+        jira_context: JiraInitialContext | None = None
+        compiled_context: CompiledJiraContext | None = None
+        compiler_metrics: dict[str, int] = {}
+
+        if task.source == "local":
+            case_path = Path(task.case_path or "").expanduser().resolve()
+            if not case_path.is_dir():
+                raise ValueError(f"Case 目录不存在: {case_path}")
+            jira_context = load_jira_initial_context(
+                case_path,
+                require_jira=False,
+                max_chars=run_config.jira_initial_context_max_chars,
+            )
+        else:
+            # jira 模式需要导出
+            export_root = default_export_root()
+            export_root.mkdir(parents=True, exist_ok=True)
+            # 需要先创建临时 router 来导出 Jira
+            async with self.router_factory() as export_router:
+                connect = getattr(export_router, "connect_python_server")
+                await connect("jira", "jira_bug_mcp.server")
+                case_path = (await self.jira_exporter(task, export_router)).resolve()
+                try:
+                    case_path.relative_to(export_root)
+                except ValueError as exc:
+                    raise ValueError("Jira MCP 返回的 Case 路径超出配置的导出根目录") from exc
+                jira_context = load_jira_initial_context(
+                    case_path,
+                    require_jira=True,
+                    max_chars=run_config.jira_initial_context_max_chars,
+                )
+
+        # 3. 创建 MCP Router 并连接
+        router = self.router_factory()
+        connect = getattr(router, "connect_python_server")
+        await connect(
+            "log", "log_analyzer.server",
+            {"LOG_ANALYZER_ALLOWED_ROOTS": str(case_path)},
+        )
+
+        # 4. 创建 Provider
+        provider = self.provider_factory(run_config)
+
+        # 5. 编译大 Jira 上下文
+        if (
+            jira_context is not None
+            and len(jira_context.raw_text) > run_config.jira_direct_context_max_chars
+        ):
+            compiled_context = await compile_jira_context(
+                provider,
+                run_config,
+                issue_key=jira_context.issue_key,
+                issue=jira_context.issue,
+                metrics=compiler_metrics,
+            )
+
+        # 6. 构建系统提示词
+        if task.source == "jira":
+            prompt = JIRA_WORKFLOW_PROMPT
+        else:
+            prompt = LOCAL_WORKFLOW_PROMPT
+
+        prompt += "\n\n" + skill_prompt + REPORT_FORMAT_PROMPT
+
+        # 7. 构建初始用户任务
+        instruction = (
+            f"任务编号：{task.task_id}\n"
+            f"请分析 Bug Case：{case_path}。目标：{task.objective}"
+        )
+        if task.source == "jira":
+            instruction = (
+                f"任务编号：{task.task_id}\n"
+                f"Worker 已将 Jira 数据导出到本地 Case：{case_path}。"
+                "请直接用这个路径调用 open_case，不要重复收集或导出 Jira。"
+            )
+
+        instruction = BugAnalysisWorker._append_jira_context(
+            instruction, jira_context, compiled_context,
+        )
+
+        # 8. 创建 SkillAwareToolRouter
+        skill_router = SkillAwareToolRouter(
+            router,
+            self.skill_registry,
+            applied_skills,
+            initial_source=(
+                "explicit" if task.skills is not None else "default"
+            ),
+            auto_enabled=task.auto_select_skills,
+            documents=self.skill_registry.discover() if task.auto_select_skills else [],
+        )
+        catalog_prompt = skill_router.catalog_prompt()
+        if catalog_prompt:
+            prompt += "\n\n" + catalog_prompt
+
+        # 9. 创建 Agent
+        agent = BugAnalysisAgent(run_config, provider)
+
+        # 10. 创建 ConversationSession
+        # 注意：ConversationSession 不拥有 system prompt 中的第一轮任务指令，
+        # 这由调用方通过 send() 发送第一条消息来触发。
+        session = ConversationSession(
+            agent=agent,
+            system_prompt=prompt,
+            router=skill_router,
+            max_turns=max_turns,
+            max_steps_per_turn=max_steps_per_turn,
+            goal_mode=task.goal_mode,
+        )
+
+        return session, instruction

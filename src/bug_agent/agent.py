@@ -9,6 +9,10 @@ Reasoning(推理) + Acting(行动) 交替进行，直到模型给出最终答案
 3. 每次工具调用都被记录为 ToolEvent，形成可追溯的执行轨迹；
 4. 工具结果会被截断，防止超长日志撑爆模型上下文。
 
+支持两种模式：
+- 单次分析：run() 从头构建消息并执行完整循环
+- 连续问答：run_with_messages() 从已有消息继续执行，支持多轮追问
+
 这种解耦让 Agent Loop 可以在测试中用 FakeProvider/FakeRouter 驱动，
 完全不依赖真实 LLM 和 MCP Server。见 tests/test_agent.py。
 """
@@ -138,6 +142,121 @@ class BugAnalysisAgent:
                     await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
 
+    async def _run_loop(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        router: ToolRouter,
+        on_tool_event: Callable[[ToolEvent], None] | None = None,
+        goal_mode: bool = False,
+        starting_step: int = 0,
+        max_steps_override: int | None = None,
+    ) -> tuple[AgentRunResult, list[dict]]:
+        """执行 Agent 主循环，从已有消息列表继续执行。
+
+        【学习要点】与 run() 的区别：
+        - run() 从零构建 messages 并调用 _run_loop()；
+        - _run_loop() 从给定的 messages 继续执行，适用于连续问答场景；
+        - 返回 (result, updated_messages)，让调用方可以继续追加消息。
+        - max_steps_override：覆盖配置中的步数预算，用于每轮独立预算。
+
+        【学习要点】返回的 messages 包含了循环中所有新增的 assistant/tool 消息，
+        以及最终的 assistant 回答。调用方可以继续向这个列表追加 user 消息，
+        然后再次调用 _run_loop() 实现连续追问。
+        """
+        effective_max = starting_step + (
+            max_steps_override if max_steps_override is not None else self.config.max_steps
+        )
+        events: list[ToolEvent] = []
+        step = starting_step
+        while True:
+            step += 1
+            if not goal_mode and step > effective_max:
+                return AgentRunResult(
+                    status="max_steps",
+                    task="",
+                    final_answer="达到最大步骤数，尚未形成可靠结论。",
+                    steps=effective_max - starting_step,
+                    tool_events=events,
+                ), messages
+            try:
+                message = await self._complete(messages, tools)
+            except ProviderError as exc:
+                return AgentRunResult(
+                    status="failed", task="", final_answer="", steps=step - 1 - starting_step,
+                    tool_events=events, error=str(exc),
+                    error_type=type(exc).__name__, retryable=exc.retryable,
+                ), messages
+
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                content = str(message.get("content") or "").strip()
+                if content:
+                    messages.append({
+                        "role": "assistant",
+                        "content": content,
+                    })
+                    return AgentRunResult(
+                        status="completed", task="", final_answer=content,
+                        steps=step - starting_step, tool_events=events,
+                    ), messages
+                return AgentRunResult(
+                    status="failed", task="", final_answer="", steps=step - starting_step,
+                    tool_events=events, error="模型既未输出答案，也未调用工具",
+                ), messages
+
+            messages.append({
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+
+            for call in tool_calls:
+                call_id = str(call.get("id") or f"step-{step}-{len(events)}")
+                function = call.get("function") or {}
+                name = str(function.get("name") or "")
+
+                try:
+                    arguments = json.loads(function.get("arguments") or "{}")
+                    if not isinstance(arguments, dict):
+                        raise ValueError("工具参数必须是 JSON 对象")
+                    result = await router.call(name, arguments)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    arguments = {}
+                    result = json.dumps({
+                        "success": False,
+                        "error_code": "INVALID_TOOL_ARGUMENTS",
+                        "error_message": str(exc),
+                        "retryable": False,
+                    }, ensure_ascii=False)
+                except Exception as exc:
+                    result = json.dumps({
+                        "success": False,
+                        "error_code": "TOOL_EXECUTION_ERROR",
+                        "error_message": type(exc).__name__,
+                        "retryable": True,
+                    }, ensure_ascii=False)
+
+                result = _bounded_result(result, self.config.max_tool_result_chars)
+
+                event = ToolEvent(
+                    step=step,
+                    tool_call_id=call_id,
+                    tool_name=name,
+                    arguments=arguments,
+                    result=result,
+                    success=_result_success(result),
+                )
+                events.append(event)
+
+                if on_tool_event is not None:
+                    try:
+                        on_tool_event(event)
+                    except Exception:
+                        pass
+
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
     async def run(
         self,
         task: str,
@@ -146,7 +265,7 @@ class BugAnalysisAgent:
         on_tool_event: Callable[[ToolEvent], None] | None = None,
         goal_mode: bool = False,
     ) -> AgentRunResult:
-        """执行 Agent 主循环。
+        """执行 Agent 主循环（从头开始）。
 
         【学习要点】参数设计：
         - task: 用户任务描述(如"分析 APP-42 黑屏问题")；
@@ -163,129 +282,58 @@ class BugAnalysisAgent:
 
         Worker 会把这个内部结果转换成对外的 BugAnalysisResult 契约。
         """
-        # 初始化对话历史：system + user 是标准开局。
         messages: list[dict] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": task},
         ]
-        # 记录每次工具调用，形成执行轨迹(trace)。
-        events: list[ToolEvent] = []
-        # 获取所有可用工具的 OpenAI 格式定义。
         tools = router.openai_tools()
+        result, _ = await self._run_loop(
+            messages, tools, router, on_tool_event, goal_mode,
+        )
+        # 把 task 信息回填到结果中，保持与旧接口兼容。
+        return AgentRunResult(
+            status=result.status,
+            task=task,
+            final_answer=result.final_answer,
+            steps=result.steps,
+            tool_events=result.tool_events,
+            error=result.error,
+            error_type=result.error_type,
+            retryable=result.retryable,
+        )
 
-        # 【学习要点】主循环：goal_mode 下不限制步数，否则最多执行 max_steps 步。
-        # 每一步：调用模型 → 处理工具调用 → 将结果追加到消息历史。
-        # 模型看到历史后会决定是继续调工具还是给出最终答案。
-        step = 0
-        while True:
-            step += 1
-            if not goal_mode and step > self.config.max_steps:
-                # 达到步骤上限：模型还没给出最终答案。
-                # 【学习要点】这不是"失败"，而是"预算耗尽"。
-                # Bug 分析可能需要多轮证据收集，如果步骤太少会频繁触发这个状态。
-                # Worker 会把这个状态映射为 BugAnalysisResult.status="max_steps"。
-                return AgentRunResult(
-                    status="max_steps",
-                    task=task,
-                    final_answer="达到最大步骤数，尚未形成可靠结论。",
-                    steps=self.config.max_steps,
-                    tool_events=events,
-                )
-            try:
-                message = await self._complete(messages, tools)
-            except ProviderError as exc:
-                # 认证和参数错误立即失败；限流、5xx 和网络错误已在
-                # _complete 中做有限退避，耗尽预算后保留已有 Trace 返回。
-                return AgentRunResult(
-                    status="failed", task=task, final_answer="", steps=step - 1,
-                    tool_events=events, error=str(exc),
-                    error_type=type(exc).__name__, retryable=exc.retryable,
-                )
+    async def run_with_messages(
+        self,
+        messages: list[dict],
+        router: ToolRouter,
+        on_tool_event: Callable[[ToolEvent], None] | None = None,
+        goal_mode: bool = False,
+        starting_step: int = 0,
+        max_steps_override: int | None = None,
+    ) -> tuple[AgentRunResult, list[dict]]:
+        """从已有消息列表继续执行 Agent 循环。
 
-            tool_calls = message.get("tool_calls") or []
-            if not tool_calls:
-                # 模型没有调用工具 → 这是最终答案。
-                content = str(message.get("content") or "").strip()
-                if content:
-                    # 【学习要点】正常结束：模型给出了文本回答。
-                    # Worker 层会尝试解析为 RCAReport JSON。
-                    return AgentRunResult(
-                        status="completed", task=task, final_answer=content,
-                        steps=step, tool_events=events,
-                    )
-                # 异常情况：模型既没调工具也没回答，通常是模型故障或提示词问题。
-                return AgentRunResult(
-                    status="failed", task=task, final_answer="", steps=step,
-                    tool_events=events, error="模型既未输出答案，也未调用工具",
-                )
+        【学习要点】这是连续问答的核心接口：
+        - messages: 包含 system、user、assistant、tool 消息的完整对话历史；
+        - starting_step: 当前轮次的起始步号（用于全局限步计数）；
+        - max_steps_override: 覆盖本轮步数预算，默认使用 config.max_steps；
+        - 返回 (result, updated_messages)，updated_messages 包含本轮的
+          新增消息和最终回答，可以直接用于下一轮追问。
 
-            # 模型要调用工具：先把 assistant 消息加入历史。
-            # 【学习要点】这条消息必须保留 tool_calls 字段，
-            # 因为后面的 tool 消息要通过 tool_call_id 关联到这次调用。
-            messages.append({
-                "role": "assistant",
-                "content": message.get("content") or "",
-                "tool_calls": tool_calls,
-            })
-
-            # 执行所有工具调用(可能并行多个)。
-            for call in tool_calls:
-                # 提取工具调用 ID，用于关联后续的 tool 消息。
-                # 如果模型没提供 ID，生成一个备用 ID。
-                call_id = str(call.get("id") or f"step-{step}-{len(events)}")
-                function = call.get("function") or {}
-                name = str(function.get("name") or "")
-
-                # 【学习要点】错误处理策略：工具调用的失败不应该导致 Agent 崩溃，
-                # 而是转换成结构化的错误结果，作为"观察"反馈给模型，
-                # 让模型决定是修正参数重试，还是放弃这条路径。
-                try:
-                    arguments = json.loads(function.get("arguments") or "{}")
-                    if not isinstance(arguments, dict):
-                        raise ValueError("工具参数必须是 JSON 对象")
-                    result = await router.call(name, arguments)
-                except (json.JSONDecodeError, ValueError) as exc:
-                    # 模型生成了无效的 JSON 参数：不执行工具，返回错误观察。
-                    # retryable=False 告诉模型"参数格式错了，重试前先修正"。
-                    arguments = {}
-                    result = json.dumps({
-                        "success": False,
-                        "error_code": "INVALID_TOOL_ARGUMENTS",
-                        "error_message": str(exc),
-                        "retryable": False,
-                    }, ensure_ascii=False)
-                except Exception as exc:
-                    # 工具执行过程中抛出异常(如 MCP Server 崩溃、文件不存在)。
-                    # retryable=True 表示这是暂时性故障，模型可以选择重试。
-                    result = json.dumps({
-                        "success": False,
-                        "error_code": "TOOL_EXECUTION_ERROR",
-                        "error_message": type(exc).__name__,
-                        "retryable": True,
-                    }, ensure_ascii=False)
-
-                # 截断超长结果，保护模型上下文。
-                result = _bounded_result(result, self.config.max_tool_result_chars)
-
-                # 记录这次工具调用事件。
-                event = ToolEvent(
-                    step=step,
-                    tool_call_id=call_id,
-                    tool_name=name,
-                    arguments=arguments,
-                    result=result,
-                    success=_result_success(result),
-                )
-                events.append(event)
-
-                # 实时通知外部观察者（如 RunRecorder），失败不影响主流程。
-                if on_tool_event is not None:
-                    try:
-                        on_tool_event(event)
-                    except Exception:
-                        pass
-
-                # 将工具结果作为 tool 消息追加到对话历史。
-                # 【学习要点】tool_call_id 是关键：它告诉模型"这个结果对应你刚才的哪次调用"。
-                # 模型在下一轮会看到这个结果，并据此决定下一步行动。
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+        典型用法（连续问答）：
+        ```python
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "分析 Bug A"},
+        ]
+        result1, messages = await agent.run_with_messages(messages, router)
+        # 用户追问
+        messages.append({"role": "user", "content": "能详细看看 SurfaceFlinger 吗？"})
+        result2, messages = await agent.run_with_messages(messages, router)
+        ```
+        """
+        tools = router.openai_tools()
+        return await self._run_loop(
+            messages, tools, router, on_tool_event, goal_mode, starting_step,
+            max_steps_override,
+        )

@@ -79,6 +79,29 @@ def _parser() -> argparse.ArgumentParser:
         "--work-dir",
         help="索引/内部状态目录；归档始终解压到其旁边的 <归档名>.unpacked，默认状态目录为 Case/.bug-agent",
     )
+    # ---- 连续问答模式 ----
+    chat_local = sub.add_parser("chat-local", help="交互式连续问答，分析本地 Bug Case")
+    chat_local.add_argument("case_path")
+    chat_local.add_argument("--max-turns", type=int, default=5, help="最大对话轮次（默认 5）")
+    chat_local.add_argument("--max-steps-per-turn", type=int, help="每轮最大步数（默认使用配置值）")
+    chat_local.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
+    chat_local.add_argument("--goal", action="store_true", help="Goal 模式：不限制工具调用次数")
+    chat_local.add_argument(
+        "--skill", dest="skills", action="append",
+        help="预先激活 Skill；可重复指定",
+    )
+    chat_local.add_argument("--no-auto-skills", action="store_true", help="禁止自动激活 Skill")
+    chat_jira = sub.add_parser("chat-jira", help="交互式连续问答，分析 Jira Bug")
+    chat_jira.add_argument("issue_key", help="例如 APP-42")
+    chat_jira.add_argument("--max-turns", type=int, default=5, help="最大对话轮次（默认 5）")
+    chat_jira.add_argument("--max-steps-per-turn", type=int, help="每轮最大步数（默认使用配置值）")
+    chat_jira.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
+    chat_jira.add_argument("--goal", action="store_true", help="Goal 模式：不限制工具调用次数")
+    chat_jira.add_argument(
+        "--skill", dest="skills", action="append",
+        help="预先激活 Skill；可重复指定",
+    )
+    chat_jira.add_argument("--no-auto-skills", action="store_true", help="禁止自动激活 Skill")
     return parser
 
 
@@ -272,6 +295,8 @@ async def _run(args: argparse.Namespace) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         prepare_result = payload.get("prepare", {})
         return 0 if isinstance(prepare_result, dict) and prepare_result.get("success") else 1
+    if args.command in ("chat-local", "chat-jira"):
+        return await _run_chat(args)
     config = AgentConfig.from_environment()
     common = {
         "objective": args.objective,
@@ -311,6 +336,114 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"\n完整执行轨迹已保存到: {run_dir}")
             print(f"  （文件名格式：<时间戳>_{task.task_id}.json）")
     return 0 if result.status in {"completed", "insufficient_evidence"} else 1
+
+
+async def _run_chat(args: argparse.Namespace) -> int:
+    """运行交互式连续问答模式。
+
+    支持两种模式：
+    - chat-local：分析本地 Bug Case；
+    - chat-jira：从 Jira 导出并分析。
+
+    交互式终端中，用户可以连续追问，输入 /quit 或 /q 退出，
+    输入 /history 查看当前对话轮次。
+    """
+    config = AgentConfig.from_environment()
+    worker = BugAnalysisWorker(config)
+
+    common = {
+        "objective": args.objective,
+        "goal_mode": args.goal,
+        "auto_select_skills": not args.no_auto_skills,
+    }
+    if args.skills:
+        common["skills"] = args.skills
+
+    if args.command == "chat-jira":
+        task = BugAnalysisTask(source="jira", issue_key=args.issue_key.upper(), **common)
+    else:
+        task = BugAnalysisTask(source="local", case_path=args.case_path, **common)
+
+    print("=" * 60)
+    print("Bug Analysis Agent — 交互式连续问答模式")
+    print("=" * 60)
+    print(f"Case: {task.issue_key or task.case_path}")
+    print(f"目标: {task.objective}")
+    print(f"最大轮次: {args.max_turns}")
+    if args.max_steps_per_turn:
+        print(f"每轮步数: {args.max_steps_per_turn}")
+    print()
+    print("输入 /quit 或 /q 退出，输入 /history 查看对话轮次")
+    print("=" * 60)
+    print()
+
+    try:
+        session, first_instruction = await worker.create_conversation(
+            task,
+            max_turns=args.max_turns,
+            max_steps_per_turn=args.max_steps_per_turn,
+        )
+    except (ValueError, OSError) as exc:
+        print(f"\n会话创建失败: {exc}", file=sys.stderr)
+        return 2
+
+    print("[系统] 正在执行初始分析，请稍候...\n")
+
+    try:
+        # 第一轮：初始分析
+        turn = await session.send(first_instruction)
+        print(f"[第 1 轮回答]")
+        print("-" * 40)
+        print(turn.result.final_answer)
+        print("-" * 40)
+        if turn.result.status == "failed":
+            print(f"\n[错误] {turn.result.error}")
+            return 1
+        if turn.result.status == "max_steps":
+            print(f"\n[提示] 本轮达到步数上限，部分证据可能未收集完整。")
+
+        # 后续轮次：交互式追问
+        while session.is_active:
+            print(f"\n[轮次 {session.turn_count + 1}/{args.max_turns}] ", end="")
+            try:
+                user_input = input("请输入追问（或 /quit 退出）: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n\n[系统] 会话结束。")
+                break
+
+            if not user_input:
+                continue
+            if user_input.lower() in ("/quit", "/q", "/exit"):
+                print("\n[系统] 会话结束。")
+                break
+            if user_input.lower() == "/history":
+                print(f"\n已完成 {session.turn_count} 轮对话：")
+                for i, t in enumerate(session._turns, 1):
+                    preview = t.user_message[:80] + ("..." if len(t.user_message) > 80 else "")
+                    print(f"  [{i}] {preview}")
+                continue
+
+            print(f"\n[系统] 正在分析追问...")
+            try:
+                turn = await session.send(user_input)
+            except RuntimeError as exc:
+                print(f"\n[系统] 无法继续: {exc}")
+                break
+
+            print(f"\n[第 {session.turn_count} 轮回答]")
+            print("-" * 40)
+            print(turn.result.final_answer)
+            print("-" * 40)
+            if turn.result.status == "max_steps":
+                print(f"\n[提示] 本轮达到步数上限。")
+
+    finally:
+        result = await session.finalize()
+        print(f"\n{'=' * 60}")
+        print(f"会话结束。共 {len(result.turns)} 轮，{result.total_steps} 步。")
+        print(f"{'=' * 60}")
+
+    return 0
 
 
 def main() -> None:
