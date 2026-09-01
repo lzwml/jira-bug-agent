@@ -80,6 +80,11 @@ python -m log_analyzer.server
 Case 下的 `.bug-agent/`。配置 `LOG_ANALYZER_WORK_ROOT` 后，可将索引和内部状态
 集中写入指定的服务端工作区。
 
+新的分析进程重新打开同一 Case 时，`inspect_archive` 会校验源归档的大小、mtime、
+SHA-256 和受管目录完整性。未变化的成员直接返回 `extracted=true`、`artifact_id` 和
+虚拟相对路径，Agent 可以直接建索引或检索，不需要再次调用解压工具；只有源归档变化、
+缓存损坏或目标成员尚未解压时才会重新展开。
+
 其他安全约束：
 
 - 原始附件始终只读；归档旁只创建带受控 Manifest 的 `.unpacked` 目录；
@@ -135,7 +140,8 @@ Case 下的 `.bug-agent/`。MCP Server 模式默认采用相同布局，也可�
 3. 根据 Issue/Case 的症状、问题时间和附件规模选择候选归档
 4. inspect_archive(case_id="case_xxx", artifact_id="artifact_xxx")
 5. 根据时间窗口、日志域、文件名和大小选择 member_id
-6. extract_archive_members(
+6. 若成员返回 extracted=true 和 artifact_id，直接进入第 7 步；否则调用
+   extract_archive_members(
      case_id="case_xxx",
      artifact_id="artifact_xxx",
      member_ids=["member_xxx", "member_yyy"]

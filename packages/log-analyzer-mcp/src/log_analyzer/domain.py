@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -222,6 +223,19 @@ class PrepareCaseInput(BaseModel):
     force_rebuild: bool = False
 
 
+class ArchiveTimeRange(BaseModel):
+    """本地 Case 时间的 APLog 归档选择范围，不隐式换算时区。"""
+
+    start: datetime = Field(description="本地时间，格式 YYYY-MM-DDTHH:MM:SS")
+    end: datetime = Field(description="本地时间，格式 YYYY-MM-DDTHH:MM:SS，必须不早于 start")
+
+    def model_post_init(self, __context) -> None:
+        if self.start.tzinfo is not None or self.end.tzinfo is not None:
+            raise ValueError("time_range 不接受时区；请提供本地 naive 时间")
+        if self.end < self.start:
+            raise ValueError("time_range.end 必须不早于 time_range.start")
+
+
 class InspectArchiveInput(BaseModel):
     """只读归档成员清单，不将成员内容解压到磁盘。
 
@@ -244,6 +258,8 @@ class InspectArchiveInput(BaseModel):
     member_offset: int = Field(default=0, ge=0, le=1_000_000)
     source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
     max_members: int = Field(default=1000, ge=1, le=5000)
+    time_range: ArchiveTimeRange | None = None
+    neighbor_count: int = Field(default=1, ge=0, le=3)
 
 
 class ExtractArchiveMembersInput(BaseModel):

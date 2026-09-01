@@ -20,6 +20,8 @@ Do not infer the active boot round from `log00`/`log01` numbering alone. Confirm
 
 If required evidence is inside an archive, call `inspect_archive` first. Select the smallest useful member set from the symptom, incident-time window, log domain, filename and size, then call `extract_archive_members` and `build_index` for the returned Artifact IDs. Expand the selection only when evidence is insufficient. Use `prepare_case` only as an explicit full-extraction fallback after progressive selection fails or the user requests complete preparation. If the format is unsupported or a safety budget rejects it, return missing evidence with the reported reason. Never pretend an archive filename proves its contents.
 
+For members named `APLog_YYYY_MMDD_HHMMSS__NN`, first take the reported incident date/time from validated Jira context. Call `inspect_archive` with its structured `time_range` and `neighbor_count=1`; the tool sorts valid APLog starts and returns the predecessor, range members, and successor with safe `member_id` values. A returned `extracted=true` plus `artifact_id` is reusable evidence and must not be extracted again. Do not assume a fixed APLog duration, infer a Boot round from the sequence number, or guess when Jira provides only a time-of-day or an ambiguous date. In that case, report the limitation.
+
 ## Select the symptom route
 
 This Skill supplies MTK platform context; it is not a substitute for a symptom investigation. Activate one primary symptom Skill, chosen from the reported behavior and the first diagnostic identity:
@@ -74,3 +76,4 @@ Platform details for maintainers are separated by concern:
 - Linux/TBox and peripheral conventions: `references/linux-vm.md`
 - Clock normalization rules: `references/clock-domains.md`
 - Archive handling requirements: `references/archive-safety.md`
+- APLog incident-time archive selection: `references/aplog-archive-selection.md`

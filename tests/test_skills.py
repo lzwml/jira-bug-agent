@@ -64,9 +64,10 @@ def test_mtk_ivi_skill_references_are_present():
     expected = {
         "android-vm.md",
         "linux-vm.md",
-        "clock-domains.md",
-        "archive-safety.md",
-        "symptom-routing.md",
+            "clock-domains.md",
+            "archive-safety.md",
+            "aplog-archive-selection.md",
+            "symptom-routing.md",
     }
 
     assert {path.name for path in reference_root.glob("*.md")} == expected

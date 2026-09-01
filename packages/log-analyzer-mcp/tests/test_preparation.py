@@ -100,6 +100,65 @@ def test_agent_flow_inspects_extracts_and_indexes_only_selected_member(tmp_path)
     assert service.search_evidence(case_id=case_id, query="radio evidence").data["match_count"] == 0
 
 
+def test_new_analysis_reuses_extracted_member_without_extract_call(tmp_path):
+    case_dir, registry, first_service = _service(tmp_path)
+    with zipfile.ZipFile(case_dir / "android.zip", "w") as archive:
+        archive.writestr("logs/main.log", "SurfaceFlinger reusable evidence\n")
+        archive.writestr("logs/radio.log", "not selected\n")
+    first_case_id = _open(first_service, case_dir)
+    archive_id = first_service.inspect_case(case_id=first_case_id).data["artifacts"][0]["artifact_id"]
+    first_inventory = first_service.inspect_archive(
+        case_id=first_case_id, artifact_id=archive_id,
+    )
+    main_member = next(
+        item for item in first_inventory.data["members"]
+        if item["member_path"] == "logs/main.log"
+    )
+    extracted = first_service.extract_archive_members(
+        case_id=first_case_id,
+        artifact_id=archive_id,
+        member_ids=[main_member["member_id"]],
+    )
+    assert extracted.success
+
+    # 模拟续分析启动新的 MCP 进程：内存注册表为空，只保留 Case 磁盘状态。
+    second_registry = CaseRegistry(
+        [str(tmp_path)],
+        work_root=str(tmp_path / "work"),
+        archive_limits=registry.archive_limits,
+        index_limits=registry.index_limits,
+    )
+    second_service = LogAnalyzerService(second_registry)
+    second_case_id = _open(second_service, case_dir)
+    second_archive_id = second_service.inspect_case(
+        case_id=second_case_id,
+    ).data["artifacts"][0]["artifact_id"]
+
+    reused_inventory = second_service.inspect_archive(
+        case_id=second_case_id, artifact_id=second_archive_id,
+    )
+    reused_main = next(
+        item for item in reused_inventory.data["members"]
+        if item["member_path"] == "logs/main.log"
+    )
+
+    assert reused_inventory.success
+    assert reused_inventory.data["extraction"] == {
+        "reusable": True,
+        "extracted_member_count": 1,
+    }
+    assert reused_main["extracted"] is True
+    assert reused_main["artifact_id"] is not None
+    assert reused_main["relative_path"] == "android.zip!/logs/main.log"
+    indexed = second_service.build_index(
+        case_id=second_case_id, artifact_ids=[reused_main["artifact_id"]],
+    )
+    assert indexed.success
+    assert second_service.search_evidence(
+        case_id=second_case_id, query="reusable evidence",
+    ).data["match_count"] == 1
+
+
 def test_archive_inventory_supports_bounded_pagination(tmp_path):
     case_dir, _, service = _service(tmp_path)
     with zipfile.ZipFile(case_dir / "many.zip", "w") as archive:
@@ -122,6 +181,43 @@ def test_archive_inventory_supports_bounded_pagination(tmp_path):
     assert [item["member_path"] for item in second.data["members"]] == ["logs/2.log", "logs/3.log"]
     assert first.data["truncated"] is True
     assert second.data["next_offset"] == 4
+
+
+def test_inspect_archive_selects_aplogs_by_incident_time_before_pagination(tmp_path):
+    case_dir, _, service = _service(tmp_path)
+    with zipfile.ZipFile(case_dir / "aplogs.zip", "w") as archive:
+        # Deliberately reverse the ZIP order; selection must use parsed start time.
+        for minute in reversed(range(44)):
+            archive.writestr(f"APLog_2026_0831_06{minute:02d}00__{minute}.tar.gz", "payload")
+        archive.writestr("unrelated.txt", "not an APLog")
+    case_id = _open(service, case_dir)
+    archive_id = service.inspect_case(case_id=case_id).data["artifacts"][0]["artifact_id"]
+
+    result = service.inspect_archive(
+        case_id=case_id,
+        artifact_id=archive_id,
+        time_range={"start": "2026-08-31T06:15:00", "end": "2026-08-31T06:30:00"},
+        neighbor_count=1,
+        max_members=100,
+    )
+
+    assert result.success
+    assert result.data["selection"] == {
+        "mode": "archive_name_time",
+        "requested_start": "2026-08-31T06:15:00",
+        "requested_end": "2026-08-31T06:30:00",
+        "neighbor_count": 1,
+        "matched_member_count": 16,
+        "returned_member_count": 18,
+    }
+    assert len(result.data["members"]) == 18
+    assert [item["time_relation"] for item in result.data["members"]] == [
+        "predecessor", *(["in_range"] * 16), "successor",
+    ]
+    assert result.data["members"][0]["parsed_start_time"] == "2026-08-31T06:14:00"
+    assert result.data["members"][-1]["parsed_start_time"] == "2026-08-31T06:31:00"
+    assert all(item["member_id"] for item in result.data["members"])
+    assert "unrelated.txt" not in {item["member_path"] for item in result.data["members"]}
 
 
 def test_archive_inventory_rejects_stale_pagination_fingerprint(tmp_path):

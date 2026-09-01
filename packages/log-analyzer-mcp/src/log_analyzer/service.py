@@ -32,7 +32,11 @@ from .archive_manager import (
     is_supported_archive,
 )
 from .archive_selection import extract_archive_members as extract_selected_members
-from .archive_selection import inventory_archive, managed_extraction_matches
+from .archive_selection import (
+    inspect_reusable_extraction,
+    inventory_archive,
+    select_aplog_time_range,
+)
 from .case_registry import CaseRegistry
 from .domain import (
     BuildIndexInput,
@@ -240,14 +244,71 @@ class LogAnalyzerService:
         if params.source_sha256 and params.source_sha256 != inventory.source_fingerprint.sha256:
             self.registry.remove_archive_descendants(params.case_id, artifact.artifact_id)
             return make_error("ARCHIVE_SOURCE_CHANGED", "归档版本已变化，请从第一页重新读取清单")
-        extraction_current = managed_extraction_matches(
-            path, artifact.artifact_id, inventory.source_fingerprint
-        )
+        extraction_current, reusable = inspect_reusable_extraction(inventory)
         if extraction_current is False:
             self.registry.remove_archive_descendants(params.case_id, artifact.artifact_id)
-        page_end = min(params.member_offset + params.max_members, len(inventory.members))
-        page = inventory.members[params.member_offset:page_end]
-        has_more = page_end < len(inventory.members)
+        selected_by_id = {}
+        selection_payload = None
+        members = inventory.members
+        if params.time_range is not None:
+            selected = select_aplog_time_range(
+                inventory.members, params.time_range.start, params.time_range.end, params.neighbor_count,
+            )
+            selected_by_id = {item.member.member_id: item for item in selected}
+            members = [item.member for item in selected]
+            selection_payload = {
+                "mode": "archive_name_time",
+                "requested_start": params.time_range.start.isoformat(),
+                "requested_end": params.time_range.end.isoformat(),
+                "neighbor_count": params.neighbor_count,
+                "matched_member_count": sum(item.relation == "in_range" for item in selected),
+                "returned_member_count": len(selected),
+            }
+        page_end = min(params.member_offset + params.max_members, len(members))
+        page = members[params.member_offset:page_end]
+        reusable_by_id = {item.member_id: item for item in reusable}
+        page_reusable = [
+            reusable_by_id[item.member_id]
+            for item in page
+            if item.member_id in reusable_by_id
+        ]
+        try:
+            registered = self.registry.register_extracted_artifacts(
+                params.case_id,
+                source_archive=artifact,
+                members=[(item.path, item.member_path) for item in page_reusable],
+            )
+        except ValueError as exc:
+            return make_error("CASE_TOO_LARGE", str(exc))
+        artifacts_by_path = {item.relative_path: item for item in registered}
+        member_payloads = []
+        for item in page:
+            virtual_path = f"{artifact.relative_path}!/{item.member_path}"
+            registered_artifact = artifacts_by_path.get(virtual_path)
+            member_payloads.append({
+                "member_id": item.member_id,
+                "member_path": item.member_path,
+                "size_bytes": item.size_bytes,
+                "compressed_size": item.compressed_size,
+                "kind": item.kind,
+                "is_archive": item.is_archive,
+                "safe": item.safe,
+                "reason": item.reason,
+                "extracted": registered_artifact is not None,
+                "artifact_id": (
+                    registered_artifact.artifact_id if registered_artifact else None
+                ),
+                "relative_path": virtual_path if registered_artifact else None,
+                "parsed_start_time": (
+                    selected_by_id[item.member_id].parsed.start_time.isoformat()
+                    if item.member_id in selected_by_id else None
+                ),
+                "time_relation": (
+                    selected_by_id[item.member_id].relation
+                    if item.member_id in selected_by_id else None
+                ),
+            })
+        has_more = page_end < len(members)
         return make_success({
             "case_id": params.case_id,
             "artifact_id": artifact.artifact_id,
@@ -263,19 +324,12 @@ class LogAnalyzerService:
                 "mtime_ns": inventory.source_fingerprint.mtime_ns,
                 "sha256": inventory.source_fingerprint.sha256,
             },
-            "members": [
-                {
-                    "member_id": item.member_id,
-                    "member_path": item.member_path,
-                    "size_bytes": item.size_bytes,
-                    "compressed_size": item.compressed_size,
-                    "kind": item.kind,
-                    "is_archive": item.is_archive,
-                    "safe": item.safe,
-                    "reason": item.reason,
-                }
-                for item in page
-            ],
+            "extraction": {
+                "reusable": extraction_current is True,
+                "extracted_member_count": len(reusable),
+            },
+            "selection": selection_payload,
+            "members": member_payloads,
         })
 
     def extract_archive_members(self, **kwargs) -> ToolResult:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import gzip
 import hashlib
 import json
@@ -18,6 +19,7 @@ import tarfile
 import time
 import uuid
 import zipfile
+import re
 
 from .archive_manager import (
     COPY_CHUNK_BYTES,
@@ -53,6 +55,73 @@ class ArchiveMemberInfo:
     is_archive: bool
     safe: bool
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ParsedAPLogName:
+    """从 APLog basename 得到的本地起始时间和卷序号。"""
+
+    start_time: datetime
+    sequence: int
+
+
+@dataclass(frozen=True)
+class TimeSelectedMember:
+    member: ArchiveMemberInfo
+    parsed: ParsedAPLogName
+    relation: str
+
+
+_APLOG_BASENAME_RE = re.compile(
+    r"^APLog_(?P<year>\d{4})_(?P<month>\d{2})(?P<day>\d{2})_"
+    r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})__(?P<sequence>\d+)"
+    r"(?:\.[^.]+)*$"
+)
+
+
+def parse_aplog_basename(member_path: str) -> ParsedAPLogName | None:
+    """解析完整 APLog basename；无效日期或其他成员均返回 None。"""
+
+    match = _APLOG_BASENAME_RE.fullmatch(PurePosixPath(member_path).name)
+    if match is None:
+        return None
+    try:
+        return ParsedAPLogName(
+            start_time=datetime(
+                int(match["year"]), int(match["month"]), int(match["day"]),
+                int(match["hour"]), int(match["minute"]), int(match["second"]),
+            ),
+            sequence=int(match["sequence"]),
+        )
+    except ValueError:
+        return None
+
+
+def select_aplog_time_range(
+    members: list[ArchiveMemberInfo], start: datetime, end: datetime, neighbor_count: int,
+) -> list[TimeSelectedMember]:
+    """按 APLog 起始时间选择范围内成员及前后相邻成员。"""
+
+    parsed_members = [
+        (member, parsed)
+        for member in members
+        if (parsed := parse_aplog_basename(member.member_path)) is not None
+    ]
+    parsed_members.sort(key=lambda item: (item[1].start_time, item[1].sequence, item[0].member_path))
+    in_range = [(member, parsed) for member, parsed in parsed_members if start <= parsed.start_time <= end]
+    predecessors = [(member, parsed) for member, parsed in parsed_members if parsed.start_time < start]
+    successors = [(member, parsed) for member, parsed in parsed_members if parsed.start_time > end]
+    selected: dict[str, TimeSelectedMember] = {}
+    for member, parsed in predecessors[-neighbor_count:] if neighbor_count else []:
+        selected[member.member_id] = TimeSelectedMember(member, parsed, "predecessor")
+    for member, parsed in in_range:
+        selected[member.member_id] = TimeSelectedMember(member, parsed, "in_range")
+    for member, parsed in successors[:neighbor_count] if neighbor_count else []:
+        selected[member.member_id] = TimeSelectedMember(member, parsed, "successor")
+    return sorted(
+        selected.values(),
+        key=lambda item: (item.parsed.start_time, item.parsed.sequence, item.member.member_path),
+    )
 
 
 @dataclass(frozen=True)
@@ -104,6 +173,41 @@ def managed_extraction_matches(
         manifest.get("archive_artifact_id") == archive_artifact_id
         and manifest.get("source_fingerprint") == asdict(source_fingerprint)
     )
+
+
+def inspect_reusable_extraction(
+    inventory: ArchiveInventory,
+) -> tuple[bool | None, list[SelectedMember]]:
+    """校验受管目录并返回可跨运行复用的已解压成员。"""
+
+    status = managed_extraction_matches(
+        inventory.archive_path, inventory.archive_artifact_id, inventory.source_fingerprint,
+    )
+    if status is not True:
+        return status, []
+    destination = extraction_destination(inventory.archive_path)
+    manifest = _manifest(destination)
+    if manifest is None:
+        return False, []
+    existing = _existing_members(
+        manifest,
+        inventory.archive_artifact_id,
+        inventory.source_fingerprint.sha256,
+    )
+    current = {item.member_id: item for item in inventory.members if item.safe}
+    reusable: list[SelectedMember] = []
+    for member_id, raw in existing.items():
+        item = current.get(member_id)
+        if item is None:
+            continue
+        reusable.append(SelectedMember(
+            member_id=member_id,
+            member_path=item.member_path,
+            path=_target_path(destination, item.member_path),
+            size_bytes=int(raw["size_bytes"]),
+            reused=True,
+        ))
+    return True, reusable
 
 
 def _fingerprint(path: Path, limits: ArchiveLimits, started_at: float) -> SourceFingerprint:
