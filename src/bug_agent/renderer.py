@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .contracts import BugAnalysisResult
+from .contracts import AnalysisGuide, BugAnalysisResult
 
 
 STATUS_LABELS = {
@@ -167,4 +167,30 @@ def render_markdown(result: BugAnalysisResult) -> str:
 
     if not result.structured_output:
         lines.extend(["> 警告：模型未返回标准 RCA JSON，本结果使用了兼容降级。", ""])
+    return "\n".join(lines).rstrip()
+
+
+def render_analysis_guide(guide: AnalysisGuide, task_id: str) -> str:
+    """渲染独立学习产物，刻意不修改正式 RCA 的 render_markdown。"""
+
+    lines = [f"# 问题分析讲解：{task_id}", "", guide.overview, ""]
+    if guide.reasoning_steps:
+        lines.extend(["## 调查是怎样推进的", ""])
+        for index, step in enumerate(guide.reasoning_steps, 1):
+            lines.extend([
+                f"### {index}. {step.question}", "",
+                f"- **观察**：{step.observation}",
+                f"- **为什么先查这里**：{step.reasoning}",
+                f"- **如何验证**：{step.verification}",
+                f"- **结果与下一步**：{step.outcome}",
+                f"- **证据**：{_ids(step.evidence_ids)}", "",
+            ])
+    if guide.reusable_approach:
+        lines.extend(["## 可复用的排查方法", ""])
+        lines.extend(f"- {item}" for item in guide.reusable_approach)
+        lines.append("")
+    if guide.limitations:
+        lines.extend(["## 当前边界", ""])
+        lines.extend(f"- {item}" for item in guide.limitations)
+        lines.append("")
     return "\n".join(lines).rstrip()

@@ -12,6 +12,8 @@ Determine the lowest layer at which the expected frame or display transition sto
 
 Call `open_case` and `inspect_case`. Identify whether the Case contains logcat, kernel logs, dumpsys/SurfaceFlinger state, tombstones, ANR traces, or display traces. Establish the user-visible start/end event from the Issue when possible. If the reproduction time is unknown, report that limitation before making timing claims.
 
+**Log selection: when extracting from APLog/MTK archives, you must include at least one `sys_log` and one `events_log` in addition to `main_log` and `kernel_log`. SurfaceFlinger, HWC, WindowManager, and display power events are logged in sys_log/events_log, not in main_log. Searching for SurfaceFlinger in main_log alone will return zero matches and falsely suggest the display layer is clean.**
+
 ## Build the display timeline
 
 Call `extract_timeline` with a focused subset of these anchors, adding platform-specific names discovered in the logs:
@@ -32,5 +34,10 @@ Use `parse_diagnostics` when Fatal, ANR, AVC, or Call Trace signals exist. Use `
 ## Evidence standard
 
 A supported conclusion should connect at least: the user-visible symptom window, the last successful upstream event, and the first failed or missing downstream transition. Prefer two independent artifacts when crossing framework/kernel boundaries.
+
+**Coverage rule: even if you find strong evidence in one layer (e.g. ANR, process death, or power state), you must still run at least one coverage search on the other layers.** Specifically:
+- If you find ANR or process death in the app layer, you must still search for `SurfaceFlinger` and `HWC` errors in the same time window to confirm they are not co-occurring.
+- If you find SurfaceFlinger/HWC errors, you must still search for app-layer ANR, process death, or buffer dequeue/queue failures.
+- The goal is to rule out a multi-layer failure, not to assume the first strong signal is the only cause.
 
 Report `insufficient_evidence` if the necessary layer boundary cannot be observed. Keep plausible alternatives in `hypotheses`; do not label a component as root cause solely because its name appears near an error.

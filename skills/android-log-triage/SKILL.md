@@ -9,10 +9,11 @@ category: base
 Establish what evidence exists before choosing a root-cause theory.
 
 1. Call `open_case`, then `inspect_case`. Record available artifact kinds, time coverage, and obvious gaps.
-2. Call `parse_diagnostics` for `fatal`, `anr`, `kernel_stack`, and `avc`. Treat findings as signals, not causes.
-3. Build an initial timeline with anchors relevant to the observed artifacts. A reasonable broad set is `FATAL`, `ANR in`, `Watchdog`, `Call Trace:`, `Kernel panic`, and `avc: denied`; remove irrelevant anchors and add component-specific ones as evidence emerges.
-4. Use `search_evidence` for concrete components, errors, process names, or event transitions found in the Issue and diagnostics. Do not search an exhaustive keyword catalog without a hypothesis.
-5. Form at most a few competing hypotheses. For each, state supporting evidence, contradictory evidence, and the cheapest next check that could falsify it.
+2. When the Case contains nested archives (e.g. a ZIP with many APLog tar.gz files), do NOT extract only the single archive whose timestamp range is closest to the failure. Always include the immediately adjacent archive on each side of the primary target, because the failure event often starts in the previous archive window and the first evidence of the crash often appears in the next. If the archive inventory is truncated, explicitly note the missing range as a limitation.
+3. Call `parse_diagnostics` for `fatal`, `anr`, `kernel_stack`, and `avc`. Treat findings as signals, not causes.
+4. Build an initial timeline with anchors relevant to the observed artifacts. A reasonable broad set is `FATAL`, `ANR in`, `Watchdog`, `Call Trace:`, `Kernel panic`, and `avc: denied`; remove irrelevant anchors and add component-specific ones as evidence emerges.
+5. Use `search_evidence` for concrete components, errors, process names, or event transitions found in the Issue and diagnostics. Do not search an exhaustive keyword catalog without a hypothesis.
+6. Form at most a few competing hypotheses. For each, state supporting evidence, contradictory evidence, and the cheapest next check that could falsify it.
 
 Keep Android/wall time separate from kernel monotonic time unless a synchronization point is present. A repeated error, nearby timestamp, AVC, Fatal, or stack trace does not by itself establish causality.
 

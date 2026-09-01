@@ -103,7 +103,11 @@ class LogAnalyzerService:
         return self.registry.open_case(params.case_path)
 
     def inspect_case(self, **kwargs) -> ToolResult:
-        """返回 Case 概览，帮助 Agent 在读取大日志前先制定计划。"""
+        """返回 Case 概览，帮助 Agent 在读取大日志前先制定计划。
+
+        当附件数量可能超过 sample_limit 时，会在摘要中高亮归档文件，
+        确保 Agent 始终能看到需要解压的压缩包，避免被截断遮蔽。
+        """
 
         params = InspectCaseInput.model_validate(kwargs)
         entry = self.registry.get_case(params.case_id)
@@ -114,6 +118,38 @@ class LogAnalyzerService:
         text_bytes = sum(a.size_bytes for a in info.artifacts if a.readable_text)
         index = self._get_index(info.case_id)
         indexed_ids = index.indexed_artifact_ids() if index else set()
+
+        # 按类型分组排序：archive 在最前，然后按大小降序，确保模型优先看到大文件。
+        sorted_artifacts = sorted(info.artifacts, key=lambda a: (
+            {"archive": 0, "text": 1, "anr": 2, "tombstone": 3, "trace": 4,
+             "kernel": 5, "logcat": 6, "sos": 7, "binary": 8}.get(a.kind, 9),
+            -a.size_bytes,
+        ))
+        sample = [a.model_dump() for a in sorted_artifacts[: params.sample_limit]]
+        truncated = info.artifact_count > params.sample_limit
+
+        # 摘要：高亮所有归档（模型首选目标），并列出大文件。
+        archive_summary = [
+            {
+                "artifact_id": a.artifact_id,
+                "name": a.name,
+                "relative_path": a.relative_path,
+                "size_bytes": a.size_bytes,
+                "kind": a.kind,
+            }
+            for a in sorted_artifacts if a.kind == "archive"
+        ]
+        large_text = [
+            {
+                "artifact_id": a.artifact_id,
+                "name": a.name,
+                "size_bytes": a.size_bytes,
+                "kind": a.kind,
+            }
+            for a in sorted_artifacts
+            if a.kind not in ("archive", "binary") and a.size_bytes > 50_000
+        ][:20]
+
         return make_success({
             "case_id": info.case_id,
             "name": info.name,
@@ -121,8 +157,15 @@ class LogAnalyzerService:
             "total_size_bytes": info.total_size_bytes,
             "text_size_bytes": text_bytes,
             "kinds": dict(sorted(kind_counts.items())),
-            "artifacts": [a.model_dump() for a in info.artifacts[: params.sample_limit]],
-            "artifacts_truncated": info.artifact_count > params.sample_limit,
+            "summary": {
+                "archives": archive_summary,
+                "large_text_files": large_text,
+                "total_archives": len(archive_summary),
+                "total_artifacts": info.artifact_count,
+                "artifacts_truncated": truncated,
+            },
+            "artifacts": sample,
+            "artifacts_truncated": truncated,
             "preparation": {
                 "archive_count": kind_counts.get("archive", 0),
                 "extracted_artifact_count": sum(a.origin == "archive" for a in info.artifacts),

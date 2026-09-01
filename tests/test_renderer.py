@@ -1,5 +1,6 @@
 from bug_agent.contracts import (
     ActionItem,
+    AnalysisGuide,
     BugAnalysisResult,
     CoverageItem,
     Hypothesis,
@@ -7,7 +8,7 @@ from bug_agent.contracts import (
     RCAReport,
     TimelineEntry,
 )
-from bug_agent.renderer import render_markdown
+from bug_agent.renderer import render_analysis_guide, render_markdown
 
 
 def test_renderer_outputs_formal_stability_rca_sections():
@@ -62,3 +63,24 @@ def test_renderer_outputs_formal_stability_rca_sections():
     assert "## 6. 反证与负向结果" in markdown
     assert "| P0 | 补抓 Perfetto | 系统性能 |" in markdown
     assert "置信度**：中高" in markdown
+
+
+def test_analysis_guide_is_rendered_independently_from_formal_rca():
+    guide = AnalysisGuide(
+        overview="从症状开始，逐步验证候选故障链。",
+        reasoning_steps=[{
+            "observation": "发生 ANR",
+            "question": "ANR 是否解释黑屏？",
+            "reasoning": "先确认直接机制。",
+            "verification": "检查 ev-1。",
+            "outcome": "进入图形事务路径。",
+            "evidence_ids": ["ev-1"],
+        }],
+        reusable_approach=["先验证直接机制。"],
+    )
+
+    markdown = render_analysis_guide(guide, "BAIC-1")
+
+    assert "# 问题分析讲解：BAIC-1" in markdown
+    assert "## 调查是怎样推进的" in markdown
+    assert "`ev-1`" in markdown

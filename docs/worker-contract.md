@@ -38,6 +38,7 @@ BugAnalysisResult
 | `skills` | 可选的预激活 Skill；省略时 Worker 默认加载通用 Android 日志分诊 |
 | `auto_select_skills` | 是否允许 Agent 根据 Issue 和证据调用 `activate_skill`，默认 `true` |
 | `include_trace` | 是否在结果中包含内部 Tool Event |
+| `include_analysis_guide` | 是否在 RCA 完成后生成独立的问题分析讲解；默认 `false`，不影响正式 RCA |
 | `metadata` | 上游关联信息，Agent 当前不消费 |
 
 契约拒绝同时传入 `issue_key` 和 `case_path`，避免来源语义不明确。
@@ -59,6 +60,11 @@ BugAnalysisResult
 
 `trace` 是内部诊断信息，不是业务契约的推理依据。生产环境应单独控制保存周期
 和访问权限，因为其中可能包含 Jira 与日志内容。
+
+当 `include_analysis_guide=true` 时，结果还会包含可选的 `analysis_guide`。它使用已
+结构化的 RCA 与实际工具轨迹解释调查如何推进，且只保留报告中已存在的 `evidence_id`。
+它不是 RCA 的字段，也不会被正式 RCA Markdown 渲染器写入；若附加生成失败，RCA 仍按
+原状态返回，失败原因记录在 `analysis_guide_error`。
 
 Worker 会把成功加载的名称写入 `applied_skills`。不存在、路径不安全、frontmatter
 不完整或超过预算的 Skill 会让任务在调用模型和 MCP 前失败。

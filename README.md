@@ -83,6 +83,16 @@ $env:BUG_AGENT_LLM_MODEL = 'your-model'
 uv run bug-agent analyze-local 'D:\bug-cases\APP-42'
 ```
 
+如果希望在正式 RCA 之外，额外生成一份面向工程师的调查思路讲解：
+
+```powershell
+uv run bug-agent --analysis-guide analyze-local 'D:\bug-cases\APP-42'
+```
+
+该讲解不会写入 RCA Markdown；它会保存为
+`<case>/.bug-agent/analysis-guides/<task_id>.md`。内容只基于结构化 RCA 与实际工具
+轨迹，解释观察、验证问题、排除路径和可复用的排查方法；生成失败不影响 RCA 交付。
+
 输出完整 Worker 结果和内部工具轨迹：
 
 ```powershell
