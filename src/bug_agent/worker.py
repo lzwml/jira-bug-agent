@@ -6,7 +6,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import re
-from typing import Awaitable, Callable, Literal, Protocol
+from typing import Any, Awaitable, Callable, Literal, Protocol
 
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .comment_compiler import CompiledJiraContext, compile_jira_context, sources_from_issue
@@ -17,6 +17,7 @@ from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
 from .prompts import (
     ANALYSIS_GUIDE_PROMPT,
+    CODE_SEARCH_WORKFLOW_PROMPT,
     JIRA_WORKFLOW_PROMPT,
     LOCAL_WORKFLOW_PROMPT,
     REPORT_FORMAT_PROMPT,
@@ -166,6 +167,25 @@ class BugAnalysisWorker:
             return Path(export_result["data"]["case_path"]).resolve()
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise ValueError("Jira MCP 返回了无效的导出结果") from exc
+
+    async def _connect_opengrok(self, router: Any) -> None:
+        """如果配置了 OpenGrok，启动 Python MCP Server 并注册其工具。
+
+        只在 OPENGROK_ENABLE_CODE_SEARCH=true 时生效。
+        工具以 opengrok_ 为前缀，通过 connect_python_server 启动。
+        """
+        if not self.config.enable_code_search:
+            return
+        connect = getattr(router, "connect_python_server")
+        env = {
+            "OPENGROK_BASE_URL": self.config.opengrok_base_url,
+            "OPENGROK_VERIFY_SSL": str(self.config.opengrok_verify_ssl).lower(),
+        }
+        if self.config.opengrok_username:
+            env["OPENGROK_USERNAME"] = self.config.opengrok_username
+        if self.config.opengrok_password:
+            env["OPENGROK_PASSWORD"] = self.config.opengrok_password
+        await connect("opengrok", "opengrok_mcp.server", env)
 
     @staticmethod
     def _context_metadata(
@@ -318,6 +338,10 @@ class BugAnalysisWorker:
                         "log", "log_analyzer.server",
                         {"LOG_ANALYZER_ALLOWED_ROOTS": str(export_root)},
                     )
+                    phase = "code_search_setup"
+                    if recorder_active:
+                        recorder.on_phase(phase)
+                    await self._connect_opengrok(router)
                     prompt = JIRA_WORKFLOW_PROMPT
                     instruction = (
                         f"任务编号：{task.task_id}\n"
@@ -333,6 +357,10 @@ class BugAnalysisWorker:
                         "log", "log_analyzer.server",
                         {"LOG_ANALYZER_ALLOWED_ROOTS": str(case_path)},
                     )
+                    phase = "code_search_setup"
+                    if recorder_active:
+                        recorder.on_phase(phase)
+                    await self._connect_opengrok(router)
                     prompt = LOCAL_WORKFLOW_PROMPT
                     instruction = (
                         f"任务编号：{task.task_id}\n"
@@ -382,11 +410,16 @@ class BugAnalysisWorker:
                     phase = "agent"
                     if recorder_active:
                         recorder.on_phase(phase)
+                    code_search_prompt = (
+                            CODE_SEARCH_WORKFLOW_PROMPT
+                            if self.config.enable_code_search else ""
+                        )
                     run = await BugAnalysisAgent(run_config, provider).run(
                         instruction,
                         prompt
                         + "\n\n" + skill_prompt
                         + ("\n\n" + catalog_prompt if catalog_prompt else "")
+                        + code_search_prompt
                         + REPORT_FORMAT_PROMPT,
                         skill_router,
                         on_tool_event=recorder.on_tool_event if recorder_active else None,
@@ -621,6 +654,9 @@ class BugAnalysisWorker:
             {"LOG_ANALYZER_ALLOWED_ROOTS": str(case_path)},
         )
 
+        # 3.5. 挂载 OpenGrok 代码搜索（可选）
+        await self._connect_opengrok(router)
+
         # 4. 创建 Provider
         provider = self.provider_factory(run_config)
 
@@ -643,7 +679,10 @@ class BugAnalysisWorker:
         else:
             prompt = LOCAL_WORKFLOW_PROMPT
 
-        prompt += "\n\n" + skill_prompt + REPORT_FORMAT_PROMPT
+        prompt += "\n\n" + skill_prompt
+        if self.config.enable_code_search:
+            prompt += CODE_SEARCH_WORKFLOW_PROMPT
+        prompt += REPORT_FORMAT_PROMPT
 
         # 7. 构建初始用户任务
         instruction = (

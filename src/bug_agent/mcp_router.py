@@ -8,10 +8,11 @@
 2. **stdio 传输**：Server 作为子进程运行，通过标准输入/输出交换消息；
 3. **工具发现**：连接后 Client 调用 `tools/list` 获取 Server 提供的所有工具定义；
 4. **工具路由**：多个 Server 可能提供不同的工具，Router 维护"工具名 → Server"的映射。
+5. **多语言支持**：MCP Server 不限于 Python — connect_node_server() 可启动 Node.js MCP Server。
 
 为什么需要 Router 而不是直接调用 MCP？
 - Agent 只看到一个统一的工具列表，不需要关心工具来自哪个 Server；
-- 可以同时连接 Jira MCP、Log MCP、未来还会有 Code Search MCP 等；
+- 可以同时连接 Jira MCP、Log MCP、Code Search MCP (OpenGrok) 等；
 - 工具名冲突能在启动时被发现，而不是等到运行时才报错。
 """
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 import json
 import os
+import shutil
 import sys
 from typing import Any
 
@@ -150,6 +152,74 @@ class McpToolRouter:
             # MCP 和 OpenAI 的工具描述格式非常相似，但字段名略有不同：
             # - MCP: tool.inputSchema
             # - OpenAI: function.parameters
+            self._tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "parameters": tool.input_schema,
+                },
+            })
+
+        self._sessions[server_name] = session
+
+    async def connect_node_server(
+        self,
+        server_name: str,
+        script_path: str,
+        env_overrides: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> None:
+        """启动一个 Node.js stdio MCP Server，并把发现的工具注册到统一命名空间。
+
+        【学习要点】MCP 协议是语言无关的——只要 Server 能通过 stdio 收发 JSON-RPC 消息，
+        就可以用任何语言实现。这个方法展示了如何接入 Node.js 写的 MCP Server（如 OpenGrok）。
+
+        参数：
+        - server_name: 给这个 Server 起的名字(如 "opengrok")，用于路由和错误提示；
+        - script_path: Node.js 脚本路径(如 "opengrok-mcp-server/out/server/main.js")；
+        - env_overrides: 要传递给子进程的环境变量(如 OPENGROK_BASE_URL)；
+        - cwd: 子进程工作目录，默认使用脚本所在目录。
+        """
+
+        if server_name in self._sessions:
+            raise ValueError(f"MCP Server 已连接: {server_name}")
+
+        # 【学习要点】查找 node 可执行文件：
+        # shutil.which("node") 在 PATH 中搜索，比硬编码路径更健壮。
+        node = shutil.which("node")
+        if node is None:
+            raise RuntimeError("未找到 Node.js 运行环境，请安装 Node.js >= 22")
+
+        resolved_path = os.path.abspath(script_path)
+        if not os.path.isfile(resolved_path):
+            raise FileNotFoundError(f"Node.js MCP Server 脚本不存在: {resolved_path}")
+
+        working_dir = cwd or os.path.dirname(resolved_path)
+
+        # 【学习要点】StdioServerParameters 的 command 可以是任意可执行文件：
+        # - command=node：使用 Node.js 运行时；
+        # - args=[script_path]：指定要执行的 JS 文件；
+        # - env：OpenGrok 需要的环境变量(OPENGROK_BASE_URL 等)。
+        params = StdioServerParameters(
+            command=node,
+            args=[resolved_path],
+            env={**os.environ, **(env_overrides or {})},
+            cwd=working_dir,
+        )
+
+        read, write = await self._stack.enter_async_context(stdio_client(params))
+        session = await self._stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+
+        discovered = await session.list_tools()
+
+        for tool in discovered.tools:
+            if tool.name in self._tool_routes:
+                owner = self._tool_routes[tool.name]
+                raise ValueError(f"工具名冲突: {tool.name} 同时来自 {owner} 和 {server_name}")
+
+            self._tool_routes[tool.name] = server_name
             self._tools.append({
                 "type": "function",
                 "function": {

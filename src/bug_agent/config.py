@@ -27,6 +27,12 @@ class AgentConfig:
     jira_compiler_max_chunks: int = 12
     jira_compiler_max_attempts: int = 16
     jira_compiler_timeout_seconds: float = 180.0
+    # OpenGrok 代码搜索（可选，默认关闭）
+    enable_code_search: bool = False
+    opengrok_base_url: str = ""
+    opengrok_username: str = ""
+    opengrok_password: str = ""
+    opengrok_verify_ssl: bool = True
 
     @classmethod
     def from_environment(cls) -> "AgentConfig":
@@ -78,6 +84,15 @@ class AgentConfig:
         compiler_timeout = float(os.getenv("BUG_AGENT_JIRA_COMPILER_TIMEOUT_SECONDS", "180"))
         if not 1 <= compiler_timeout <= 3600:
             raise ValueError("BUG_AGENT_JIRA_COMPILER_TIMEOUT_SECONDS 必须在 1..3600 之间")
+        # OpenGrok 代码搜索（可选）
+        enable_code_search = os.getenv("OPENGROK_ENABLE_CODE_SEARCH", "").strip().lower() == "true"
+        opengrok_base_url = os.getenv("OPENGROK_BASE_URL", "").strip().rstrip("/")
+        opengrok_username = os.getenv("OPENGROK_USERNAME", "").strip()
+        opengrok_password = os.getenv("OPENGROK_PASSWORD", "").strip()
+        opengrok_verify_ssl = os.getenv("OPENGROK_VERIFY_SSL", "true").strip().lower() != "false"
+        if enable_code_search:
+            if not opengrok_base_url:
+                raise ValueError("OPENGROK_BASE_URL 未设置（启用代码搜索时必须配置）")
         return cls(
             llm_base_url=base_url,
             llm_api_key=api_key,
@@ -94,6 +109,11 @@ class AgentConfig:
             jira_compiler_max_chunks=compiler_max_chunks,
             jira_compiler_max_attempts=compiler_max_attempts,
             jira_compiler_timeout_seconds=compiler_timeout,
+            enable_code_search=enable_code_search,
+            opengrok_base_url=opengrok_base_url,
+            opengrok_username=opengrok_username,
+            opengrok_password=opengrok_password,
+            opengrok_verify_ssl=opengrok_verify_ssl,
         )
 
 

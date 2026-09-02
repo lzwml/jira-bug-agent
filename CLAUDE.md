@@ -62,7 +62,7 @@ BugAnalysisAgent         Agent Loop, step budget, tool result truncation, prompt
                 ├── jira-bug-mcp        Jira read-only adapter
                 ├── log-analyzer-mcp    File security + MCP adapter
                 │       └── log-analysis-core   Deterministic parsers (timestamps, diagnostics)
-                └── (future code/rag MCPs)
+                └── opengrok-mcp        OpenGrok code search (Python, optional)
 ```
 
 ### Key separation rules
@@ -143,6 +143,10 @@ Copy `.env.example` to `.env` and configure:
 - `JIRA_BASE_URL`, `JIRA_DEPLOYMENT` (cloud/datacenter), `JIRA_AUTH_MODE` (basic/bearer), `JIRA_USER`, `JIRA_TOKEN` — required for Jira mode
 - `JIRA_EXPORT_ROOT` — where exported cases are stored
 - `LOG_ANALYZER_ALLOWED_ROOTS` — semicolon-separated paths on Windows
+- `OPENGROK_ENABLE_CODE_SEARCH` (false) — enable OpenGrok code search as a third MCP server
+- `OPENGROK_BASE_URL`, `OPENGROK_USERNAME`, `OPENGROK_PASSWORD`, `OPENGROK_VERIFY_SSL` — OpenGrok connection
+
+OpenGrok MCP Server is a Python package in `packages/opengrok-mcp/` — no Node.js required.
 
 ## Testing conventions
 

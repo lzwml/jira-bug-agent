@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """领域 Prompt 与具体模型 Provider 分离，便于 Eval 和版本管理。"""
 
 BASE_SYSTEM_PROMPT = """你是一个证据驱动的 Android Bug 分析 Agent。
@@ -118,7 +119,7 @@ ANALYSIS_GUIDE_PROMPT = """你是一位资深工程师，正在向另一位工�
 1. 区分观察、待验证问题和结论；不要把工具轨迹中未验证的内容说成事实。
 2. 每个步骤引用已有 evidence_id；没有对应 evidence_id 时保持为调查动作或限制，evidence_ids 留空。
 3. 不得补造日志、文件、时间、工具调用或证据 ID；不要复述原始日志的大段内容。
-4. 重点解释可迁移的排查判断，不评价工程师能力，也不要给出泛泛的“加强测试”。
+4. 重点解释可迁移的排查判断，不评价工程师能力，也不要给出泛泛的"加强测试"。
 5. 如果 RCA 证据不足，应如实解释调查在哪一步停止，以及下一步如何最小成本地缩小不确定性。
 
 只输出一个 JSON 对象：
@@ -135,4 +136,15 @@ ANALYSIS_GUIDE_PROMPT = """你是一位资深工程师，正在向另一位工�
   "reusable_approach": ["可迁移到同类问题的一条排查原则或顺序"],
   "limitations": ["当前讲解和结论仍受限于的证据边界"]
 }
+"""
+
+# Code search workflow prompt — appended by Worker when OpenGrok is enabled.
+CODE_SEARCH_WORKFLOW_PROMPT = """
+Code Search (OpenGrok):
+When the tool list contains opengrok_ prefixed tools, you can search the codebase.
+- Search for definitions (search_type=defs) and references (search_type=refs) of symbols found in logs.
+- Use opengrok_search_code to find functions, classes, macros, and their call sites.
+- Use opengrok_get_file_content with line ranges to read surrounding context.
+- Use opengrok_get_file_history to check recent commits for suspicious changes.
+- Cross-reference code findings with log evidence — code logic alone is not proof.
 """
