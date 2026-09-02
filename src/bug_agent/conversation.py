@@ -25,6 +25,7 @@ ConversationSession 在单次会话内维护消息历史，支持多轮追问，
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Callable
 
@@ -70,13 +71,15 @@ class ConversationSession:
     3. 追问：send() 发送后续消息，Agent 在已有上下文基础上继续；
     4. 结束：finalize() 返回 ConversationResult。
 
+    轮次上限由调用方控制（CLI 通过 /quit，HTTP API 由调用方决定何时停止发送消息）。
+    步数上限由 max_steps_per_turn 控制，防止单轮无限循环。
+
     使用示例：
     ```python
     session = ConversationSession(
         agent=agent,
         system_prompt="你是 Bug 分析助手...",
         router=router,
-        max_turns=5,
         max_steps_per_turn=8,
     )
     # 初始分析
@@ -93,17 +96,18 @@ class ConversationSession:
         agent: BugAnalysisAgent,
         system_prompt: str,
         router: ToolRouter,
-        max_turns: int = 5,
         max_steps_per_turn: int | None = None,
         goal_mode: bool = False,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
+        on_close: Callable[[], object] | None = None,
     ):
         self._agent = agent
         self._router = router
-        self._max_turns = max_turns
         self._max_steps_per_turn = max_steps_per_turn
         self._goal_mode = goal_mode
         self._on_tool_event = on_tool_event
+        self._on_close = on_close
+        self._closed_resources = False
 
         # 消息历史：system prompt 只在初始化时设置一次
         self._messages: list[dict] = [
@@ -119,19 +123,26 @@ class ConversationSession:
         return len(self._turns)
 
     @property
-    def remaining_turns(self) -> int:
-        """剩余可用的轮次数量。"""
-        return max(0, self._max_turns - len(self._turns))
-
-    @property
     def is_active(self) -> bool:
         """会话是否仍可继续。"""
-        return self._active and self.remaining_turns > 0
+        return self._active
 
     @property
     def messages(self) -> list[dict]:
         """当前的消息历史（只读）。"""
         return list(self._messages)
+
+    def load_history(self, messages: list[dict[str, str]]) -> None:
+        """注入初始消息历史（不含 system prompt）。
+
+        用于 Worker 在创建会话后、send() 之前，将持久化的历史消息
+        恢复到会话中。只应在首次 send() 之前调用一次。
+        """
+        for msg in messages:
+            role = msg.get("role", "")
+            if role not in {"user", "assistant", "system"}:
+                raise ValueError(f"无效的消息角色: {role}")
+        self._messages.extend(msg for msg in messages)
 
     async def send(self, user_message: str) -> ConversationTurn:
         """发送一条用户消息并获取 Agent 回答。
@@ -143,12 +154,10 @@ class ConversationSession:
             ConversationTurn，包含用户消息和 Agent 运行结果。
 
         Raises:
-            RuntimeError: 会话已结束（达到最大轮次或已调用 finalize()）。
+            RuntimeError: 会话已结束（已调用 finalize()）。
         """
         if not self.is_active:
-            raise RuntimeError(
-                f"会话已结束（已完成 {len(self._turns)}/{self._max_turns} 轮）"
-            )
+            raise RuntimeError("会话已结束")
 
         # 如果是第一轮之后的追问，先追加追问的系统提示
         if self._turns:
@@ -174,10 +183,6 @@ class ConversationSession:
         turn = ConversationTurn(user_message=user_message, result=result)
         self._turns.append(turn)
 
-        # 检查是否达到最大轮次
-        if len(self._turns) >= self._max_turns:
-            self._active = False
-
         return turn
 
     async def finalize(self) -> ConversationResult:
@@ -186,6 +191,11 @@ class ConversationSession:
         调用后会话不可再使用。
         """
         self._active = False
+        if self._on_close is not None and not self._closed_resources:
+            self._closed_resources = True
+            result = self._on_close()
+            if inspect.iscoroutine(result):
+                await result
         return ConversationResult(
             turns=list(self._turns),
             total_steps=self._total_steps,

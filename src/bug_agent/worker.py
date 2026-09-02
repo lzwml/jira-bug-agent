@@ -570,7 +570,6 @@ class BugAnalysisWorker:
         self,
         task: BugAnalysisTask,
         *,
-        max_turns: int = 5,
         max_steps_per_turn: int | None = None,
     ) -> tuple[ConversationSession, str]:
         """创建单次会话的连续问答会话。
@@ -587,7 +586,6 @@ class BugAnalysisWorker:
 
         Args:
             task: 分析任务配置。
-            max_turns: 最大对话轮次（默认 5）。
             max_steps_per_turn: 每轮最大步数（默认使用 config.max_steps）。
 
         Returns:
@@ -647,7 +645,11 @@ class BugAnalysisWorker:
                 )
 
         # 3. 创建 MCP Router 并连接
+        # 注意：Router 的生命周期需要跨越整个会话（setup + 多轮 send），
+        # 无法用单个 async with 块包围，因此手动调用 __aenter__/__aexit__。
+        # 退出时由 close_resources 回调负责 __aexit__。
         router = self.router_factory()
+        await router.__aenter__()
         connect = getattr(router, "connect_python_server")
         await connect(
             "log", "log_analyzer.server",
@@ -721,13 +723,40 @@ class BugAnalysisWorker:
         # 10. 创建 ConversationSession
         # 注意：ConversationSession 不拥有 system prompt 中的第一轮任务指令，
         # 这由调用方通过 send() 发送第一条消息来触发。
+        async def close_resources() -> None:
+            await provider.close()
+            await router.__aexit__(None, None, None)
+
         session = ConversationSession(
             agent=agent,
             system_prompt=prompt,
             router=skill_router,
-            max_turns=max_turns,
             max_steps_per_turn=max_steps_per_turn,
             goal_mode=task.goal_mode,
+            on_close=close_resources,
         )
 
         return session, instruction
+
+    async def answer_conversation_turn(
+        self,
+        task: BugAnalysisTask,
+        history: list[dict[str, str]],
+        user_message: str,
+        *,
+        max_steps_per_turn: int | None = None,
+    ) -> str:
+        """在可持久化的消息历史之上执行一个会话回合。
+
+        MCP 与模型连接仅在本回合存活；可恢复的产品状态是经审计的消息历史和
+        Case/RCA，而不是不可序列化的进程内连接。
+        """
+        session, instruction = await self.create_conversation(
+            task,
+            max_steps_per_turn=max_steps_per_turn,
+        )
+        session.load_history([{"role": "user", "content": instruction}, *history])
+        try:
+            return (await session.send(user_message)).result.final_answer
+        finally:
+            await session.finalize()

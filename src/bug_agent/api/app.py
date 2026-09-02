@@ -13,8 +13,16 @@ from ..config import AgentConfig
 from ..contracts import BugAnalysisTask
 from ..worker import BugAnalysisWorker
 from .config import ApiConfig
-from .dispatcher import TaskDispatcher, WorkerFactory
-from .models import ContinuationRequest, TaskRecord, TaskSubmission
+from .dispatcher import ConversationDispatcher, TaskDispatcher, WorkerFactory
+from .models import (
+    ConversationCreate,
+    ConversationMessage,
+    ConversationMessageCreate,
+    ConversationRecord,
+    ContinuationRequest,
+    TaskRecord,
+    TaskSubmission,
+)
 from .task_store import SqliteTaskStore, TaskConflictError
 
 
@@ -40,14 +48,22 @@ def create_app(
     dispatcher = TaskDispatcher(
         store, worker_factory, concurrency=settings.concurrency,
     )
+    conversation_dispatcher = ConversationDispatcher(
+        store, worker_factory, concurrency=1,
+        # concurrency=1 确保同会话消息串行，跨会话也不并发抢占 Provider/MCP 资源。
+        # 若未来需要提升吞吐，可改为从 ApiConfig 读取并增加 Worker 池化。
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await dispatcher.start()
+        await conversation_dispatcher.start()
         app.state.dispatcher = dispatcher
+        app.state.conversation_dispatcher = conversation_dispatcher
         try:
             yield
         finally:
+            await conversation_dispatcher.stop()
             await dispatcher.stop()
 
     app = FastAPI(
@@ -62,6 +78,22 @@ def create_app(
         ):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key 无效")
 
+    def validate_local_task(task: BugAnalysisTask) -> BugAnalysisTask:
+        if task.source != "local":
+            return task
+        case_path = Path(task.case_path or "").expanduser().resolve()
+        if not settings.allowed_local_roots:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API 未配置本地 Case 允许目录",
+            )
+        if not _is_within(case_path, settings.allowed_local_roots):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="本地 Case 路径不在 API 允许目录内",
+            )
+        return task.model_copy(update={"case_path": str(case_path)})
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -73,19 +105,7 @@ def create_app(
         x_api_key: str | None = Header(default=None),
     ) -> TaskSubmission:
         authorize(x_api_key)
-        if task.source == "local":
-            case_path = Path(task.case_path or "").expanduser().resolve()
-            if not settings.allowed_local_roots:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="API 未配置本地 Case 允许目录",
-                )
-            if not _is_within(case_path, settings.allowed_local_roots):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="本地 Case 路径不在 API 允许目录内",
-                )
-            task = task.model_copy(update={"case_path": str(case_path)})
+        task = validate_local_task(task)
         try:
             record, created = await request.app.state.dispatcher.submit(task)
         except TaskConflictError as exc:
@@ -102,6 +122,55 @@ def create_app(
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
         return record
+
+    @app.post("/conversations", response_model=ConversationRecord, status_code=status.HTTP_201_CREATED)
+    async def create_conversation(
+        request_body: ConversationCreate,
+        x_api_key: str | None = Header(default=None),
+    ) -> ConversationRecord:
+        """建立 Case 级持久会话；消息和调查状态将在后续请求中连续累积。"""
+        authorize(x_api_key)
+        task = validate_local_task(request_body.task)
+        conversation_id = request_body.conversation_id or str(uuid4())
+        try:
+            return store.create_conversation(conversation_id, task)
+        except TaskConflictError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    @app.get("/conversations/{conversation_id}", response_model=ConversationRecord)
+    async def get_conversation(
+        conversation_id: str,
+        x_api_key: str | None = Header(default=None),
+    ) -> ConversationRecord:
+        authorize(x_api_key)
+        record = store.get_conversation(conversation_id)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        return record
+
+    @app.post(
+        "/conversations/{conversation_id}/messages",
+        response_model=ConversationMessage,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def add_conversation_message(
+        conversation_id: str,
+        request_body: ConversationMessageCreate,
+        request: Request,
+        x_api_key: str | None = Header(default=None),
+    ) -> ConversationMessage:
+        """记录工程师新增的线索或追问。下一步将由会话执行器消费该消息。"""
+        authorize(x_api_key)
+        try:
+            message = store.add_conversation_message(
+                conversation_id, role="user", content=request_body.content,
+            )
+            await request.app.state.conversation_dispatcher.submit(message.message_id)
+            return message
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     @app.post("/tasks/{task_id}/continuations", response_model=TaskSubmission, status_code=status.HTTP_202_ACCEPTED)
     async def continue_task(

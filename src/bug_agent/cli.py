@@ -82,7 +82,6 @@ def _parser() -> argparse.ArgumentParser:
     # ---- 连续问答模式 ----
     chat_local = sub.add_parser("chat-local", help="交互式连续问答，分析本地 Bug Case")
     chat_local.add_argument("case_path")
-    chat_local.add_argument("--max-turns", type=int, default=5, help="最大对话轮次（默认 5）")
     chat_local.add_argument("--max-steps-per-turn", type=int, help="每轮最大步数（默认使用配置值）")
     chat_local.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
     chat_local.add_argument("--goal", action="store_true", help="Goal 模式：不限制工具调用次数")
@@ -93,7 +92,6 @@ def _parser() -> argparse.ArgumentParser:
     chat_local.add_argument("--no-auto-skills", action="store_true", help="禁止自动激活 Skill")
     chat_jira = sub.add_parser("chat-jira", help="交互式连续问答，分析 Jira Bug")
     chat_jira.add_argument("issue_key", help="例如 APP-42")
-    chat_jira.add_argument("--max-turns", type=int, default=5, help="最大对话轮次（默认 5）")
     chat_jira.add_argument("--max-steps-per-turn", type=int, help="每轮最大步数（默认使用配置值）")
     chat_jira.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
     chat_jira.add_argument("--goal", action="store_true", help="Goal 模式：不限制工具调用次数")
@@ -369,7 +367,6 @@ async def _run_chat(args: argparse.Namespace) -> int:
     print("=" * 60)
     print(f"Case: {task.issue_key or task.case_path}")
     print(f"目标: {task.objective}")
-    print(f"最大轮次: {args.max_turns}")
     if args.max_steps_per_turn:
         print(f"每轮步数: {args.max_steps_per_turn}")
     print()
@@ -380,7 +377,6 @@ async def _run_chat(args: argparse.Namespace) -> int:
     try:
         session, first_instruction = await worker.create_conversation(
             task,
-            max_turns=args.max_turns,
             max_steps_per_turn=args.max_steps_per_turn,
         )
     except (ValueError, OSError) as exc:
@@ -404,7 +400,7 @@ async def _run_chat(args: argparse.Namespace) -> int:
 
         # 后续轮次：交互式追问
         while session.is_active:
-            print(f"\n[轮次 {session.turn_count + 1}/{args.max_turns}] ", end="")
+            print(f"\n[轮次 {session.turn_count + 1}] ", end="")
             try:
                 user_input = input("请输入追问（或 /quit 退出）: ").strip()
             except (EOFError, KeyboardInterrupt):

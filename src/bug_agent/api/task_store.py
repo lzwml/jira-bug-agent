@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 
 from ..contracts import BugAnalysisResult, BugAnalysisTask
-from .models import TaskRecord
+from .models import ConversationMessage, ConversationRecord, TaskRecord
 
 
 class TaskConflictError(ValueError):
@@ -49,6 +49,32 @@ class SqliteTaskStore:
                     updated_at TEXT NOT NULL
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    task_json TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('active', 'closed')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+                )
+            """)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(conversation_messages)")}
+            if "status" not in columns:
+                connection.execute("ALTER TABLE conversation_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+            if "error" not in columns:
+                connection.execute("ALTER TABLE conversation_messages ADD COLUMN error TEXT")
 
     def submit(self, task: BugAnalysisTask) -> tuple[TaskRecord, bool]:
         payload = _canonical_task(task)
@@ -158,6 +184,124 @@ class SqliteTaskStore:
                 (_now(), task_id),
             )
 
+    def create_conversation(
+        self, conversation_id: str, task: BugAnalysisTask,
+    ) -> ConversationRecord:
+        timestamp = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["task_json"] != _canonical_task(task):
+                    raise TaskConflictError(f"conversation_id={conversation_id} 已用于不同的 Case")
+                return self._conversation_record(connection, existing)
+            connection.execute(
+                """INSERT INTO conversations
+                   (conversation_id, task_json, status, created_at, updated_at)
+                   VALUES (?, ?, 'active', ?, ?)""",
+                (conversation_id, _canonical_task(task), timestamp, timestamp),
+            )
+            row = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+            return self._conversation_record(connection, row)
+
+    def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+            return self._conversation_record(connection, row) if row is not None else None
+
+    def add_conversation_message(
+        self, conversation_id: str, *, role: str, content: str,
+    ) -> ConversationMessage:
+        timestamp = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM conversations WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(conversation_id)
+            if row["status"] != "active":
+                raise RuntimeError("会话已经关闭")
+            cursor = connection.execute(
+                """INSERT INTO conversation_messages (conversation_id, role, content, status, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (conversation_id, role, content, "queued" if role == "user" else "completed", timestamp),
+            )
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (timestamp, conversation_id),
+            )
+            return ConversationMessage(
+                message_id=cursor.lastrowid, role=role, content=content,
+                status="queued" if role == "user" else "completed", created_at=timestamp,
+            )
+
+    def queued_conversation_messages(self) -> list[int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT message_id FROM conversation_messages WHERE role = 'user' AND status = 'queued' ORDER BY message_id",
+            ).fetchall()
+        return [row["message_id"] for row in rows]
+
+    def requeue_running_conversation_messages(self) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE conversation_messages SET status = 'queued' WHERE role = 'user' AND status = 'running'",
+            )
+            return cursor.rowcount
+
+    def claim_conversation_message(self, message_id: int) -> tuple[ConversationRecord, ConversationMessage, list[dict[str, str]]] | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM conversation_messages WHERE message_id = ?", (message_id,)).fetchone()
+            if row is None or row["role"] != "user" or row["status"] != "queued":
+                return None
+            connection.execute("UPDATE conversation_messages SET status = 'running' WHERE message_id = ?", (message_id,))
+            conversation = connection.execute("SELECT * FROM conversations WHERE conversation_id = ?", (row["conversation_id"],)).fetchone()
+            history = connection.execute(
+                "SELECT role, content FROM conversation_messages WHERE conversation_id = ? AND message_id < ? AND status = 'completed' ORDER BY message_id",
+                (row["conversation_id"], message_id),
+            ).fetchall()
+            record = self._conversation_record(connection, conversation)
+            message = ConversationMessage(message_id=message_id, role="user", content=row["content"], status="running", created_at=row["created_at"])
+            return record, message, [dict(item) for item in history]
+
+    def complete_conversation_message(self, message_id: int, answer: str) -> None:
+        timestamp = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT conversation_id, status FROM conversation_messages WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                return
+            if row["status"] != "running":
+                # 已完成的或已失败的消息无需重复处理
+                return
+            connection.execute(
+                "UPDATE conversation_messages SET status = 'completed', error = NULL WHERE message_id = ?",
+                (message_id,),
+            )
+            connection.execute(
+                "INSERT INTO conversation_messages (conversation_id, role, content, status, created_at) VALUES (?, 'assistant', ?, 'completed', ?)",
+                (row["conversation_id"], answer, timestamp),
+            )
+            connection.execute("UPDATE conversations SET updated_at = ? WHERE conversation_id = ?", (timestamp, row["conversation_id"]))
+
+    def fail_conversation_message(self, message_id: int, error: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE conversation_messages SET status = 'failed', error = ? WHERE message_id = ? AND status = 'running'",
+                (error, message_id),
+            )
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -176,6 +320,24 @@ class SqliteTaskStore:
             task=BugAnalysisTask.model_validate_json(row["task_json"]),
             result=result,
             error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _conversation_record(
+        connection: sqlite3.Connection, row: sqlite3.Row,
+    ) -> ConversationRecord:
+        messages = connection.execute(
+            """SELECT message_id, role, content, status, error, created_at FROM conversation_messages
+               WHERE conversation_id = ? ORDER BY message_id""",
+            (row["conversation_id"],),
+        ).fetchall()
+        return ConversationRecord(
+            conversation_id=row["conversation_id"],
+            status=row["status"],
+            task=BugAnalysisTask.model_validate_json(row["task_json"]),
+            messages=[ConversationMessage(**dict(message)) for message in messages],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

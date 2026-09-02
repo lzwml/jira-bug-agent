@@ -27,6 +27,9 @@ class ImmediateWorker:
     async def execute(self, task: BugAnalysisTask) -> BugAnalysisResult:
         return completed_result(task.task_id)
 
+    async def answer_conversation_turn(self, task, history, user_message, *, max_steps_per_turn=None):
+        return f"已收到：{user_message}"
+
 
 def test_sqlite_store_is_idempotent_and_detects_conflict(tmp_path):
     store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
@@ -193,6 +196,47 @@ async def test_http_api_continuation_inherits_case_and_links_previous_task(tmp_p
 
 
 @pytest.mark.anyio
+async def test_http_api_persists_case_conversation_messages(tmp_path):
+    case_root = tmp_path / "cases"
+    case_path = case_root / "APP-42"
+    case_path.mkdir(parents=True)
+    app = create_app(
+        ApiConfig(
+            database_path=tmp_path / "tasks.sqlite3",
+            allowed_local_roots=(case_root.resolve(),),
+        ),
+        ImmediateWorker,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            created = await client.post("/conversations", json={
+                "conversation_id": "case-chat-1",
+                "task": {"task_id": "case-chat-task", "source": "local", "case_path": str(case_path)},
+            })
+            assert created.status_code == 201
+            assert created.json()["status"] == "active"
+            assert created.json()["messages"] == []
+
+            message = await client.post("/conversations/case-chat-1/messages", json={
+                "content": "复现只发生在冷启动，优先看 SurfaceFlinger。",
+            })
+            assert message.status_code == 202
+            assert message.json()["role"] == "user"
+
+            record = await client.get("/conversations/case-chat-1")
+            for _ in range(50):
+                record = await client.get("/conversations/case-chat-1")
+                if len(record.json()["messages"]) == 2:
+                    break
+                await asyncio.sleep(0)
+            assert record.status_code == 200
+            assert record.json()["messages"][0]["content"] == "复现只发生在冷启动，优先看 SurfaceFlinger。"
+            assert record.json()["messages"][1]["role"] == "assistant"
+
+
+@pytest.mark.anyio
 async def test_http_api_cannot_continue_running_task(tmp_path):
     case_root = tmp_path / "cases"
     case_path = case_root / "APP-42"
@@ -268,3 +312,197 @@ async def test_http_api_health_does_not_require_api_key(tmp_path):
             response = await client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_conversation_dispatcher_consumes_queued_messages(tmp_path):
+    """验证 ConversationDispatcher 从 SQLite 消费消息并生成 assistant 回复。"""
+    from bug_agent.api.dispatcher import ConversationDispatcher
+
+    store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = BugAnalysisTask(task_id="conv-task", source="jira", issue_key="APP-42")
+    store.create_conversation("conv-1", task)
+    store.add_conversation_message("conv-1", role="user", content="冷启动黑屏？")
+
+    dispatcher = ConversationDispatcher(store, ImmediateWorker, concurrency=1)
+    await dispatcher.start()
+    try:
+        # 等待消息被消费
+        for _ in range(50):
+            record = store.get_conversation("conv-1")
+            if any(msg.role == "assistant" for msg in record.messages):
+                break
+            await asyncio.sleep(0)
+        record = store.get_conversation("conv-1")
+        assert len(record.messages) == 2
+        assert record.messages[0].role == "user"
+        assert record.messages[0].status == "completed"
+        assert record.messages[1].role == "assistant"
+        assert record.messages[1].content == "已收到：冷启动黑屏？"
+    finally:
+        await dispatcher.stop()
+
+
+def test_complete_message_idempotent_when_already_completed(tmp_path):
+    """complete_conversation_message 对已完成的 message 不应重复插入 assistant 消息。"""
+    store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = BugAnalysisTask(task_id="idem-task", source="jira", issue_key="APP-42")
+    store.create_conversation("idem-conv", task)
+    store.add_conversation_message("idem-conv", role="user", content="问题")
+
+    # 手动将消息状态设为 running 并完成一次
+    with store._connect() as conn:
+        conn.execute("UPDATE conversation_messages SET status = 'running' WHERE message_id = 1")
+    store.complete_conversation_message(1, "第一次完成")
+    store.complete_conversation_message(1, "第二次完成（应被忽略）")
+
+    record = store.get_conversation("idem-conv")
+    # 只有一条 assistant 消息，第二次完成被跳过
+    assistant_msgs = [m for m in record.messages if m.role == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0].content == "第一次完成"
+
+
+def test_fail_message_idempotent_when_already_completed(tmp_path):
+    """fail_conversation_message 对已完成的消息不应覆盖状态。"""
+    store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = BugAnalysisTask(task_id="fail-task", source="jira", issue_key="APP-42")
+    store.create_conversation("fail-conv", task)
+    store.add_conversation_message("fail-conv", role="user", content="问题")
+
+    with store._connect() as conn:
+        conn.execute("UPDATE conversation_messages SET status = 'running' WHERE message_id = 1")
+    store.complete_conversation_message(1, "已完成")
+    store.fail_conversation_message(1, "不应覆盖")
+
+    record = store.get_conversation("fail-conv")
+    user_msg = record.messages[0]
+    assert user_msg.status == "completed"
+    assert user_msg.error is None
+
+
+@pytest.mark.anyio
+async def test_conversation_session_on_close_called_once():
+    """验证 ConversationSession 的 on_close 回调在 finalize 中只被调用一次。"""
+    from bug_agent.agent import BugAnalysisAgent
+    from bug_agent.config import AgentConfig
+    from bug_agent.conversation import ConversationSession
+
+    close_count = 0
+
+    class DummyRouter:
+        async def call(self, name, arguments):
+            return "{}"
+
+        def openai_tools(self):
+            return []
+
+    class DummyProvider:
+        async def complete(self, messages, tools):
+            return {"role": "assistant", "content": "done"}
+
+        async def close(self):
+            pass
+
+    async def on_close():
+        nonlocal close_count
+        close_count += 1
+
+    config = AgentConfig(
+        llm_base_url="http://localhost", llm_api_key="test", llm_model="test",
+        max_steps=1,
+    )
+    agent = BugAnalysisAgent(config, DummyProvider())
+    session = ConversationSession(
+        agent=agent,
+        system_prompt="test",
+        router=DummyRouter(),
+        max_steps_per_turn=1,
+        on_close=on_close,
+    )
+
+    await session.send("hello")
+    await session.finalize()
+    await session.finalize()  # 第二次 finalize 不应再调用 on_close
+
+    assert close_count == 1
+
+
+def test_conversation_session_load_history():
+    """验证 load_history 可将历史消息注入会话。"""
+    from bug_agent.agent import BugAnalysisAgent
+    from bug_agent.config import AgentConfig
+    from bug_agent.conversation import ConversationSession
+
+    class DummyRouter:
+        async def call(self, name, arguments):
+            return "{}"
+
+        def openai_tools(self):
+            return []
+
+    class DummyProvider:
+        async def complete(self, messages, tools):
+            return {"role": "assistant", "content": "done"}
+
+        async def close(self):
+            pass
+
+    config = AgentConfig(
+        llm_base_url="http://localhost", llm_api_key="test", llm_model="test",
+        max_steps=1,
+    )
+    agent = BugAnalysisAgent(config, DummyProvider())
+    session = ConversationSession(
+        agent=agent,
+        system_prompt="test",
+        router=DummyRouter(),
+    )
+
+    session.load_history([
+        {"role": "user", "content": "初始指令"},
+        {"role": "assistant", "content": "上一轮回复"},
+    ])
+    msgs = session.messages
+    assert msgs[0]["role"] == "system"
+    assert msgs[1]["role"] == "user"
+    assert msgs[1]["content"] == "初始指令"
+    assert msgs[2]["role"] == "assistant"
+    assert msgs[2]["content"] == "上一轮回复"
+
+
+def test_conversation_session_load_history_rejects_invalid_role():
+    """load_history 对无效角色应抛出 ValueError。"""
+    from bug_agent.agent import BugAnalysisAgent
+    from bug_agent.config import AgentConfig
+    from bug_agent.conversation import ConversationSession
+
+    class DummyRouter:
+        async def call(self, name, arguments):
+            return "{}"
+
+        def openai_tools(self):
+            return []
+
+    class DummyProvider:
+        async def complete(self, messages, tools):
+            return {"role": "assistant", "content": "done"}
+
+        async def close(self):
+            pass
+
+    config = AgentConfig(
+        llm_base_url="http://localhost", llm_api_key="test", llm_model="test",
+        max_steps=1,
+    )
+    agent = BugAnalysisAgent(config, DummyProvider())
+    session = ConversationSession(
+        agent=agent, system_prompt="test", router=DummyRouter(),
+    )
+
+    import pytest as pytest_mod
+    with pytest_mod.raises(ValueError, match="无效的消息角色"):
+        session.load_history([{"role": "invalid_role", "content": "test"}])

@@ -56,7 +56,7 @@ class FakeRouter:
         return json.dumps({"success": True, "data": {"results": ["匹配行1", "匹配行2"]}})
 
 
-def make_session(agent_responses, max_turns=3, max_steps_per_turn=None):
+def make_session(agent_responses, max_steps_per_turn=None):
     """创建测试用的 ConversationSession。"""
     provider = FakeProvider(agent_responses)
     agent = BugAnalysisAgent(CONFIG, provider)
@@ -65,7 +65,6 @@ def make_session(agent_responses, max_turns=3, max_steps_per_turn=None):
         agent=agent,
         system_prompt="你是 Bug 分析助手。",
         router=router,
-        max_turns=max_turns,
         max_steps_per_turn=max_steps_per_turn,
     )
     return session, provider, router
@@ -133,11 +132,10 @@ async def test_tool_calls_are_recorded_in_turn():
 
 
 @pytest.mark.anyio
-async def test_session_enforces_max_turns():
-    """会话应在达到 max_turns 后结束。"""
+async def test_session_stops_only_after_finalize():
+    """会话只在 finalize() 后变为 inactive，send() 本身不限制轮次。"""
     session, provider, router = make_session(
         [{"content": "回答1"}, {"content": "回答2"}, {"content": "回答3"}],
-        max_turns=3,
     )
 
     assert session.is_active
@@ -146,31 +144,29 @@ async def test_session_enforces_max_turns():
     await session.send("第二问")
     assert session.is_active
     await session.send("第三问")
+    assert session.is_active  # 没有 max_turns，不会自动关闭
+
+    await session.finalize()
     assert not session.is_active
 
-    # 第 4 次应抛出异常
     with pytest.raises(RuntimeError, match="会话已结束"):
         await session.send("第四问")
 
 
 @pytest.mark.anyio
-async def test_session_reports_turn_count_and_remaining():
-    """会话应正确报告已完成轮次和剩余轮次。"""
+async def test_session_reports_turn_count():
+    """会话应正确报告已完成轮次。"""
     session, provider, router = make_session(
         [{"content": "回答1"}, {"content": "回答2"}],
-        max_turns=5,
     )
 
     assert session.turn_count == 0
-    assert session.remaining_turns == 5
 
     await session.send("第一问")
     assert session.turn_count == 1
-    assert session.remaining_turns == 4
 
     await session.send("第二问")
     assert session.turn_count == 2
-    assert session.remaining_turns == 3
 
 
 @pytest.mark.anyio
@@ -260,7 +256,6 @@ async def test_max_steps_per_turn_is_respected():
             },
             {"content": "第二轮：正常回答。"},
         ],
-        max_turns=3,
         max_steps_per_turn=2,  # 每轮最多 2 步
     )
 
@@ -300,7 +295,6 @@ async def test_on_tool_event_callback_is_called():
         agent=agent,
         system_prompt="助手",
         router=router,
-        max_turns=3,
         on_tool_event=events.append,
     )
 
