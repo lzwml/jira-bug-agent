@@ -145,6 +145,7 @@ When the tool list contains opengrok_ prefixed tools, you can search the codebas
 - Search for definitions (search_type=defs) and references (search_type=refs) of symbols found in logs.
 - Use opengrok_search_code to find functions, classes, macros, and their call sites.
 - Use opengrok_get_file_content with line ranges to read surrounding context.
+- After OpenGrok identifies a concrete project and path, prefer opengrok_read_local_file when available to inspect the corresponding local checkout. Treat OpenGrok and local content as different code versions unless evidence shows otherwise.
 - Use opengrok_get_file_history to check recent commits for suspicious changes.
 - Cross-reference code findings with log evidence — code logic alone is not proof.
 """

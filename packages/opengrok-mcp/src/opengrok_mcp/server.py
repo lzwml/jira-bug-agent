@@ -87,6 +87,19 @@ TOOLS = {
             "required": ["project", "path"],
         },
     },
+    "opengrok_read_local_file": {
+        "description": "Read a local source file previously located by OpenGrok. Only configured project roots are accessible.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string", "description": "OpenGrok project name with a configured local root."},
+                "path": {"type": "string", "description": "Repository-relative path returned by OpenGrok."},
+                "start_line": {"type": "integer", "minimum": 1, "description": "Start line (1-indexed, inclusive)."},
+                "end_line": {"type": "integer", "minimum": 1, "description": "End line (1-indexed, inclusive)."},
+            },
+            "required": ["project", "path"],
+        },
+    },
     "opengrok_get_file_history": {
         "description": "Get commit history for a file.",
         "inputSchema": {
@@ -252,6 +265,13 @@ async def _dispatch(client: OpenGrokClient, name: str, args: dict) -> dict:
         ))
     if name == "opengrok_get_file_content":
         return _ok(await client.get_file_content(
+            project=args["project"],
+            path=args["path"],
+            start_line=args.get("start_line"),
+            end_line=args.get("end_line"),
+        ))
+    if name == "opengrok_read_local_file":
+        return _ok(await client.get_local_file_content(
             project=args["project"],
             path=args["path"],
             start_line=args.get("start_line"),

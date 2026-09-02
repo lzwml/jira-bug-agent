@@ -20,6 +20,7 @@ import re
 import asyncio
 import time
 from collections import OrderedDict
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -42,6 +43,8 @@ class OpenGrokClient:
         self._default_max = config.default_max_results
         self._retry_attempts = config.retry_attempts
         self._cache_ttl = config.cache_ttl_seconds
+        self._local_project_roots = config.local_project_roots
+        self._local_max_file_bytes = config.local_max_file_bytes
         self._semaphore = asyncio.Semaphore(config.max_concurrency)
         self._http = httpx.AsyncClient(
             verify=self._verify,
@@ -185,6 +188,58 @@ class OpenGrokClient:
             "lineCount": total,
             "sizeBytes": len(full.encode("utf-8")),
             "startLine": start_line,
+        }
+
+    async def get_local_file_content(
+        self,
+        project: str,
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> dict[str, Any]:
+        """按 OpenGrok ``project + path`` 安全读取映射后的本地源码文件。"""
+        root_text = self._local_project_roots.get(project)
+        if root_text is None:
+            raise ValueError(f"未配置项目 {project} 的本地代码根目录")
+
+        root = Path(root_text).resolve()
+        if not root.is_dir():
+            raise ValueError(f"项目 {project} 的本地代码根目录不存在或不是目录")
+        clean = self._safe_path(path)
+        relative = Path(*clean.replace("\\", "/").split("/"))
+        candidate = (root / relative).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("path 解析后超出配置的本地代码根目录") from exc
+        if not candidate.is_file():
+            raise ValueError(f"本地文件不存在: {clean}")
+
+        size = candidate.stat().st_size
+        if size > self._local_max_file_bytes:
+            raise ValueError(
+                f"本地文件过大（{size} bytes），超过 OPENGROK_LOCAL_MAX_FILE_BYTES 限制"
+            )
+        raw = candidate.read_bytes()
+        if b"\x00" in raw:
+            raise ValueError("拒绝读取二进制文件")
+        full = raw.decode("utf-8", errors="replace")
+        lines = full.split("\n")
+        total = len(lines) if full else 0
+        if start_line is not None or end_line is not None:
+            start = max(0, (start_line or 1) - 1)
+            stop = end_line if end_line is not None else len(lines)
+            content = "\n".join(lines[start:stop])
+        else:
+            content = full
+        return {
+            "project": project,
+            "path": clean,
+            "content": content,
+            "lineCount": total,
+            "sizeBytes": size,
+            "startLine": start_line,
+            "source": "local",
         }
 
     # ------------------------------------------------------------------
