@@ -1,0 +1,1 @@
+"""OpenGrok MCP Server — lightweight Python MCP server for OpenGrok code search."""
