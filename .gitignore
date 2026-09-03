@@ -12,6 +12,7 @@ __pycache__/
 .env
 exports/
 dist/
+tools/*.DEC/
 build/
 .coverage
 htmlcov/

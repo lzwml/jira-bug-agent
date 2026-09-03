@@ -94,6 +94,7 @@ packages/
   log-analyzer-mcp/  # MCP layer: case registry, archive safety, chunked index, search
 
 skills/             # SKILL.md files with YAML frontmatter (name, description)
+tools/              # Bundled third-party tools (aee_extract.exe, etc.)
 tests/              # Agent + Worker tests using FakeProvider/FakeRouter
 docs/
   architecture.md   # Detailed architecture and data flow
