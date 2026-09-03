@@ -94,7 +94,7 @@ TOOL_DEFINITIONS = {
         PrepareCaseInput,
     ),
     "inspect_archive": (
-        "只读检查归档成员清单，不解压、不将成员内容落盘；APLog 可用本地 time_range 返回事故窗口及相邻卷的稳定 member_id。",
+        "只读检查归档成员清单，不解压、不将成员内容落盘；返回通用的路径时间和目录时间摘要，并可按路径前缀或路径时间筛选稳定 member_id。",
         InspectArchiveInput,
     ),
     "extract_archive_members": (

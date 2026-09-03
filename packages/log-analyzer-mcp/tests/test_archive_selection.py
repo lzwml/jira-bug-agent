@@ -11,7 +11,7 @@ import pytest
 from log_analyzer.archive_manager import ArchiveLimits, ArchiveRejected
 import log_analyzer.archive_selection as archive_selection
 from log_analyzer.archive_selection import (
-    extract_archive_members, inventory_archive, parse_aplog_basename, select_aplog_time_range,
+    extract_archive_members, inventory_archive, parse_path_timestamp, summarize_member_times,
 )
 from datetime import datetime
 
@@ -95,60 +95,26 @@ def test_inventory_truncates_without_writing_output(tmp_path: Path):
     assert not (tmp_path / "many.zip.unpacked").exists()
 
 
-def test_aplog_name_parsing_uses_only_a_complete_basename():
-    parsed = parse_aplog_basename("nested/APLog_2026_0831_061532__79.tar.gz")
-
-    assert parsed is not None
-    assert parsed.start_time == datetime(2026, 8, 31, 6, 15, 32)
-    assert parsed.sequence == 79
-    assert parse_aplog_basename("prefix_APLog_2026_0831_061532__79.tar.gz") is None
-    assert parse_aplog_basename("APLog_2026_0230_061532__79.tar.gz") is None
-
-
-def test_aplog_time_selection_sorts_mixed_inventory_and_keeps_neighbors(tmp_path: Path):
-    path = tmp_path / "aplogs.zip"
-    names = [
-        "APLog_2026_0831_063000__81.tar.gz",
-        "notes.txt",
-        "APLog_2026_0831_062429__80.tar.gz",
-        "APLog_2026_0831_061532__79.tar.gz",
-        "APLog_2026_0831_060100__78.tar.gz",
-    ]
+def test_generic_path_timestamp_and_directory_summary_do_not_require_a_product_format(tmp_path: Path):
+    path = tmp_path / "mixed.zip"
     with zipfile.ZipFile(path, "w") as archive:
-        for name in names:
-            archive.writestr(name, "payload")
-    inventory = inventory_archive(path, "aplog-time", LIMITS)
+        archive.writestr("logs/round-a_2026-09-01_12-00-00.log", "payload")
+        archive.writestr("logs/other_20260901_120100.log", "payload")
+        archive.writestr("logs/context.log", "payload")
+    inventory = inventory_archive(path, "mixed-time", LIMITS)
 
-    selected = select_aplog_time_range(
-        inventory.members, datetime(2026, 8, 31, 6, 24, 10), datetime(2026, 8, 31, 6, 24, 10), 1,
-    )
-
-    assert [(item.member.member_path, item.relation) for item in selected] == [
-        ("APLog_2026_0831_061532__79.tar.gz", "predecessor"),
-        ("APLog_2026_0831_062429__80.tar.gz", "successor"),
-    ]
-
-
-def test_aplog_time_selection_handles_a_cross_midnight_range(tmp_path: Path):
-    path = tmp_path / "midnight.zip"
-    with zipfile.ZipFile(path, "w") as archive:
-        for name in (
-            "APLog_2026_0831_235500__10.tar.gz",
-            "APLog_2026_0901_000500__11.tar.gz",
-            "APLog_2026_0901_001500__12.tar.gz",
-        ):
-            archive.writestr(name, "payload")
-    inventory = inventory_archive(path, "aplog-midnight", LIMITS)
-
-    selected = select_aplog_time_range(
-        inventory.members, datetime(2026, 8, 31, 23, 58), datetime(2026, 9, 1, 0, 10), 1,
-    )
-
-    assert [(item.parsed.start_time, item.relation) for item in selected] == [
-        (datetime(2026, 8, 31, 23, 55), "predecessor"),
-        (datetime(2026, 9, 1, 0, 5), "in_range"),
-        (datetime(2026, 9, 1, 0, 15), "successor"),
-    ]
+    assert parse_path_timestamp("logs/round-a_2026-09-01_12-00-00.log") is None
+    # Only documented compact/underscore patterns are facts; unsupported spelling is not guessed.
+    assert parse_path_timestamp("logs/other_20260901_120100.log").value == datetime(2026, 9, 1, 12, 1)
+    summary = summarize_member_times(inventory.members)
+    assert summary == [{
+        "path_prefix": "logs/",
+        "member_count": 3,
+        "timestamped_member_count": 1,
+        "untimestamped_member_count": 2,
+        "earliest_path_time": "2026-09-01T12:01:00",
+        "latest_path_time": "2026-09-01T12:01:00",
+    }]
 
 
 def test_tar_and_single_gzip_are_selectively_extracted(tmp_path: Path):

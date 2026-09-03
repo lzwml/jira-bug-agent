@@ -19,7 +19,7 @@ JIRA_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 1. Worker 已在进入本循环前确定性导出 Jira Case 并校验全部评论收集完整性；较小上下文位于 DIRECT_JIRA_CONTEXT，较大上下文以有损摘要形式位于 COMPILED_JIRA_CONTEXT。不要重复调用 collect_issue_context 或 export_issue_case。
 2. 先调用 open_case 注册导出的 Case，再调用 inspect_case。inspect_case 返回的 summary.archives 和 summary.large_text_files 是归档和大文件的优先索引，即使 artifacts 列表被截断这些摘要也始终完整。必须先处理 summary.archives 中的归档。
 3. 以 JIRA_CONTEXT 中的当前状态、已做动作、工程师建议和调查线索制定首轮计划；COMPILED_JIRA_CONTEXT 可能遗漏细节，需要核对时调用 get_case_comment(comment_id)，不得把评论观点直接当作根因证据。
-4. 从已验证 Jira 上下文提取 reported incident time。若归档成员为 APLog_YYYY_MMDD_HHMMSS__NN，优先以结构化 time_range 和 neighbor_count=1 调用 inspect_archive；工具会返回前驱、范围内和后继卷的安全 member_id，禁止逐页浏览全量清单或假设固定卷时长。成员若已返回 extracted=true 和 artifact_id，直接复用该 Artifact，禁止再次调用 extract_archive_members；只对尚未解压的目标成员调用 extract_archive_members。事故时间只是选择线索，仍须用日志证据验证事故窗口；日期、Boot 或时钟锚点不可靠时必须报告 limitation，而非无边界扫描。
+4. 从已验证 Jira 上下文提取 reported incident time。先调用 inspect_archive 获取通用 time_groups；再按路径前缀或路径时间筛选成员。time_neighbor_count 只提供通用的时间相邻成员，具体要连带哪些证据由当前 Skill 决定。成员若已返回 extracted=true 和 artifact_id，直接复用该 Artifact，禁止再次调用 extract_archive_members；只对尚未解压的目标成员调用 extract_archive_members。事故时间只是选择线索，仍须用日志证据验证事故窗口；日期、Boot 或时钟锚点不可靠时必须报告 limitation，而非无边界扫描。
 5. 只对已选中的相关文本调用 build_index，再使用 search_evidence、extract_timeline、parse_diagnostics 收集并验证证据。
 6. 证据不足时，回到归档清单逐步扩大范围；只有用户明确要求完整准备，或多轮扩围后仍无法确定必要成员时，才使用 prepare_case。
 7. 综合经验证的 Jira 线索与日志证据输出结论。
@@ -31,7 +31,7 @@ LOCAL_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 2. 调用 inspect_case 了解 Artifact 类型与规模。inspect_case 返回的 summary.archives 和 summary.large_text_files 是归档和大文件的优先索引，即使 artifacts 列表被截断，这些摘要也始终完整。必须先处理 summary.archives 中的归档，再处理其他附件。
 3. 如果输入中存在 DIRECT_JIRA_CONTEXT 或 COMPILED_JIRA_CONTEXT，说明 Worker 已硬校验 Jira 描述与全部评论；必须以其中的当前状态、已做动作、工程师建议和线索制定调查计划。编译摘要是有损的，需要核对精确措辞时使用 get_case_comment(comment_id)。纯本地日志 Case 可能没有该区块。
 4. 评论只是调查线索，不是根因证明；必须用日志、时间线或确定性诊断验证。
-5. 若存在已验证 Jira 上下文，先提取 reported incident time。对于 APLog_YYYY_MMDD_HHMMSS__NN 成员，优先以结构化 time_range 和 neighbor_count=1 调用 inspect_archive，使用工具给出的前驱、范围内和后继卷及安全 member_id；禁止逐页浏览全量清单、假设固定卷时长或传入裸成员路径。成员若已返回 extracted=true 和 artifact_id，直接复用该 Artifact，禁止再次调用 extract_archive_members；只对尚未解压的目标成员调用 extract_archive_members。事故时间只是选择线索，仍须用日志证据验证事故窗口；日期、Boot 或时钟锚点不可靠时必须报告 limitation，而非无边界扫描。
+5. 若存在已验证 Jira 上下文，先提取 reported incident time。调用 inspect_archive 获取通用 time_groups，并按路径前缀或路径时间逐步筛选成员；time_neighbor_count 只提供通用时间邻居，具体证据组合由当前 Skill 决定。禁止传入裸成员路径。成员若已返回 extracted=true 和 artifact_id，直接复用该 Artifact，禁止再次调用 extract_archive_members；只对尚未解压的目标成员调用 extract_archive_members。事故时间只是选择线索，仍须用日志证据验证事故窗口；日期、Boot 或时钟锚点不可靠时必须报告 limitation，而非无边界扫描。
 6. 只对已选中的相关文本调用 build_index，再使用 search_evidence、extract_timeline、parse_diagnostics 收集证据。
 7. 证据不足时逐步扩大时间窗口、日志域或成员范围；只有用户明确要求完整准备，或多轮扩围后仍无法确定必要成员时，才使用 prepare_case。
 """

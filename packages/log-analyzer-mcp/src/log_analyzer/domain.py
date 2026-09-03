@@ -224,7 +224,7 @@ class PrepareCaseInput(BaseModel):
 
 
 class ArchiveTimeRange(BaseModel):
-    """本地 Case 时间的 APLog 归档选择范围，不隐式换算时区。"""
+    """归档成员路径可见时间的本地查询范围，不隐式换算时区。"""
 
     start: datetime = Field(description="本地时间，格式 YYYY-MM-DDTHH:MM:SS")
     end: datetime = Field(description="本地时间，格式 YYYY-MM-DDTHH:MM:SS，必须不早于 start")
@@ -258,8 +258,22 @@ class InspectArchiveInput(BaseModel):
     member_offset: int = Field(default=0, ge=0, le=1_000_000)
     source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
     max_members: int = Field(default=1000, ge=1, le=5000)
-    time_range: ArchiveTimeRange | None = None
-    neighbor_count: int = Field(default=1, ge=0, le=3)
+    path_prefix: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        description="只返回此前缀下的成员；前缀必须来自此前返回的 member_path 或 time_groups",
+    )
+    time_range: ArchiveTimeRange | None = Field(
+        default=None,
+        description="按成员路径/文件名中可解析的本地时间过滤；不会推断日志内容时间或领域相邻成员",
+    )
+    time_neighbor_count: int = Field(
+        default=0,
+        ge=0,
+        le=3,
+        description="路径时间查询时，额外返回窗口前后各 N 个可解析时间成员；不包含任何领域语义",
+    )
 
 
 class ExtractArchiveMembersInput(BaseModel):

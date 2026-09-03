@@ -62,227 +62,82 @@ class ArchiveMemberInfo:
 
 
 @dataclass(frozen=True)
-class ParsedAPLogName:
-    """从 APLog basename 得到的本地起始时间和卷序号。"""
+class ParsedPathTimestamp:
+    """从成员路径中直接读出的时间事实，不包含领域或时钟推断。"""
 
-    start_time: datetime
-    sequence: int
-
-
-@dataclass(frozen=True)
-class TimeSelectedMember:
-    member: ArchiveMemberInfo
-    parsed: ParsedAPLogName
-    relation: str
+    value: datetime
+    pattern: str
 
 
-_APLOG_BASENAME_RE = re.compile(
-    r"^APLog_(?P<year>\d{4})_(?P<month>\d{2})(?P<day>\d{2})_"
-    r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})__(?P<sequence>\d+)"
-    r"(?:\.[^.]+)*$"
+_PATH_TIMESTAMP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("yyyy_mmdd_hhmmss", re.compile(
+        r"(?<!\d)(?P<year>\d{4})_(?P<month>\d{2})(?P<day>\d{2})_"
+        r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})(?!\d)"
+    )),
+    ("yyyy_mm_dd_hh_mm_ss", re.compile(
+        r"(?<!\d)(?P<year>\d{4})_(?P<month>\d{2})_(?P<day>\d{2})_"
+        r"(?P<hour>\d{2})_(?P<minute>\d{2})_(?P<second>\d{2})(?!\d)"
+    )),
+    ("yyyymmdd_hhmmss", re.compile(
+        r"(?<!\d)(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})_"
+        r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})(?!\d)"
+    )),
+    ("yyyymmdd-hhmmss", re.compile(
+        r"(?<!\d)(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})-"
+        r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})(?!\d)"
+    )),
 )
 
 
-def parse_aplog_basename(member_path: str) -> ParsedAPLogName | None:
-    """解析完整 APLog basename；无效日期或其他成员均返回 None。"""
+def parse_path_timestamp(member_path: str) -> ParsedPathTimestamp | None:
+    """解析 basename 中的常见绝对时间，不识别产品、目录或日志语义。"""
 
-    match = _APLOG_BASENAME_RE.fullmatch(PurePosixPath(member_path).name)
-    if match is None:
-        return None
-    try:
-        return ParsedAPLogName(
-            start_time=datetime(
-                int(match["year"]), int(match["month"]), int(match["day"]),
-                int(match["hour"]), int(match["minute"]), int(match["second"]),
-            ),
-            sequence=int(match["sequence"]),
-        )
-    except ValueError:
-        return None
-
-
-def select_aplog_time_range(
-    members: list[ArchiveMemberInfo], start: datetime, end: datetime, neighbor_count: int,
-) -> list[TimeSelectedMember]:
-    """按 APLog 起始时间选择范围内成员及前后相邻成员。"""
-
-    parsed_members = [
-        (member, parsed)
-        for member in members
-        if (parsed := parse_aplog_basename(member.member_path)) is not None
-    ]
-    parsed_members.sort(key=lambda item: (item[1].start_time, item[1].sequence, item[0].member_path))
-    in_range = [(member, parsed) for member, parsed in parsed_members if start <= parsed.start_time <= end]
-    predecessors = [(member, parsed) for member, parsed in parsed_members if parsed.start_time < start]
-    successors = [(member, parsed) for member, parsed in parsed_members if parsed.start_time > end]
-    selected: dict[str, TimeSelectedMember] = {}
-    for member, parsed in predecessors[-neighbor_count:] if neighbor_count else []:
-        selected[member.member_id] = TimeSelectedMember(member, parsed, "predecessor")
-    for member, parsed in in_range:
-        selected[member.member_id] = TimeSelectedMember(member, parsed, "in_range")
-    for member, parsed in successors[:neighbor_count] if neighbor_count else []:
-        selected[member.member_id] = TimeSelectedMember(member, parsed, "successor")
-    return sorted(
-        selected.values(),
-        key=lambda item: (item.parsed.start_time, item.parsed.sequence, item.member.member_path),
-    )
-
-
-_SOS_LOG_ROUND_RE = re.compile(r"^Linux_Log/log(\d+)/", re.IGNORECASE)
-_SOS_FILENAME_TS_RE = re.compile(
-    r"(?P<year>\d{4})_(?P<month>\d{2})_(?P<day>\d{2})_"
-    r"(?P<hour>\d{2})_(?P<minute>\d{2})_(?P<second>\d{2})"
-)
-# CAN/OTA logs often use YYYYMMDD_HHMMSS compact format
-_SOS_COMPACT_TS_RE = re.compile(
-    r"(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})_"
-    r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})"
-)
-_SOS_MCU_RE = re.compile(r"^Mcu_Log/mculog\.log\.\d+", re.IGNORECASE)
-_SOS_CAN_RE = re.compile(r"^can_log/", re.IGNORECASE)
-_SOS_OTA_RE = re.compile(r"^ota/", re.IGNORECASE)
-_SOS_PKI_RE = re.compile(r"^pki/", re.IGNORECASE)
-
-
-def _parse_filename_timestamp(member_path: str) -> datetime | None:
-    """从 SOS 归档成员路径中提取文件名时间戳，支持两种格式。"""
-    filename = PurePosixPath(member_path).name
-    # Try YYYY_MM_DD_HH_MM_SS first (most SOS files)
-    ts_match = _SOS_FILENAME_TS_RE.search(filename)
-    if ts_match is not None:
+    name = PurePosixPath(member_path).name
+    for pattern_name, pattern in _PATH_TIMESTAMP_PATTERNS:
+        match = pattern.search(name)
+        if match is None:
+            continue
         try:
-            return datetime(
-                int(ts_match["year"]), int(ts_match["month"]), int(ts_match["day"]),
-                int(ts_match["hour"]), int(ts_match["minute"]), int(ts_match["second"]),
+            return ParsedPathTimestamp(
+                value=datetime(
+                    int(match["year"]), int(match["month"]), int(match["day"]),
+                    int(match["hour"]), int(match["minute"]), int(match["second"]),
+                ),
+                pattern=pattern_name,
             )
         except ValueError:
-            pass
-    # Try YYYYMMDD_HHMMSS compact format (CAN/OTA logs)
-    ts_match = _SOS_COMPACT_TS_RE.search(filename)
-    if ts_match is not None:
-        try:
-            return datetime(
-                int(ts_match["year"]), int(ts_match["month"]), int(ts_match["day"]),
-                int(ts_match["hour"]), int(ts_match["minute"]), int(ts_match["second"]),
-            )
-        except ValueError:
-            pass
+            continue
     return None
 
 
-def _is_sos_archive(members: list[ArchiveMemberInfo]) -> bool:
-    """检测成员列表是否属于 SOS/TBox 归档结构。"""
-    return any(_SOS_LOG_ROUND_RE.match(m.member_path) for m in members)
+def summarize_member_times(members: list[ArchiveMemberInfo]) -> list[dict[str, object]]:
+    """按直接父目录聚合路径时间，供调用方决定领域相关成员。"""
 
-
-def select_sos_time_range(
-    members: list[ArchiveMemberInfo], start: datetime, end: datetime, neighbor_count: int,
-) -> list[TimeSelectedMember]:
-    """按 SOS 归档的 boot round 时间窗口选择成员及相邻 round 成员。
-
-    SOS 归档使用 ``Linux_Log/logNN/`` 目录结构，每个 boot round 的时间窗口
-    由其文件名中的时间戳确定。同时选择覆盖事件窗口的 MCU、CAN、OTA、PKI 日志。
-    """
-    if not _is_sos_archive(members):
-        return []
-
-    # 1. 按 boot round 分组
-    round_members: dict[int, list[ArchiveMemberInfo]] = {}
-    round_timestamps: dict[int, list[datetime]] = {}
+    groups: dict[str, dict[str, object]] = {}
     for member in members:
-        rm = _SOS_LOG_ROUND_RE.match(member.member_path)
-        if not rm:
+        parent = str(PurePosixPath(member.member_path).parent)
+        group = groups.setdefault(parent, {
+            "path_prefix": "" if parent == "." else f"{parent}/",
+            "member_count": 0,
+            "timestamped_member_count": 0,
+            "untimestamped_member_count": 0,
+            "earliest_path_time": None,
+            "latest_path_time": None,
+        })
+        group["member_count"] = int(group["member_count"]) + 1
+        parsed = parse_path_timestamp(member.member_path)
+        if parsed is None:
+            group["untimestamped_member_count"] = int(group["untimestamped_member_count"]) + 1
             continue
-        rn = int(rm.group(1))
-        round_members.setdefault(rn, []).append(member)
-        ts = _parse_filename_timestamp(member.member_path)
-        if ts is not None:
-            round_timestamps.setdefault(rn, []).append(ts)
-
-    # 2. 计算每个 round 的时间窗口
-    round_windows: dict[int, tuple[datetime, datetime]] = {}
-    for rn, tss in round_timestamps.items():
-        if tss:
-            round_windows[rn] = (min(tss), max(tss))
-
-    sorted_rounds = sorted(round_windows.keys())
-    if not sorted_rounds:
-        return []
-
-    # 3. 找到与事件时间窗口重叠的 incident round
-    incident_rounds: list[int] = []
-    for rn in sorted_rounds:
-        rmin, rmax = round_windows[rn]
-        if rmin <= end and rmax >= start:
-            incident_rounds.append(rn)
-
-    if not incident_rounds:
-        # 没有直接重叠，取事件时间之前最近的 round
-        for rn in reversed(sorted_rounds):
-            _, rmax = round_windows[rn]
-            if rmax < start:
-                incident_rounds = [rn]
-                break
-        if not incident_rounds:
-            incident_rounds = [sorted_rounds[0]]
-
-    # 4. 添加相邻 round
-    selected_rounds: set[int] = set(incident_rounds)
-    min_rn = min(incident_rounds)
-    max_rn = max(incident_rounds)
-    for i in range(1, neighbor_count + 1):
-        if min_rn - i in round_windows:
-            selected_rounds.add(min_rn - i)
-        if max_rn + i in round_windows:
-            selected_rounds.add(max_rn + i)
-
-    # 5. 选择选定 round 中的所有安全成员
-    selected: dict[str, TimeSelectedMember] = {}
-    for rn in sorted(selected_rounds):
-        relation = (
-            "in_range" if rn in incident_rounds
-            else "predecessor" if rn < min(incident_rounds)
-            else "successor"
-        )
-        for member in round_members.get(rn, []):
-            if not member.safe or member.member_id in selected:
-                continue
-            ts = _parse_filename_timestamp(member.member_path)
-            parsed = ParsedAPLogName(
-                start_time=ts or round_windows[rn][0],
-                sequence=rn,
-            )
-            selected[member.member_id] = TimeSelectedMember(member, parsed, relation)
-
-    # 6. 选择覆盖事件时间窗口的 MCU/CAN/OTA/PKI 日志
-    from datetime import timedelta
-    extended_start = start - timedelta(hours=4)
-    extended_end = end + timedelta(hours=4)
-
-    for member in members:
-        if not member.safe or member.member_id in selected:
-            continue
-        path = member.member_path
-        is_sos_peripheral = (
-            _SOS_MCU_RE.match(path)
-            or _SOS_CAN_RE.match(path)
-            or _SOS_OTA_RE.match(path)
-            or _SOS_PKI_RE.match(path)
-        )
-        if not is_sos_peripheral:
-            continue
-        ts = _parse_filename_timestamp(member.member_path)
-        if ts is None:
-            # 没有时间戳的文件（如 .log 无后缀），跳过——不能确定是否在事件窗口内
-            continue
-        elif extended_start <= ts <= extended_end:
-            parsed = ParsedAPLogName(start_time=ts, sequence=0)
-            selected[member.member_id] = TimeSelectedMember(member, parsed, "in_range")
-
-    return sorted(
-        selected.values(),
-        key=lambda item: (item.parsed.start_time, item.parsed.sequence, item.member.member_path),
-    )
+        group["timestamped_member_count"] = int(group["timestamped_member_count"]) + 1
+        value = parsed.value.isoformat()
+        earliest = group["earliest_path_time"]
+        latest = group["latest_path_time"]
+        if earliest is None or value < earliest:
+            group["earliest_path_time"] = value
+        if latest is None or value > latest:
+            group["latest_path_time"] = value
+    return sorted(groups.values(), key=lambda item: str(item["path_prefix"]))
 
 
 @dataclass(frozen=True)

@@ -47,8 +47,10 @@ respective directories.
    reliable date, ambiguous cross-midnight context, or unknown boot identity is a limitation;
    do not guess from the `logNN` sequence number.
 
-2. Call `inspect_archive` to get the full member list. The returned member list includes
-   the member path and size for each entry.
+2. Call `inspect_archive` to get the bounded member catalog and generic `time_groups`.
+   Each group reports its path prefix, member counts, and the earliest/latest timestamp that
+   is directly parseable from member paths. Request additional members with `path_prefix`
+   only after selecting candidate rounds; do not treat the summary as log-content evidence.
 
 3. Identify the incident boot round(s) from the member paths:
    - For each `Linux_Log/logNN/` directory, look at the earliest and latest timestamps in
@@ -57,7 +59,8 @@ respective directories.
    - For a reboot that spans two rounds, you need both the **pre-reboot round** (last
      rotation of `logNN`) and the **post-reboot round** (first rotation of `log(N+1)`).
 
-4. Select members with `neighbor_count=1` (or more if the incident spans multiple rounds):
+4. Request the selected directory prefixes with `path_prefix` (and any required neighboring
+   prefixes), then select their returned `member_id` values:
    - **Incident round(s)**: all core streams from the relevant `logNN` directories.
    - **Predecessor round**: the last few rotations (highest `.NNNN` numbers) of the preceding
      `logNN` — these capture the state leading up to the incident.
@@ -70,8 +73,8 @@ respective directories.
    window, plus one predecessor and one successor. The MCU sequence number is independent
    of the Linux boot round — do not assume `mculog.log.0003` corresponds to `log03`.
 
-6. For CAN logs, select the `.asc` and `.asc.gz` files whose start timestamps cover the
-   incident window with neighbor_count=1.
+6. For CAN logs, use generic `time_range` with `time_neighbor_count=1`, then select the
+   `.asc` and `.asc.gz` evidence returned by that query.
 
 7. For OTA/PKI/application logs, select the files whose timestamp or rotation covers the
    incident window.

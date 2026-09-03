@@ -35,8 +35,8 @@ from .archive_selection import extract_archive_members as extract_selected_membe
 from .archive_selection import (
     inspect_reusable_extraction,
     inventory_archive,
-    select_aplog_time_range,
-    select_sos_time_range,
+    parse_path_timestamp,
+    summarize_member_times,
 )
 from .case_registry import CaseRegistry
 from .domain import (
@@ -248,27 +248,36 @@ class LogAnalyzerService:
         extraction_current, reusable = inspect_reusable_extraction(inventory)
         if extraction_current is False:
             self.registry.remove_archive_descendants(params.case_id, artifact.artifact_id)
-        selected_by_id = {}
         selection_payload = None
+        time_relations: dict[str, str] = {}
         members = inventory.members
+        if params.path_prefix is not None:
+            members = [item for item in members if item.member_path.startswith(params.path_prefix)]
         if params.time_range is not None:
-            selected = select_aplog_time_range(
-                inventory.members, params.time_range.start, params.time_range.end, params.neighbor_count,
+            timestamped = sorted(
+                ((item, parsed) for item in members if (parsed := parse_path_timestamp(item.member_path))),
+                key=lambda item: (item[1].value, item[0].member_path),
             )
-            if not selected:
-                selected = select_sos_time_range(
-                    inventory.members, params.time_range.start, params.time_range.end, params.neighbor_count,
-                )
-            selected_by_id = {item.member.member_id: item for item in selected}
-            members = [item.member for item in selected]
+            in_range = [item for item in timestamped if params.time_range.start <= item[1].value <= params.time_range.end]
+            before = [item for item in timestamped if item[1].value < params.time_range.start]
+            after = [item for item in timestamped if item[1].value > params.time_range.end]
+            selected = [
+                *[(item, "predecessor") for item, _ in before[-params.time_neighbor_count:]],
+                *[(item, "in_range") for item, _ in in_range],
+                *[(item, "successor") for item, _ in after[:params.time_neighbor_count]],
+            ]
+            members = [item for item, relation in selected]
+            time_relations = {item.member_id: relation for item, relation in selected}
             selection_payload = {
-                "mode": "archive_name_time",
+                "mode": "path_timestamp",
                 "requested_start": params.time_range.start.isoformat(),
                 "requested_end": params.time_range.end.isoformat(),
-                "neighbor_count": params.neighbor_count,
-                "matched_member_count": sum(item.relation == "in_range" for item in selected),
-                "returned_member_count": len(selected),
+                "path_prefix": params.path_prefix,
+                "time_neighbor_count": params.time_neighbor_count,
+                "matched_member_count": len(members),
             }
+        elif params.path_prefix is not None:
+            selection_payload = {"mode": "path_prefix", "path_prefix": params.path_prefix}
         page_end = min(params.member_offset + params.max_members, len(members))
         page = members[params.member_offset:page_end]
         reusable_by_id = {item.member_id: item for item in reusable}
@@ -288,6 +297,7 @@ class LogAnalyzerService:
         artifacts_by_path = {item.relative_path: item for item in registered}
         member_payloads = []
         for item in page:
+            parsed_time = parse_path_timestamp(item.member_path)
             virtual_path = f"{artifact.relative_path}!/{item.member_path}"
             registered_artifact = artifacts_by_path.get(virtual_path)
             member_payloads.append({
@@ -304,16 +314,13 @@ class LogAnalyzerService:
                     registered_artifact.artifact_id if registered_artifact else None
                 ),
                 "relative_path": virtual_path if registered_artifact else None,
-                "parsed_start_time": (
-                    selected_by_id[item.member_id].parsed.start_time.isoformat()
-                    if item.member_id in selected_by_id else None
-                ),
-                "time_relation": (
-                    selected_by_id[item.member_id].relation
-                    if item.member_id in selected_by_id else None
-                ),
+                "path_timestamp": parsed_time.value.isoformat() if parsed_time else None,
+                "path_timestamp_pattern": parsed_time.pattern if parsed_time else None,
+                "path_time_relation": time_relations.get(item.member_id),
             })
         has_more = page_end < len(members)
+        time_groups = summarize_member_times(inventory.members)
+        returned_time_groups = time_groups[:500]
         return make_success({
             "case_id": params.case_id,
             "artifact_id": artifact.artifact_id,
@@ -334,6 +341,9 @@ class LogAnalyzerService:
                 "extracted_member_count": len(reusable),
             },
             "selection": selection_payload,
+            "time_groups": returned_time_groups,
+            "time_group_count": len(time_groups),
+            "time_groups_truncated": len(time_groups) > len(returned_time_groups),
             "members": member_payloads,
         })
 

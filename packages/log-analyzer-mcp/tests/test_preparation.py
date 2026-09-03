@@ -183,7 +183,7 @@ def test_archive_inventory_supports_bounded_pagination(tmp_path):
     assert second.data["next_offset"] == 4
 
 
-def test_inspect_archive_selects_aplogs_by_incident_time_before_pagination(tmp_path):
+def test_inspect_archive_filters_generic_path_times_and_neighbors_before_pagination(tmp_path):
     case_dir, _, service = _service(tmp_path)
     with zipfile.ZipFile(case_dir / "aplogs.zip", "w") as archive:
         # Deliberately reverse the ZIP order; selection must use parsed start time.
@@ -197,25 +197,25 @@ def test_inspect_archive_selects_aplogs_by_incident_time_before_pagination(tmp_p
         case_id=case_id,
         artifact_id=archive_id,
         time_range={"start": "2026-08-31T06:15:00", "end": "2026-08-31T06:30:00"},
-        neighbor_count=1,
+        time_neighbor_count=1,
         max_members=100,
     )
 
     assert result.success
     assert result.data["selection"] == {
-        "mode": "archive_name_time",
+        "mode": "path_timestamp",
         "requested_start": "2026-08-31T06:15:00",
         "requested_end": "2026-08-31T06:30:00",
-        "neighbor_count": 1,
-        "matched_member_count": 16,
-        "returned_member_count": 18,
+        "path_prefix": None,
+        "time_neighbor_count": 1,
+        "matched_member_count": 18,
     }
     assert len(result.data["members"]) == 18
-    assert [item["time_relation"] for item in result.data["members"]] == [
+    assert [item["path_time_relation"] for item in result.data["members"]] == [
         "predecessor", *(["in_range"] * 16), "successor",
     ]
-    assert result.data["members"][0]["parsed_start_time"] == "2026-08-31T06:14:00"
-    assert result.data["members"][-1]["parsed_start_time"] == "2026-08-31T06:31:00"
+    assert result.data["members"][0]["path_timestamp"] == "2026-08-31T06:14:00"
+    assert result.data["members"][-1]["path_timestamp"] == "2026-08-31T06:31:00"
     assert all(item["member_id"] for item in result.data["members"])
     assert "unrelated.txt" not in {item["member_path"] for item in result.data["members"]}
 
