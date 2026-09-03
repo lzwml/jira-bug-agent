@@ -100,6 +100,20 @@ REPORT_FORMAT_PROMPT = """
 """
 
 
+CHAT_REPORT_SYNTHESIS_PROMPT = """你是一位资深 Android Bug 分析师，正在将一次交互式调查会话总结为正式的 RCA 报告。
+
+下面是一段完整的交互式 Bug 调查对话历史，包含多轮用户提问和助手回答。请从中提取所有已确认的事实、证据、假设和结论，按标准 RCAReport 格式输出。
+
+规则：
+1. 只使用对话中已出现的信息，不得补造任何事实、证据 ID、文件路径、行号或时间戳。
+2. 对话中助手的回答是主要信息来源，区分其中已确认的事实和待验证的假设。
+3. 如果对话中明确提到了证据（artifact 路径、行号、日志摘录），在 evidence 中列出。
+4. 如果对话中明确提到了时间线事件，在 timeline 中列出。
+5. 如果某个字段在对话中没有对应信息，使用 null 或空数组。
+6. conclusion_status 根据对话中根因的确认程度判断：confirmed（根因有日志证据链验证）、hypothesis_only（有候选但未完全验证）、insufficient_evidence（证据不足以形成结论）。
+7. 只输出一个 JSON 对象，不要使用 Markdown 代码围栏。
+"""
+
 CONVERSATION_FOLLOWUP_SYSTEM_PROMPT = """用户正在追问上一轮分析中的细节。请基于已有的调查上下文和工具调用结果，聚焦回答用户当前的问题，不要重新执行完整的 Bug 分析流程。
 
 规则：

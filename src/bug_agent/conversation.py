@@ -36,6 +36,16 @@ from .prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
 
 
 @dataclass
+class SavedTurn:
+    """从持久化存储中恢复的对话轮次。"""
+
+    user_message: str
+    assistant_answer: str
+    steps: int = 0
+    agent_status: str = "completed"
+
+
+@dataclass
 class ConversationTurn:
     """单轮问答的记录。"""
 
@@ -184,6 +194,39 @@ class ConversationSession:
         self._turns.append(turn)
 
         return turn
+
+    def restore_turns(self, saved_turns: list[SavedTurn]) -> None:
+        """从持久化存储恢复已完成的对话轮次。
+
+        在首次 send() 之前调用，将历史轮次注入到消息列表和轮次记录中。
+        这样后续轮次就能看到完整的上下文，包括所有历史 user/assistant 消息。
+
+        注意：恢复后的消息列表中不包含每轮之间的 followup system prompt，
+        因为那些是运行时指令，不应持久化。恢复会话时，AI 回答中包含的
+        "上一轮分析了什么" 信息已经足够作为上下文。
+
+        Args:
+            saved_turns: 按时间顺序排列的已保存轮次，每轮包含 user 消息和
+                         assistant 最终回答。
+        """
+        if self._turns:
+            raise RuntimeError("已有实时轮次，不能重复恢复历史")
+        for turn_data in saved_turns:
+            # 构建消息历史：连续的 user -> assistant
+            self._messages.append({"role": "user", "content": turn_data.user_message})
+            self._messages.append({"role": "assistant", "content": turn_data.assistant_answer})
+            # 构建伪 ConversationTurn（没有完整 tool_events，但保留了最终回答）
+            self._turns.append(ConversationTurn(
+                user_message=turn_data.user_message,
+                result=AgentRunResult(
+                    status=turn_data.agent_status,
+                    task="",
+                    final_answer=turn_data.assistant_answer,
+                    steps=turn_data.steps,
+                    tool_events=[],
+                ),
+            ))
+            self._total_steps += turn_data.steps
 
     async def finalize(self) -> ConversationResult:
         """结束会话，返回最终结果。

@@ -18,8 +18,11 @@ from jira_bug_mcp.service import JiraService
 from log_analyzer.case_registry import CaseRegistry
 from log_analyzer.service import LogAnalyzerService
 
+from .chat_store import ChatStore, resolve_chat_db_path, resolve_chat_session_id
 from .config import AgentConfig
-from .contracts import BugAnalysisTask
+from .contracts import BugAnalysisResult, BugAnalysisTask
+from .conversation import ConversationSession, SavedTurn
+from .models import ToolEvent
 from .renderer import render_analysis_guide, render_markdown
 from .runstore import resolve_run_dir, write_analysis_guide
 from .worker import BugAnalysisWorker
@@ -84,7 +87,6 @@ def _parser() -> argparse.ArgumentParser:
     chat_local.add_argument("case_path")
     chat_local.add_argument("--max-steps-per-turn", type=int, help="每轮最大步数（默认使用配置值）")
     chat_local.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
-    chat_local.add_argument("--goal", action="store_true", help="Goal 模式：不限制工具调用次数")
     chat_local.add_argument(
         "--skill", dest="skills", action="append",
         help="预先激活 Skill；可重复指定",
@@ -94,7 +96,6 @@ def _parser() -> argparse.ArgumentParser:
     chat_jira.add_argument("issue_key", help="例如 APP-42")
     chat_jira.add_argument("--max-steps-per-turn", type=int, help="每轮最大步数（默认使用配置值）")
     chat_jira.add_argument("--objective", default="定位 Bug 根因并给出下一步建议")
-    chat_jira.add_argument("--goal", action="store_true", help="Goal 模式：不限制工具调用次数")
     chat_jira.add_argument(
         "--skill", dest="skills", action="append",
         help="预先激活 Skill；可重复指定",
@@ -336,12 +337,161 @@ async def _run(args: argparse.Namespace) -> int:
     return 0 if result.status in {"completed", "insufficient_evidence"} else 1
 
 
+def _print_history(session: "ConversationSession") -> None:
+    """打印当前会话的对话历史。"""
+    print(f"\n已完成 {session.turn_count} 轮对话：")
+    for i, t in enumerate(session._turns, 1):
+        preview = t.user_message[:80] + ("..." if len(t.user_message) > 80 else "")
+        print(f"  [{i}] {preview}")
+
+
+async def _generate_chat_report(
+    worker: BugAnalysisWorker,
+    task: BugAnalysisTask,
+    session: "ConversationSession",
+    store: ChatStore | None,
+    session_id: str,
+) -> None:
+    """将当前对话历史合成为正式 RCA 报告并保存。"""
+    if session.turn_count == 0:
+        print("\n[系统] 当前没有对话记录，无法生成报告。")
+        return
+
+    print("\n[系统] 正在从对话历史生成分析报告，请稍候...")
+    turns_data = [
+        {"user_message": t.user_message, "assistant_answer": t.result.final_answer}
+        for t in session._turns
+    ]
+    try:
+        report, structured = await worker.synthesize_report_from_turns(task, turns_data)
+    except Exception as exc:
+        print(f"\n[错误] 报告生成失败: {exc}")
+        return
+
+    # 构建临时 BugAnalysisResult 用于渲染
+    result = BugAnalysisResult(
+        task_id=task.task_id,
+        status=(
+            "completed" if report.conclusion_status == "confirmed"
+            else "insufficient_evidence" if report.conclusion_status == "insufficient_evidence"
+            else "completed"
+        ),
+        report=report,
+        steps=session._total_steps,
+        structured_output=structured,
+        applied_skills=task.skills or [],
+    )
+    markdown = render_markdown(result)
+    print(f"\n{'=' * 60}")
+    print(markdown)
+    print(f"{'=' * 60}")
+
+    # 保存报告到 Case 目录
+    saved_path = await _save_report(task, markdown)
+    if saved_path is not None:
+        print(f"\n报告已保存到: {saved_path}")
+
+    # 持久化报告生成这一轮
+    if store is not None:
+        store.add_turn(
+            session_id, session.turn_count + 1,
+            "/report（生成分析报告）",
+            markdown[:5000],  # 报告可能很长，截断存储
+            session._total_steps, "completed",
+        )
+
+
+async def _maybe_generate_report(
+    worker: BugAnalysisWorker,
+    task: BugAnalysisTask,
+    session: "ConversationSession",
+    store: ChatStore | None,
+    session_id: str,
+    reason: str,
+) -> None:
+    """退出前询问是否生成报告。"""
+    if session.turn_count == 0:
+        return
+    print(f"\n[系统] {reason}，是否需要生成分析报告？")
+    try:
+        choice = input("  [y] 生成报告  [n] 直接退出（默认 n）: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if choice in ("y", "yes"):
+        await _generate_chat_report(worker, task, session, store, session_id)
+
+
+async def _save_report(task: BugAnalysisTask, markdown: str) -> Path | None:
+    """保存报告到 Case 的 .bug-agent/reports/ 目录。"""
+    try:
+        from .runstore import resolve_run_dir
+        run_dir = resolve_run_dir(task)
+        if run_dir is None:
+            return None
+        reports_dir = run_dir.parent / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"chat-report-{task.task_id}.md"
+        output = reports_dir / filename
+        output.write_text(markdown, encoding="utf-8")
+        return output
+    except OSError:
+        return None
+
+
+def _tool_progress(event: ToolEvent) -> None:
+    """打印工具调用进度，让用户看到 Agent 正在做什么。"""
+    name = event.tool_name
+    label = _TOOL_LABELS.get(name, name)
+    status = "✓" if event.success else "✗"
+    detail = _tool_detail(event)
+    print(f"  [{status}] {label}{detail}")
+
+
+def _tool_detail(event: ToolEvent) -> str:
+    """从工具参数中提取一行可读的摘要。"""
+    args = event.arguments
+    if not args:
+        return ""
+    if "query" in args:
+        q = str(args["query"])[:60]
+        return f" — {q}"
+    if "relative_path" in args:
+        return f" — {args['relative_path']}"
+    if "case_path" in args:
+        return f" — {args['case_path']}"
+    if "artifact_id" in args:
+        return f" — {args['artifact_id']}"
+    if "archive_id" in args:
+        info = f"archive={args['archive_id']}"
+        if "member_ids" in args:
+            info += f" members={len(args['member_ids'])}"
+        return f" — {info}"
+    return ""
+
+
+_TOOL_LABELS: dict[str, str] = {
+    "open_case": "打开 Case",
+    "inspect_case": "检查 Case 结构",
+    "inspect_archive": "检查归档",
+    "extract_archive_members": "解压归档成员",
+    "build_index": "建立文本索引",
+    "search_evidence": "搜索证据",
+    "extract_timeline": "提取时间线",
+    "parse_diagnostics": "解析诊断信息",
+    "get_case_comment": "获取 Jira 评论",
+    "prepare_case": "准备 Case",
+}
+
+
 async def _run_chat(args: argparse.Namespace) -> int:
     """运行交互式连续问答模式。
 
     支持两种模式：
     - chat-local：分析本地 Bug Case；
     - chat-jira：从 Jira 导出并分析。
+
+    每轮对话自动持久化到 Case 的 .bug-agent/chat.db，退出后下次执行同一
+    命令时自动检测已有会话并提示 resume。
 
     交互式终端中，用户可以连续追问，输入 /quit 或 /q 退出，
     输入 /history 查看当前对话轮次。
@@ -362,6 +512,48 @@ async def _run_chat(args: argparse.Namespace) -> int:
     else:
         task = BugAnalysisTask(source="local", case_path=args.case_path, **common)
 
+    # ---------- 持久化：检测已有会话 ----------
+    db_path = resolve_chat_db_path(task)
+    session_id = resolve_chat_session_id(task)
+    store = ChatStore(db_path) if db_path is not None else None
+    saved_turns: list[SavedTurn] = []
+
+    if store is not None:
+        store.initialize()
+        existing = store.get_session(session_id)
+        if existing is not None and existing["status"] == "active" and existing["turns"]:
+            saved_turns = [
+                SavedTurn(
+                    user_message=t["user_message"],
+                    assistant_answer=t["assistant_answer"],
+                    steps=t["steps"],
+                    agent_status=t["agent_status"],
+                )
+                for t in existing["turns"]
+            ]
+            print("=" * 60)
+            print(f"发现已有会话记录: {len(saved_turns)} 轮")
+            print(f"创建时间: {existing['created_at']}")
+            print(f"更新时间: {existing['updated_at']}")
+            print()
+            print("  [r] 恢复会话，继续追问")
+            print("  [n] 放弃旧会话，重新开始")
+            print("=" * 60)
+            try:
+                choice = input("请选择 (r/n，默认 r): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[系统] 已取消。")
+                return 0
+            if choice in ("n", "no", "new"):
+                store.close_session(session_id)
+                store.create_session(session_id, task)
+                saved_turns = []
+                print("[系统] 已创建新会话。\n")
+            else:
+                print(f"[系统] 恢复 {len(saved_turns)} 轮历史会话。\n")
+        else:
+            store.create_session(session_id, task)
+
     print("=" * 60)
     print("Bug Analysis Agent — 交互式连续问答模式")
     print("=" * 60)
@@ -370,7 +562,9 @@ async def _run_chat(args: argparse.Namespace) -> int:
     if args.max_steps_per_turn:
         print(f"每轮步数: {args.max_steps_per_turn}")
     print()
-    print("输入 /quit 或 /q 退出，输入 /history 查看对话轮次")
+    print("输入 /quit 或 /q 退出，输入 /history 查看对话轮次，输入 /report 生成分析报告")
+    if store is not None and saved_turns:
+        print("（会话已恢复，可直接追问，无需重新执行初始分析）")
     print("=" * 60)
     print()
 
@@ -378,25 +572,38 @@ async def _run_chat(args: argparse.Namespace) -> int:
         session, first_instruction = await worker.create_conversation(
             task,
             max_steps_per_turn=args.max_steps_per_turn,
+            on_tool_event=_tool_progress,
         )
     except (ValueError, OSError) as exc:
         print(f"\n会话创建失败: {exc}", file=sys.stderr)
         return 2
 
-    print("[系统] 正在执行初始分析，请稍候...\n")
-
     try:
-        # 第一轮：初始分析
-        turn = await session.send(first_instruction)
-        print(f"[第 1 轮回答]")
-        print("-" * 40)
-        print(turn.result.final_answer)
-        print("-" * 40)
-        if turn.result.status == "failed":
-            print(f"\n[错误] {turn.result.error}")
-            return 1
-        if turn.result.status == "max_steps":
-            print(f"\n[提示] 本轮达到步数上限，部分证据可能未收集完整。")
+        if saved_turns:
+            # 恢复历史轮次到会话中
+            session.restore_turns(saved_turns)
+            print(f"[系统] 已恢复 {len(saved_turns)} 轮历史对话。")
+            print(f"直接输入追问即可继续，或输入 /quit 退出。\n")
+        else:
+            # 全新会话：执行初始分析
+            print("[系统] 正在执行初始分析，请稍候...\n")
+            turn = await session.send(first_instruction)
+            print(f"[第 1 轮回答]")
+            print("-" * 40)
+            print(turn.result.final_answer)
+            print("-" * 40)
+            if turn.result.status == "failed":
+                print(f"\n[错误] {turn.result.error}")
+                return 1
+            if turn.result.status == "max_steps":
+                print(f"\n[提示] 本轮达到步数上限，部分证据可能未收集完整。")
+            # 持久化第一轮
+            if store is not None:
+                store.add_turn(
+                    session_id, 1, first_instruction,
+                    turn.result.final_answer, turn.result.steps,
+                    turn.result.status,
+                )
 
         # 后续轮次：交互式追问
         while session.is_active:
@@ -404,19 +611,25 @@ async def _run_chat(args: argparse.Namespace) -> int:
             try:
                 user_input = input("请输入追问（或 /quit 退出）: ").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\n\n[系统] 会话结束。")
+                print("\n")
+                await _maybe_generate_report(
+                    worker, task, session, store, session_id, "Ctrl+C/EOF",
+                )
                 break
 
             if not user_input:
                 continue
             if user_input.lower() in ("/quit", "/q", "/exit"):
+                await _maybe_generate_report(
+                    worker, task, session, store, session_id, "主动退出",
+                )
                 print("\n[系统] 会话结束。")
                 break
             if user_input.lower() == "/history":
-                print(f"\n已完成 {session.turn_count} 轮对话：")
-                for i, t in enumerate(session._turns, 1):
-                    preview = t.user_message[:80] + ("..." if len(t.user_message) > 80 else "")
-                    print(f"  [{i}] {preview}")
+                _print_history(session)
+                continue
+            if user_input.lower() == "/report":
+                await _generate_chat_report(worker, task, session, store, session_id)
                 continue
 
             print(f"\n[系统] 正在分析追问...")
@@ -433,10 +646,22 @@ async def _run_chat(args: argparse.Namespace) -> int:
             if turn.result.status == "max_steps":
                 print(f"\n[提示] 本轮达到步数上限。")
 
+            # 持久化本轮
+            if store is not None:
+                store.add_turn(
+                    session_id, session.turn_count, user_input,
+                    turn.result.final_answer, turn.result.steps,
+                    turn.result.status,
+                )
+
     finally:
         result = await session.finalize()
+        if store is not None:
+            store.close_session(session_id)
         print(f"\n{'=' * 60}")
         print(f"会话结束。共 {len(result.turns)} 轮，{result.total_steps} 步。")
+        if store is not None and db_path is not None:
+            print(f"会话记录已保存到: {db_path}")
         print(f"{'=' * 60}")
 
     return 0

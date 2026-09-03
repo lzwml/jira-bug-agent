@@ -13,10 +13,12 @@ from .comment_compiler import CompiledJiraContext, compile_jira_context, sources
 from .config import AgentConfig, default_export_root
 from .contracts import AnalysisGuide, BugAnalysisResult, BugAnalysisTask, RCAReport, SkillActivation
 from .conversation import ConversationSession
+from .models import ToolEvent
 from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
 from .prompts import (
     ANALYSIS_GUIDE_PROMPT,
+    CHAT_REPORT_SYNTHESIS_PROMPT,
     CODE_SEARCH_WORKFLOW_PROMPT,
     JIRA_WORKFLOW_PROMPT,
     LOCAL_WORKFLOW_PROMPT,
@@ -571,6 +573,7 @@ class BugAnalysisWorker:
         task: BugAnalysisTask,
         *,
         max_steps_per_turn: int | None = None,
+        on_tool_event: Callable[[ToolEvent], None] | None = None,
     ) -> tuple[ConversationSession, str]:
         """创建单次会话的连续问答会话。
 
@@ -733,6 +736,7 @@ class BugAnalysisWorker:
             router=skill_router,
             max_steps_per_turn=max_steps_per_turn,
             goal_mode=task.goal_mode,
+            on_tool_event=on_tool_event,
             on_close=close_resources,
         )
 
@@ -760,3 +764,54 @@ class BugAnalysisWorker:
             return (await session.send(user_message)).result.final_answer
         finally:
             await session.finalize()
+
+    async def synthesize_report_from_turns(
+        self,
+        task: BugAnalysisTask,
+        turns: list[dict[str, str]],
+    ) -> tuple[RCAReport, bool]:
+        """将交互式对话的轮次合成为正式 RCA 报告。
+
+        Args:
+            task: 分析任务，用于识别 Case 名称。
+            turns: 对话轮次列表，每轮包含 user_message 和 assistant_answer。
+
+        Returns:
+            (RCAReport, structured): 报告和是否结构化输出的标志。
+        """
+        run_config = replace(
+            self.config,
+            max_steps=task.max_steps if task.max_steps is not None else self.config.max_steps,
+        )
+        provider = None
+        try:
+            provider = self.provider_factory(run_config)
+            # 构建对话转录
+            transcript_parts = []
+            for i, turn in enumerate(turns, 1):
+                transcript_parts.append(
+                    f"--- 第 {i} 轮 ---\n"
+                    f"用户: {turn['user_message']}\n"
+                    f"助手: {turn['assistant_answer']}\n"
+                )
+            transcript = "\n".join(transcript_parts)
+            case_label = task.issue_key or task.case_path or task.task_id
+
+            message = await provider.complete(
+                [
+                    {"role": "system", "content": CHAT_REPORT_SYNTHESIS_PROMPT},
+                    {"role": "user", "content": (
+                        f"请将以下关于 Bug {case_label} 的交互式调查对话总结为正式 RCA 报告。\n\n"
+                        f"{transcript}"
+                    )},
+                ],
+                [],
+            )
+            raw = str(message.get("content") or "").strip()
+            if not raw:
+                raise ValueError("模型未输出报告内容")
+            report, structured = _extract_report(raw)
+            return report, structured
+        finally:
+            if provider is not None:
+                await provider.close()
