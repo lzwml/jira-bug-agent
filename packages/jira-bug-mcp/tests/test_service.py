@@ -120,6 +120,21 @@ def jira_transport(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"RELATED FATAL log\n", headers={"content-length": "18"})
     if path == "/attachment/20088":
         return httpx.Response(200, content=b"LONG BUGREPORT\n", headers={"content-length": "15"})
+    # 评论中嵌入的附件（不在 issue.attachments 面板中）
+    if path == "/rest/api/3/attachment/30001":
+        return httpx.Response(200, json={
+            "id": "30001", "filename": "log.7z.001", "size": 100,
+            "mimeType": "application/octet-stream", "content": "https://jira.test/attachment/30001",
+        })
+    if path == "/rest/api/3/attachment/30002":
+        return httpx.Response(200, json={
+            "id": "30002", "filename": "log.7z.002", "size": 100,
+            "mimeType": "application/octet-stream", "content": "https://jira.test/attachment/30002",
+        })
+    if path == "/attachment/30001":
+        return httpx.Response(200, content=b"ZIP_CONTENT_001\n", headers={"content-length": "15"})
+    if path == "/attachment/30002":
+        return httpx.Response(200, content=b"ZIP_CONTENT_002\n", headers={"content-length": "15"})
     return httpx.Response(404)
 
 
@@ -375,6 +390,91 @@ class JiraServiceTest(unittest.TestCase):
         result = self.service.dispatch("get_issue", {"issue_key": "../../secret"})
         self.assertFalse(result.success)
         self.assertEqual(result.error_code, "INVALID_PARAMS")
+
+    def test_comment_attachment_ids_are_downloaded(self):
+        """评论正文中嵌入的附件链接应被提取并下载。"""
+        issue_with_comment_att = json.loads(json.dumps(ISSUE))
+        issue_with_comment_att["fields"]["comment"]["comments"].append({
+            "id": "30002", "author": {"displayName": "Tester"},
+            "body": {"type": "doc", "content": [{
+                "type": "paragraph", "content": [{"type": "text", "text": "日志：\nhttps://jira.test/secure/attachment/30001/log.7z.001\nhttps://jira.test/secure/attachment/30002/log.7z.002"}],
+            }]},
+            "created": "2026-08-26T09:00:00.000+0800",
+        })
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/issue/APP-42":
+                return httpx.Response(200, json=issue_with_comment_att)
+            if request.url.path == "/rest/api/3/issue/APP-42/comment":
+                return httpx.Response(200, json={
+                    "comments": issue_with_comment_att["fields"]["comment"]["comments"],
+                    "total": len(issue_with_comment_att["fields"]["comment"]["comments"]),
+                })
+            return jira_transport(request)
+
+        config = JiraConfig(
+            base_url="https://jira.test", auth_mode="none",
+            export_root=Path(self.temp.name), extra_fields=("customfield_12345",),
+        )
+        client = JiraClient(config, transport=httpx.MockTransport(transport))
+        service = JiraService(client, CaseExporter(config, client))
+        try:
+            result = service.dispatch("export_issue_case", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+        self.assertTrue(result.success)
+        case = Path(result.data["case_path"])
+        # 面板附件
+        self.assertTrue((case / "attachments" / "20001_logcat.txt").is_file())
+        # 评论中嵌入的附件
+        self.assertTrue((case / "attachments" / "30001_log.7z.001").is_file())
+        self.assertTrue((case / "attachments" / "30002_log.7z.002").is_file())
+        self.assertEqual(
+            (case / "attachments" / "30001_log.7z.001").read_bytes(),
+            b"ZIP_CONTENT_001\n",
+        )
+
+    def test_comment_attachment_not_duplicated_with_panel(self):
+        """如果同一个附件 ID 同时出现在面板和评论中，不应重复下载。"""
+        issue_with_dup = json.loads(json.dumps(ISSUE))
+        issue_with_dup["fields"]["attachment"].append({
+            "id": "30001", "filename": "log.7z.001", "size": 100,
+            "mimeType": "application/octet-stream", "content": "https://jira.test/attachment/30001",
+        })
+        issue_with_dup["fields"]["comment"]["comments"].append({
+            "id": "30002", "author": {"displayName": "Tester"},
+            "body": {"type": "doc", "content": [{
+                "type": "paragraph", "content": [{"type": "text", "text": "日志：https://jira.test/secure/attachment/30001/log.7z.001"}],
+            }]},
+            "created": "2026-08-26T09:00:00.000+0800",
+        })
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/rest/api/3/issue/APP-42":
+                return httpx.Response(200, json=issue_with_dup)
+            if request.url.path == "/rest/api/3/issue/APP-42/comment":
+                return httpx.Response(200, json={
+                    "comments": issue_with_dup["fields"]["comment"]["comments"],
+                    "total": len(issue_with_dup["fields"]["comment"]["comments"]),
+                })
+            return jira_transport(request)
+
+        config = JiraConfig(
+            base_url="https://jira.test", auth_mode="none",
+            export_root=Path(self.temp.name), extra_fields=("customfield_12345",),
+        )
+        client = JiraClient(config, transport=httpx.MockTransport(transport))
+        service = JiraService(client, CaseExporter(config, client))
+        try:
+            result = service.dispatch("export_issue_case", {"issue_key": "APP-42"})
+        finally:
+            client.close()
+        self.assertTrue(result.success)
+        case = Path(result.data["case_path"])
+        self.assertTrue((case / "attachments" / "30001_log.7z.001").is_file())
+        # 30001 在面板和评论中都有，只应下载一次
+        downloaded_ids = [item["attachment_id"] for item in result.data["downloaded_attachments"]]
+        self.assertEqual(downloaded_ids.count("30001"), 1)
 
 
 class JiraHttpErrorTest(unittest.TestCase):

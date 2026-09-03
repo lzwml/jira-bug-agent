@@ -17,6 +17,30 @@ from .errors import JiraApiError
 
 ISSUE_KEY_PATTERN = re.compile(r"(?<![A-Z0-9_])([A-Z][A-Z0-9_]{1,30}-\d+)(?![A-Z0-9_])", re.IGNORECASE)
 
+# Jira 附件链接格式：https://<host>/secure/attachment/<id>/<filename>
+# 或 /secure/attachment/<id>/ 等相对路径
+ATTACHMENT_URL_PATTERN = re.compile(
+    r"(?:https?://[^/\s]+)?/secure/attachment/(\d+)(?:/[^\s]*)?",
+    re.IGNORECASE,
+)
+
+
+def _comment_attachment_ids(issue: JiraIssue) -> list[str]:
+    """从评论正文中提取 Jira 附件 ID（不在 issue.attachments 面板中的）。
+
+    测试、运营等角色常把日志附件链接直接贴到评论正文中，
+    这些附件不在 Jira 的 "attachment" 字段中，需要单独提取并下载。
+    """
+    seen = {item.attachment_id for item in issue.attachments}
+    found: list[str] = []
+    for comment in issue.comments:
+        for match in ATTACHMENT_URL_PATTERN.finditer(comment.body):
+            aid = match.group(1)
+            if aid not in seen:
+                seen.add(aid)
+                found.append(aid)
+    return found
+
 
 def _safe_filename(value: str) -> str:
     """去掉路径和 Windows 非法字符，附件名永远不能控制导出位置。"""
@@ -283,6 +307,30 @@ class CaseExporter:
             if not selected_ids or item.attachment_id in selected_ids
         ]
         download_attachments(issue, case_dir / "attachments", root_candidates, max_attachments, include_attachments)
+
+        # 从评论正文中提取附件链接（测试/运营常把日志贴到评论里而非附件面板）。
+        comment_attachment_ids = _comment_attachment_ids(issue)
+        if comment_attachment_ids and include_attachments:
+            comment_attachments: list[JiraAttachment] = []
+            comment_fetch_skipped: list[dict] = []
+            for aid in comment_attachment_ids:
+                try:
+                    att = self.client.get_attachment_meta(aid)
+                    comment_attachments.append(att)
+                except JiraApiError as exc:
+                    comment_fetch_skipped.append({
+                        "attachment_id": aid,
+                        "reason": exc.code,
+                        "detail": str(exc),
+                    })
+            if comment_attachments:
+                download_attachments(
+                    issue, case_dir / "attachments", comment_attachments,
+                    max(0, max_attachments - len(root_candidates)),
+                    include_attachments,
+                )
+            if comment_fetch_skipped:
+                skipped.extend(comment_fetch_skipped)
 
         relationships: list[dict[str, str]] = []
         related_issues: list[dict] = []

@@ -368,6 +368,19 @@ class JiraClient:
         total = int(data.get("total") or consumed)
         return {"items": comments, "next_start_at": consumed if consumed < total else None, "total": total}
 
+    def get_attachment_meta(self, attachment_id: str) -> JiraAttachment:
+        """通过 Jira REST API 获取单个附件的元数据。
+
+        评论或描述正文中引用的附件 ID 可能不在 issue.attachments 列表中
+        （因为 Jira 的 "attachment" 字段只返回 issue attachments 面板中的附件，
+        而不是所有评论中嵌入的附件），需要用此方法按 ID 查询。
+        """
+        data = self._json(
+            "GET",
+            f"/rest/api/{self.config.api_version}/attachment/{quote(attachment_id, safe='')}",
+        )
+        return self._attachment(data)
+
     def download_attachment(self, attachment: JiraAttachment, destination: Path) -> int:
         """流式下载单个附件，并在超过预算时立即中止。"""
 
