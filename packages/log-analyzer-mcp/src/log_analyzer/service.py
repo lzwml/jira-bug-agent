@@ -36,6 +36,7 @@ from .archive_selection import (
     inspect_reusable_extraction,
     inventory_archive,
     select_aplog_time_range,
+    select_sos_time_range,
 )
 from .case_registry import CaseRegistry
 from .domain import (
@@ -254,6 +255,10 @@ class LogAnalyzerService:
             selected = select_aplog_time_range(
                 inventory.members, params.time_range.start, params.time_range.end, params.neighbor_count,
             )
+            if not selected:
+                selected = select_sos_time_range(
+                    inventory.members, params.time_range.start, params.time_range.end, params.neighbor_count,
+                )
             selected_by_id = {item.member.member_id: item for item in selected}
             members = [item.member for item in selected]
             selection_payload = {

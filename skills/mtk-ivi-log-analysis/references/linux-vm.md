@@ -33,3 +33,7 @@ Tracepoint streams commonly resemble `comm-pid [cpu] flags seconds: event: data`
 - For application logs, connect application failures to IPC/device/service transitions rather than ranking generic `ERROR` strings.
 
 Compressed rotations must be exposed through a controlled extraction boundary before analysis. Do not make a conclusion from the archive name or index alone.
+
+## SOS archive boot round selection
+
+When logs are inside an SOS/TBox archive, do not default to the highest-numbered `logNN` directory. The incident may have occurred in earlier boot rounds. The `logNN` numbering is sequential from oldest to newest, and each round's active time window is determined by the timestamps in the rotation filenames. For the full selection procedure, see `sos-archive-selection.md`.

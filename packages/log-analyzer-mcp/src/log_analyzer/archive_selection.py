@@ -30,9 +30,13 @@ from .archive_manager import (
     ExtractionBudget,
     _safe_member_path,
     _target_path,
+    _is_7z_volume,
+    _open_7z_archive,
     extraction_destination,
     is_supported_archive,
 )
+
+import py7zr
 
 
 SELECTION_MANIFEST_VERSION = 2
@@ -118,6 +122,163 @@ def select_aplog_time_range(
         selected[member.member_id] = TimeSelectedMember(member, parsed, "in_range")
     for member, parsed in successors[:neighbor_count] if neighbor_count else []:
         selected[member.member_id] = TimeSelectedMember(member, parsed, "successor")
+    return sorted(
+        selected.values(),
+        key=lambda item: (item.parsed.start_time, item.parsed.sequence, item.member.member_path),
+    )
+
+
+_SOS_LOG_ROUND_RE = re.compile(r"^Linux_Log/log(\d+)/", re.IGNORECASE)
+_SOS_FILENAME_TS_RE = re.compile(
+    r"(?P<year>\d{4})_(?P<month>\d{2})_(?P<day>\d{2})_"
+    r"(?P<hour>\d{2})_(?P<minute>\d{2})_(?P<second>\d{2})"
+)
+# CAN/OTA logs often use YYYYMMDD_HHMMSS compact format
+_SOS_COMPACT_TS_RE = re.compile(
+    r"(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})_"
+    r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})"
+)
+_SOS_MCU_RE = re.compile(r"^Mcu_Log/mculog\.log\.\d+", re.IGNORECASE)
+_SOS_CAN_RE = re.compile(r"^can_log/", re.IGNORECASE)
+_SOS_OTA_RE = re.compile(r"^ota/", re.IGNORECASE)
+_SOS_PKI_RE = re.compile(r"^pki/", re.IGNORECASE)
+
+
+def _parse_filename_timestamp(member_path: str) -> datetime | None:
+    """从 SOS 归档成员路径中提取文件名时间戳，支持两种格式。"""
+    filename = PurePosixPath(member_path).name
+    # Try YYYY_MM_DD_HH_MM_SS first (most SOS files)
+    ts_match = _SOS_FILENAME_TS_RE.search(filename)
+    if ts_match is not None:
+        try:
+            return datetime(
+                int(ts_match["year"]), int(ts_match["month"]), int(ts_match["day"]),
+                int(ts_match["hour"]), int(ts_match["minute"]), int(ts_match["second"]),
+            )
+        except ValueError:
+            pass
+    # Try YYYYMMDD_HHMMSS compact format (CAN/OTA logs)
+    ts_match = _SOS_COMPACT_TS_RE.search(filename)
+    if ts_match is not None:
+        try:
+            return datetime(
+                int(ts_match["year"]), int(ts_match["month"]), int(ts_match["day"]),
+                int(ts_match["hour"]), int(ts_match["minute"]), int(ts_match["second"]),
+            )
+        except ValueError:
+            pass
+    return None
+
+
+def _is_sos_archive(members: list[ArchiveMemberInfo]) -> bool:
+    """检测成员列表是否属于 SOS/TBox 归档结构。"""
+    return any(_SOS_LOG_ROUND_RE.match(m.member_path) for m in members)
+
+
+def select_sos_time_range(
+    members: list[ArchiveMemberInfo], start: datetime, end: datetime, neighbor_count: int,
+) -> list[TimeSelectedMember]:
+    """按 SOS 归档的 boot round 时间窗口选择成员及相邻 round 成员。
+
+    SOS 归档使用 ``Linux_Log/logNN/`` 目录结构，每个 boot round 的时间窗口
+    由其文件名中的时间戳确定。同时选择覆盖事件窗口的 MCU、CAN、OTA、PKI 日志。
+    """
+    if not _is_sos_archive(members):
+        return []
+
+    # 1. 按 boot round 分组
+    round_members: dict[int, list[ArchiveMemberInfo]] = {}
+    round_timestamps: dict[int, list[datetime]] = {}
+    for member in members:
+        rm = _SOS_LOG_ROUND_RE.match(member.member_path)
+        if not rm:
+            continue
+        rn = int(rm.group(1))
+        round_members.setdefault(rn, []).append(member)
+        ts = _parse_filename_timestamp(member.member_path)
+        if ts is not None:
+            round_timestamps.setdefault(rn, []).append(ts)
+
+    # 2. 计算每个 round 的时间窗口
+    round_windows: dict[int, tuple[datetime, datetime]] = {}
+    for rn, tss in round_timestamps.items():
+        if tss:
+            round_windows[rn] = (min(tss), max(tss))
+
+    sorted_rounds = sorted(round_windows.keys())
+    if not sorted_rounds:
+        return []
+
+    # 3. 找到与事件时间窗口重叠的 incident round
+    incident_rounds: list[int] = []
+    for rn in sorted_rounds:
+        rmin, rmax = round_windows[rn]
+        if rmin <= end and rmax >= start:
+            incident_rounds.append(rn)
+
+    if not incident_rounds:
+        # 没有直接重叠，取事件时间之前最近的 round
+        for rn in reversed(sorted_rounds):
+            _, rmax = round_windows[rn]
+            if rmax < start:
+                incident_rounds = [rn]
+                break
+        if not incident_rounds:
+            incident_rounds = [sorted_rounds[0]]
+
+    # 4. 添加相邻 round
+    selected_rounds: set[int] = set(incident_rounds)
+    min_rn = min(incident_rounds)
+    max_rn = max(incident_rounds)
+    for i in range(1, neighbor_count + 1):
+        if min_rn - i in round_windows:
+            selected_rounds.add(min_rn - i)
+        if max_rn + i in round_windows:
+            selected_rounds.add(max_rn + i)
+
+    # 5. 选择选定 round 中的所有安全成员
+    selected: dict[str, TimeSelectedMember] = {}
+    for rn in sorted(selected_rounds):
+        relation = (
+            "in_range" if rn in incident_rounds
+            else "predecessor" if rn < min(incident_rounds)
+            else "successor"
+        )
+        for member in round_members.get(rn, []):
+            if not member.safe or member.member_id in selected:
+                continue
+            ts = _parse_filename_timestamp(member.member_path)
+            parsed = ParsedAPLogName(
+                start_time=ts or round_windows[rn][0],
+                sequence=rn,
+            )
+            selected[member.member_id] = TimeSelectedMember(member, parsed, relation)
+
+    # 6. 选择覆盖事件时间窗口的 MCU/CAN/OTA/PKI 日志
+    from datetime import timedelta
+    extended_start = start - timedelta(hours=4)
+    extended_end = end + timedelta(hours=4)
+
+    for member in members:
+        if not member.safe or member.member_id in selected:
+            continue
+        path = member.member_path
+        is_sos_peripheral = (
+            _SOS_MCU_RE.match(path)
+            or _SOS_CAN_RE.match(path)
+            or _SOS_OTA_RE.match(path)
+            or _SOS_PKI_RE.match(path)
+        )
+        if not is_sos_peripheral:
+            continue
+        ts = _parse_filename_timestamp(member.member_path)
+        if ts is None:
+            # 没有时间戳的文件（如 .log 无后缀），跳过——不能确定是否在事件窗口内
+            continue
+        elif extended_start <= ts <= extended_end:
+            parsed = ParsedAPLogName(start_time=ts, sequence=0)
+            selected[member.member_id] = TimeSelectedMember(member, parsed, "in_range")
+
     return sorted(
         selected.values(),
         key=lambda item: (item.parsed.start_time, item.parsed.sequence, item.member.member_path),
@@ -345,6 +506,33 @@ def inventory_archive(
                         unsafe = "ARCHIVE_MEMBER_SIZE_LIMIT"
                     if not append(_record(archive_artifact_id, fingerprint.sha256, info.name, info.size, None, unsafe_reason=unsafe)):
                         break
+        elif name.endswith(".7z") or _is_7z_volume(path):
+            archive_format = "7z"
+            archive, merged = _open_7z_archive(path, ExtractionBudget(limits))
+            try:
+                if archive.needs_password():
+                    raise ArchiveRejected("ARCHIVE_ENCRYPTED", "不支持加密 7z 归档")
+                infos = archive.list()
+                file_infos = [info for info in infos if not info.is_directory]
+                if len(file_infos) > limits.max_members:
+                    truncated = True
+                    file_infos = file_infos[:limits.max_members]
+                for info in file_infos:
+                    if time.monotonic() - started_at > limits.max_runtime_seconds:
+                        raise ArchiveRejected("ARCHIVE_TIME_LIMIT", "归档清点超过服务端运行时间预算")
+                    unsafe = None
+                    if info.is_symlink:
+                        unsafe = "ARCHIVE_LINK_REJECTED"
+                    elif not info.is_file:
+                        unsafe = "ARCHIVE_SPECIAL_FILE"
+                    elif (info.uncompressed or 0) < 0 or (info.uncompressed or 0) > limits.max_member_bytes:
+                        unsafe = "ARCHIVE_MEMBER_SIZE_LIMIT"
+                    if not append(_record(archive_artifact_id, fingerprint.sha256, info.filename, info.uncompressed, info.compressed, unsafe_reason=unsafe)):
+                        break
+            finally:
+                archive.close()
+                if merged is not None:
+                    merged.unlink(missing_ok=True)
         else:
             archive_format = "gzip"
             output_name = path.name[:-3] or "content"
@@ -359,7 +547,7 @@ def inventory_archive(
                     if size / max(fingerprint.size_bytes, 1) > limits.max_compression_ratio:
                         raise ArchiveRejected("ARCHIVE_RATIO_LIMIT", "GZIP 实际压缩比超过预算")
             append(_record(archive_artifact_id, fingerprint.sha256, output_name, size, fingerprint.size_bytes))
-    except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, EOFError) as exc:
+    except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, EOFError, py7zr.Bad7zFile) as exc:
         raise ArchiveRejected("ARCHIVE_INVALID", f"归档损坏或格式无效: {type(exc).__name__}") from exc
 
     # Windows 目标路径不区分大小写；所有冲突成员都必须禁用。
@@ -609,6 +797,25 @@ def extract_archive_members(
                         raise ArchiveRejected("ARCHIVE_READ_ERROR", f"无法读取 TAR 成员: {member_path}")
                     with source:
                         _copy(source, _target_path(staging, member_path), int(item.size_bytes), budget)
+        elif name.endswith(".7z") or _is_7z_volume(inventory.archive_path):
+            archive, merged = _open_7z_archive(inventory.archive_path, budget)
+            try:
+                if archive.needs_password():
+                    raise ArchiveRejected("ARCHIVE_ENCRYPTED", "不支持加密 7z 归档")
+                for member_path, item in pending_by_path.items():
+                    budget.check_runtime()
+                    archive.extract(staging, targets=[member_path])
+                for member_path, item in pending_by_path.items():
+                    target = _target_path(staging, member_path)
+                    if not target.is_file():
+                        raise ArchiveRejected("ARCHIVE_READ_ERROR", f"7z 成员未正确提取: {member_path}")
+                    actual = target.stat().st_size
+                    if actual != int(item.size_bytes):
+                        raise ArchiveRejected("ARCHIVE_MEMBER_SIZE_MISMATCH", f"7z 成员大小与元数据不一致: {member_path}")
+            finally:
+                archive.close()
+                if merged is not None:
+                    merged.unlink(missing_ok=True)
         else:
             item = pending[0]
             with gzip.open(inventory.archive_path, "rb") as source:
