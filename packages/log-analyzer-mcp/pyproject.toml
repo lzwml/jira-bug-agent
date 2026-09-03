@@ -27,6 +27,7 @@ dependencies = [
     "log-analysis-core>=0.1.0",
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
+    "py7zr>=0.21.0",
 ]
 
 [tool.hatch.build.targets.wheel]

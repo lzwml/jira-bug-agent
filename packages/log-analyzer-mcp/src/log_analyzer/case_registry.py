@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from .archive_manager import ArchiveLimits, extraction_destination
+from .archive_manager import ArchiveLimits, extraction_destination, is_supported_archive
 from .domain import Artifact, ArtifactKind, CaseInfo
 from .errors import make_error, make_success
 from .log_index import IndexLimits
@@ -80,9 +80,9 @@ def infer_artifact_kind(path: Path) -> ArtifactKind:
     """
 
     name = path.name.lower()
-    suffix = path.suffix.lower()
-    if suffix in ARCHIVE_SUFFIXES:
+    if is_supported_archive(path):
         return "archive"
+    suffix = path.suffix.lower()
     if "tombstone" in name or "native_crash" in name:
         return "tombstone"
     if "anr" in name or name.startswith("traces"):

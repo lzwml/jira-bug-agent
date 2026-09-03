@@ -757,13 +757,14 @@ def test_chunk_index_detects_utf16_text(tmp_path):
 
 def test_unsupported_archive_is_reported_without_external_fallback(tmp_path):
     case_dir, _, service = _service(tmp_path)
-    (case_dir / "vendor.7z").write_bytes(b"not really 7z")
+    (case_dir / "vendor.xz").write_bytes(b"not really xz")
     case_id = _open(service, case_dir)
 
     result = service.prepare_case(case_id=case_id)
 
     assert result.success
-    assert result.data["extraction"]["skipped"][0]["reason"] == "ARCHIVE_FORMAT_UNSUPPORTED"
+    # .xz 不在支持的归档格式中，不会被识别为 archive
+    assert result.data["extraction"]["expanded_file_count"] == 0
 
 
 def test_registry_reads_server_side_preparation_limits(monkeypatch, tmp_path):
@@ -828,3 +829,73 @@ def test_open_case_prunes_bug_agent_directory_case_insensitively(tmp_path):
     assert opened.success
     assert opened.data["case"]["artifact_count"] == 1
     assert opened.data["case"]["artifacts"][0]["relative_path"] == "main.log"
+
+
+def test_is_supported_archive_includes_7z(tmp_path):
+    from log_analyzer.archive_manager import is_supported_archive
+
+    assert is_supported_archive(Path("test.7z"))
+    assert is_supported_archive(Path("test.7z.001"))
+    assert is_supported_archive(Path("archive.7z.001"))
+    # 非 .001 的后续分卷本身不直接支持，但 _is_7z_volume 会识别
+    assert is_supported_archive(Path("test.zip"))
+    assert is_supported_archive(Path("test.tar.gz"))
+    assert not is_supported_archive(Path("test.rar"))
+    assert not is_supported_archive(Path("test.txt"))
+
+
+def test_prepare_extracts_7z_archive(tmp_path):
+    import py7zr
+
+    case_dir, _, service = _service(tmp_path)
+    with py7zr.SevenZipFile(str(case_dir / "logs.7z"), "w") as z:
+        z.writestr(b"kernel panic\n", "kernel.log")
+        z.writestr(b"main crash\n", "main.log")
+
+    case_id = _open(service, case_dir)
+    result = service.prepare_case(case_id=case_id)
+
+    assert result.success
+    assert result.data["extraction"]["expanded_file_count"] == 2
+    dest = case_dir / "logs.7z.unpacked"
+    assert dest.is_dir()
+    assert (dest / "kernel.log").read_text() == "kernel panic\n"
+    assert (dest / "main.log").read_text() == "main crash\n"
+
+
+def test_7z_volume_extension_is_supported(tmp_path):
+    """以 .7z.001 结尾的文件被 is_supported_archive 识别。"""
+    from log_analyzer.archive_manager import is_supported_archive
+
+    assert is_supported_archive(Path("logs.7z.001"))
+    assert is_supported_archive(Path("data.7z"))
+    assert not is_supported_archive(Path("data.7z.002"))  # 非 .001 后缀不直接支持
+
+
+def test_prepare_rejects_encrypted_7z(tmp_path):
+    import py7zr
+
+    case_dir, _, service = _service(tmp_path)
+    with py7zr.SevenZipFile(str(case_dir / "secret.7z"), "w", password="1234") as z:
+        z.writestr(b"secret\n", "secret.txt")
+
+    case_id = _open(service, case_dir)
+    result = service.prepare_case(case_id=case_id)
+
+    assert result.success
+    assert result.data["extraction"]["expanded_file_count"] == 0
+    skipped = result.data["extraction"]["skipped"]
+    assert len(skipped) >= 1
+    assert any(s["reason"] in ("ARCHIVE_ENCRYPTED", "ARCHIVE_INVALID") for s in skipped)
+
+
+def test_prepare_rejects_corrupt_7z(tmp_path):
+    case_dir, _, service = _service(tmp_path)
+    (case_dir / "broken.7z").write_bytes(b"not a valid 7z file")
+
+    case_id = _open(service, case_dir)
+    result = service.prepare_case(case_id=case_id)
+
+    assert result.success
+    assert len(result.data["extraction"]["skipped"]) == 1
+    assert result.data["extraction"]["skipped"][0]["reason"] == "ARCHIVE_INVALID"

@@ -1,8 +1,8 @@
 """受预算约束的归档展开。
 
-归档内容是不可信输入。本模块只使用 Python 标准库处理 ZIP、TAR、TAR.GZ、
-TGZ 和单文件 GZIP，并在写入前拒绝路径穿越、链接、特殊文件、加密 ZIP、
-重复目标、异常压缩比和超预算成员。RAR/7z 不会退回到 shell 命令。
+归档内容是不可信输入。本模块使用 Python 标准库处理 ZIP、TAR、TAR.GZ、
+TGZ 和单文件 GZIP，使用 py7zr 处理 7z 及分卷，并在写入前拒绝路径穿越、
+链接、特殊文件、加密归档、重复目标、异常压缩比和超预算成员。不退回 shell 命令。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -19,6 +20,8 @@ import tarfile
 import time
 import uuid
 import zipfile
+
+import py7zr
 
 
 COPY_CHUNK_BYTES = 1024 * 1024
@@ -85,7 +88,77 @@ class ArchiveRejected(Exception):
 
 def is_supported_archive(path: Path) -> bool:
     name = path.name.casefold()
-    return name.endswith((".zip", ".tar", ".tar.gz", ".tgz", ".gz"))
+    return name.endswith((".zip", ".tar", ".tar.gz", ".tgz", ".gz", ".7z", ".7z.001"))
+
+
+def _is_7z_volume(path: Path) -> bool:
+    """判断是否为 7z 分卷（.7z.001 或 .001 等后续分卷）。"""
+    name = path.name.casefold()
+    return bool(re.fullmatch(r".+\.7z\.\d{3}", name)) or bool(re.fullmatch(r".+\.\d{3}", name))
+
+
+def _resolve_7z_volumes(first_volume: Path) -> list[Path]:
+    """给定 7z 分卷的第一个文件，按顺序收集同一目录下的所有连续分卷。
+
+    分卷命名规则：
+    - 7z 官方分卷：file.7z.001, file.7z.002, file.7z.003, ...
+    - 某些工具生成：file.7z, file.001, file.002, ...
+    以第一个分卷的前缀匹配，收集所有连续编号的分卷文件。
+    """
+    name = first_volume.name
+    if name.casefold().endswith(".7z.001"):
+        stem = name[:-7]  # remove ".7z.001"
+        prefix = stem + ".7z."
+    elif name.casefold().endswith(".7z"):
+        stem = name[:-3]  # remove ".7z"
+        prefix = stem + "."
+    else:
+        return [first_volume]
+
+    parent = first_volume.parent
+    volumes = [first_volume]
+    seq = 2
+    while True:
+        candidate = parent / f"{prefix}{seq:03d}"
+        if candidate.is_file():
+            volumes.append(candidate)
+            seq += 1
+        else:
+            break
+    return volumes
+
+
+def _open_7z_archive(path: Path, budget: ExtractionBudget) -> tuple[py7zr.SevenZipFile, Path | None]:
+    """打开 7z 归档（含分卷），返回 (archive, merged_temp_path)。
+
+    分卷处理：py7zr 的 MultiVolume 包装器在部分场景下与 7z 分卷
+    不兼容（IndexError），因此将分卷合并为单个临时文件再打开。
+    merged_temp_path 需要由调用方在用完后清理。
+    """
+    if _is_7z_volume(path):
+        volumes = _resolve_7z_volumes(path)
+        total_size = sum(v.stat().st_size for v in volumes)
+        if total_size > budget.limits.max_archive_bytes:
+            raise ArchiveRejected("ARCHIVE_FILE_LIMIT", "7z 分卷总大小超过服务端预算")
+        budget.check_runtime()
+
+        # 合并分卷到临时文件
+        staging = path.parent / f".{path.name}.merged-{uuid.uuid4().hex}.7z"
+        try:
+            with staging.open("wb") as out:
+                for vol in volumes:
+                    budget.check_runtime()
+                    with vol.open("rb") as vin:
+                        shutil.copyfileobj(vin, out, COPY_CHUNK_BYTES)
+            return py7zr.SevenZipFile(staging), staging
+        except Exception:
+            staging.unlink(missing_ok=True)
+            raise
+    else:
+        if path.stat().st_size > budget.limits.max_archive_bytes:
+            raise ArchiveRejected("ARCHIVE_FILE_LIMIT", "归档文件超过服务端单归档大小预算")
+        budget.check_runtime()
+        return py7zr.SevenZipFile(path), None
 
 
 def extraction_destination(archive_path: Path) -> Path:
@@ -177,6 +250,8 @@ class ArchiveExtractor:
                 members = self._extract_zip(archive_path, staging, budget)
             elif name.endswith((".tar", ".tar.gz", ".tgz")):
                 members = self._extract_tar(archive_path, staging, budget)
+            elif name.endswith(".7z") or _is_7z_volume(archive_path):
+                members = self._extract_7z(archive_path, staging, budget)
             else:
                 members = self._extract_gzip(archive_path, staging, budget)
 
@@ -237,7 +312,7 @@ class ArchiveExtractor:
             if staging.exists():
                 shutil.rmtree(staging)
             raise
-        except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, EOFError) as exc:
+        except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, EOFError, py7zr.Bad7zFile) as exc:
             if staging.exists():
                 shutil.rmtree(staging)
             raise ArchiveRejected("ARCHIVE_INVALID", f"归档损坏或格式无效: {type(exc).__name__}") from exc
@@ -494,3 +569,47 @@ class ArchiveExtractor:
                 output.write(chunk)
         budget.reserve(1, written)
         return [ExtractedMember(target, member_path, written)]
+
+    def _extract_7z(self, archive_path: Path, root: Path, budget: ExtractionBudget) -> list[ExtractedMember]:
+        """通过 py7zr 提取 7z 归档（含分卷），安全校验逻辑与 ZIP/TAR 一致。"""
+        archive, merged = _open_7z_archive(archive_path, budget)
+        try:
+            if archive.needs_password():
+                raise ArchiveRejected("ARCHIVE_ENCRYPTED", "不支持加密 7z 归档")
+            infos = archive.list()
+            # 过滤掉目录条目
+            files = [info for info in infos if not info.is_directory]
+            if len(files) + budget.members > self.limits.max_members:
+                raise ArchiveRejected("ARCHIVE_MEMBER_LIMIT", "7z 条目数量超过服务端预算")
+            planned: list[tuple[py7zr.FileInfo, str]] = []
+            for info in files:
+                member_path = _safe_member_path(info.filename)
+                if info.is_symlink:
+                    raise ArchiveRejected("ARCHIVE_LINK_REJECTED", f"拒绝 7z 符号链接: {member_path}")
+                if not info.is_file:
+                    raise ArchiveRejected("ARCHIVE_SPECIAL_FILE", f"拒绝 7z 特殊文件: {member_path}")
+                size = info.uncompressed or 0
+                if size < 0 or size > self.limits.max_member_bytes:
+                    raise ArchiveRejected("ARCHIVE_MEMBER_SIZE_LIMIT", f"7z 成员超过大小预算: {member_path}")
+                planned.append((info, member_path))
+            entries = [(name, info.uncompressed or 0) for info, name in planned]
+            self._validate_plan(archive_path.stat().st_size, entries)
+            budget.reserve(len(entries), sum(size for _, size in entries))
+
+            # 使用 extractall 到 staging 目录，然后逐个验证
+            archive.extractall(root)
+
+            result: list[ExtractedMember] = []
+            for info, member_path in planned:
+                target = _target_path(root, member_path)
+                if not target.is_file():
+                    raise ArchiveRejected("ARCHIVE_READ_ERROR", f"7z 成员未正确提取: {member_path}")
+                actual_size = target.stat().st_size
+                if actual_size != (info.uncompressed or 0):
+                    raise ArchiveRejected("ARCHIVE_MEMBER_SIZE_MISMATCH", f"7z 成员大小与元数据不一致: {member_path}")
+                result.append(ExtractedMember(target, member_path, actual_size))
+            return result
+        finally:
+            archive.close()
+            if merged is not None:
+                merged.unlink(missing_ok=True)
