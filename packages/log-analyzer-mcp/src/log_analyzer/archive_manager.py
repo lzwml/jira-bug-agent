@@ -26,7 +26,7 @@ import py7zr
 
 COPY_CHUNK_BYTES = 1024 * 1024
 MANIFEST_NAME = ".extraction-manifest.json"
-UNPACKED_SUFFIX = ".unpacked"
+UNPACKED_SUFFIX = ".unpacked"  # deprecated — kept for backward compat with existing managed dirs
 WINDOWS_RESERVED_NAMES = {
     "con", "prn", "aux", "nul",
     *(f"com{number}" for number in range(1, 10)),
@@ -162,8 +162,19 @@ def _open_7z_archive(path: Path, budget: ExtractionBudget) -> tuple[py7zr.SevenZ
 
 
 def extraction_destination(archive_path: Path) -> Path:
-    """Return the visible, archive-adjacent directory managed by the extractor."""
+    """Return the visible extraction destination beside the source archive.
 
+    - Single .gz files (not .tar.gz): strip ``.gz`` → a file (e.g. ``kernel.log.gz`` → ``kernel.log``)
+    - Archives (zip/tar/tar.gz/tgz/7z): strip the archive extension(s) → a directory
+      (e.g. ``logs.zip`` → ``logs/``, ``logs.tar.gz`` → ``logs/``)
+    """
+
+    name = archive_path.name.casefold()
+    if name.endswith(".gz") and not name.endswith((".tar.gz", ".tgz")):
+        return archive_path.with_suffix("")
+    for suffix in (".tar.gz", ".tgz", ".zip", ".tar", ".7z", ".7z.001"):
+        if name.endswith(suffix):
+            return archive_path.with_name(archive_path.name[:-len(suffix)])
     return archive_path.with_name(f"{archive_path.name}{UNPACKED_SUFFIX}")
 
 
@@ -233,8 +244,41 @@ class ArchiveExtractor:
 
         source_sha256 = _source_sha256(archive_path, budget)
 
-        # The destination now lives beside the source archive and is visible to users.
-        # Never replace a pre-existing directory unless it was created by this extractor.
+        name = archive_path.name.casefold()
+        is_gzip = name.endswith(".gz") and not name.endswith((".tar.gz", ".tgz"))
+
+        if is_gzip:
+            # Single .gz → extract to a file, not a directory
+            if destination.exists() and not destination.is_file():
+                raise ArchiveRejected(
+                    "ARCHIVE_DESTINATION_CONFLICT",
+                    f"解压目标已存在且不是文件: {destination.name}",
+                )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temp = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
+            try:
+                members = self._extract_gzip_to_file(archive_path, temp, budget)
+                if _source_sha256(archive_path, budget) != source_sha256:
+                    raise ArchiveRejected("ARCHIVE_SOURCE_CHANGED", "归档在解压过程中发生变化")
+                temp.replace(destination)
+                return ExtractionResult(
+                    [ExtractedMember(destination, item.member_path, item.size_bytes) for item in members],
+                    reused=False,
+                )
+            except ArchiveRejected:
+                if temp.exists():
+                    temp.unlink(missing_ok=True)
+                raise
+            except (zipfile.BadZipFile, tarfile.TarError, gzip.BadGzipFile, EOFError, py7zr.Bad7zFile) as exc:
+                if temp.exists():
+                    temp.unlink(missing_ok=True)
+                raise ArchiveRejected("ARCHIVE_INVALID", f"归档损坏或格式无效: {type(exc).__name__}") from exc
+            except Exception:
+                if temp.exists():
+                    temp.unlink(missing_ok=True)
+                raise
+
+        # Directory archives: use staging directory + manifest
         if destination.exists() and not self._is_managed_destination(destination):
             raise ArchiveRejected(
                 "ARCHIVE_DESTINATION_CONFLICT",
@@ -564,6 +608,30 @@ class ArchiveExtractor:
         output_name = archive_path.name[:-3] or "content"
         member_path = _safe_member_path(output_name)
         target = _target_path(root, member_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with gzip.open(archive_path, "rb") as source, target.open("xb") as output:
+            while True:
+                budget.check_runtime()
+                chunk = source.read(COPY_CHUNK_BYTES)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > self.limits.max_member_bytes:
+                    raise ArchiveRejected("ARCHIVE_MEMBER_SIZE_LIMIT", f"GZIP 展开内容超过大小预算: {member_path}")
+                if budget.expanded_bytes + written > self.limits.max_expanded_bytes:
+                    raise ArchiveRejected("ARCHIVE_EXPANDED_LIMIT", "GZIP 展开总字节数超过服务端预算")
+                ratio = written / max(archive_path.stat().st_size, 1)
+                if ratio > self.limits.max_compression_ratio:
+                    raise ArchiveRejected("ARCHIVE_RATIO_LIMIT", f"GZIP 实际压缩比 {ratio:.1f} 超过预算")
+                output.write(chunk)
+        budget.reserve(1, written)
+        return [ExtractedMember(target, member_path, written)]
+
+    def _extract_gzip_to_file(self, archive_path: Path, target: Path, budget: ExtractionBudget) -> list[ExtractedMember]:
+        """Extract a single .gz archive directly to a file (no staging directory)."""
+        output_name = target.name  # already stripped of .gz by extraction_destination
+        member_path = _safe_member_path(output_name)
         target.parent.mkdir(parents=True, exist_ok=True)
         written = 0
         with gzip.open(archive_path, "rb") as source, target.open("xb") as output:

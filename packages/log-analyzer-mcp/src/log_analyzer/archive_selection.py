@@ -647,13 +647,58 @@ def extract_archive_members(
     *,
     force: bool = False,
 ) -> SelectiveExtractionResult:
-    """把当前归档中选定的安全成员增量解压到相邻 ``.unpacked``。"""
+    """把当前归档中选定的安全成员增量解压到相邻位置。
+
+    - ZIP/TAR/TAR.GZ/7z 归档 → 解压到同名目录（如 ``logs.zip`` → ``logs/``）
+    - 单个 .gz 文件 → 解压为同名文件，去掉 .gz（如 ``kernel.log.gz`` → ``kernel.log``）
+    """
 
     inventory = inventory_archive(archive_path, archive_artifact_id, limits)
     safe = {item.member_id: item for item in inventory.members if item.safe}
     requested = list(dict.fromkeys(member_ids))
 
     destination = extraction_destination(inventory.archive_path)
+
+    unknown = [item for item in requested if item not in safe]
+    if unknown:
+        raise ArchiveRejected("ARCHIVE_MEMBER_ID_INVALID", f"成员 ID 未知或不安全: {unknown[0]}")
+
+    budget = ExtractionBudget(limits)
+
+    # ── Gzip: single-file extraction, no staging directory ──
+    if inventory.format == "gzip":
+        item = safe[requested[0]]
+        if destination.exists():
+            if not destination.is_file():
+                raise ArchiveRejected("ARCHIVE_DESTINATION_CONFLICT",
+                                      f"解压目标已存在且不是文件: {destination.name}")
+            # Reuse existing file if source fingerprint matches
+            if not force and destination.is_file() and _fingerprint(inventory.archive_path, limits, budget.started_at) == inventory.source_fingerprint:
+                return SelectiveExtractionResult(
+                    destination,
+                    [SelectedMember(item, item.member_path, destination, int(item.size_bytes), True)],
+                    reset=False,
+                )
+        # Write to a temp file then atomically rename
+        temp = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
+        try:
+            with gzip.open(inventory.archive_path, "rb") as source:
+                _copy(source, temp, int(item.size_bytes), budget)
+            if _fingerprint(inventory.archive_path, limits, budget.started_at) != inventory.source_fingerprint:
+                temp.unlink(missing_ok=True)
+                raise ArchiveRejected("ARCHIVE_SOURCE_CHANGED", "归档在清点与解压之间发生变化")
+            temp.replace(destination)
+        except Exception:
+            if temp.exists():
+                temp.unlink(missing_ok=True)
+            raise
+        return SelectiveExtractionResult(
+            destination,
+            [SelectedMember(item, item.member_path, destination, int(item.size_bytes), False)],
+            reset=False,
+        )
+
+    # ── Directory archives: use staging directory + manifest ──
     old_manifest = _manifest(destination) if destination.exists() else None
     if destination.exists() and (old_manifest is None or not _is_pristine(destination, old_manifest)):
         raise ArchiveRejected("ARCHIVE_DESTINATION_CONFLICT", f"解压目标已存在且不受选择性解压器管理: {destination.name}")
@@ -726,7 +771,6 @@ def extract_archive_members(
             reset=reset,
         )
 
-    budget = ExtractionBudget(limits)
     budget.reserve(len(pending), total)
     staging = destination.parent / f".{destination.name}.staging-{uuid.uuid4().hex}"
     backup: Path | None = None

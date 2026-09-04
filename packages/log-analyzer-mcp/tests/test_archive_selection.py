@@ -92,7 +92,7 @@ def test_inventory_truncates_without_writing_output(tmp_path: Path):
 
     assert result.truncated
     assert len(result.members) == 1
-    assert not (tmp_path / "many.zip.unpacked").exists()
+    assert not (tmp_path / "many").exists()
 
 
 def test_generic_path_timestamp_and_directory_summary_do_not_require_a_product_format(tmp_path: Path):
@@ -129,6 +129,8 @@ def test_tar_and_single_gzip_are_selectively_extracted(tmp_path: Path):
         tar_path, "tar-artifact", [tar_inventory.members[0].member_id], LIMITS
     )
     assert (tar_result.destination / "nested/system.log").read_bytes() == payload
+    # tar.gz → strip both extensions: "logs.tar.gz" → "logs"
+    assert tar_result.destination.name == "logs"
 
     gzip_path = tmp_path / "kernel.log.gz"
     gzip_path.write_bytes(gzip.compress(b"gzip evidence"))
@@ -137,7 +139,10 @@ def test_tar_and_single_gzip_are_selectively_extracted(tmp_path: Path):
     gzip_result = extract_archive_members(
         gzip_path, "gzip-artifact", [gzip_inventory.members[0].member_id], LIMITS
     )
-    assert (gzip_result.destination / "kernel.log").read_bytes() == b"gzip evidence"
+    # single .gz → strip .gz only: "kernel.log.gz" → "kernel.log" (a file, not a dir)
+    assert gzip_result.destination.name == "kernel.log"
+    assert gzip_result.destination.is_file()
+    assert gzip_result.destination.read_bytes() == b"gzip evidence"
 
 
 def test_unknown_and_unsafe_member_ids_are_rejected(tmp_path: Path):
@@ -213,7 +218,7 @@ def test_multi_round_selection_enforces_cumulative_expanded_budget(tmp_path: Pat
         extract_archive_members(path, "artifact-budget", [members["two.log"].member_id], limits)
 
     assert caught.value.code == "ARCHIVE_EXPANDED_LIMIT"
-    assert not (tmp_path / "budget.zip.unpacked" / "two.log").exists()
+    assert not (tmp_path / "budget" / "two.log").exists()
 
 
 def test_inventory_rejects_reserved_manifest_and_prefix_conflicts(tmp_path: Path):

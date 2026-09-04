@@ -81,7 +81,7 @@ def test_agent_flow_inspects_extracts_and_indexes_only_selected_member(tmp_path)
     inventory = service.inspect_archive(case_id=case_id, artifact_id=archive_id)
 
     assert inventory.success
-    assert not (case_dir / "android.zip.unpacked").exists()
+    assert not (case_dir / "android").exists()
     by_path = {item["member_path"]: item for item in inventory.data["members"]}
     extracted = service.extract_archive_members(
         case_id=case_id,
@@ -92,8 +92,8 @@ def test_agent_flow_inspects_extracts_and_indexes_only_selected_member(tmp_path)
     indexed = service.build_index(case_id=case_id, artifact_ids=[selected_artifact_id])
 
     assert extracted.success
-    assert (case_dir / "android.zip.unpacked" / "logs" / "main.log").is_file()
-    assert not (case_dir / "android.zip.unpacked" / "logs" / "radio.log").exists()
+    assert (case_dir / "android" / "logs" / "main.log").is_file()
+    assert not (case_dir / "android" / "logs" / "radio.log").exists()
     assert indexed.success
     assert indexed.data["indexed_artifact_ids"] == [selected_artifact_id]
     assert service.search_evidence(case_id=case_id, query="selected evidence").data["match_count"] == 1
@@ -363,7 +363,7 @@ def test_registered_archive_replaced_by_external_symlink_is_rejected(tmp_path):
 
     assert not result.success
     assert result.error_code == "ARTIFACT_NOT_FOUND"
-    assert not (tmp_path / "outside.zip.unpacked").exists()
+    assert not (tmp_path / "outside").exists()
 
 
 def test_selective_nested_archive_obeys_depth_limit(tmp_path):
@@ -447,7 +447,7 @@ def test_selective_nested_archive_requires_explicit_second_step(tmp_path):
     inner_artifact_id = outer_extract.data["members"][0]["artifact_id"]
 
     assert outer_extract.success
-    assert not (case_dir / "outer.zip.unpacked" / "logs" / "inner.log.gz.unpacked").exists()
+    assert not (case_dir / "outer" / "logs" / "inner.log").exists()
     inner_inventory = service.inspect_archive(case_id=case_id, artifact_id=inner_artifact_id)
     inner_extract = service.extract_archive_members(
         case_id=case_id,
@@ -458,7 +458,7 @@ def test_selective_nested_archive_requires_explicit_second_step(tmp_path):
     assert inner_extract.data["members"][0]["relative_path"].endswith(
         "outer.zip!/logs/inner.log.gz!/inner.log"
     )
-    assert not (case_dir / "outer.zip.unpacked" / "logs" / "unused.log").exists()
+    assert not (case_dir / "outer" / "logs" / "unused.log").exists()
 
 
 def test_full_and_selective_extraction_modes_are_compatible(tmp_path):
@@ -496,7 +496,7 @@ def test_full_and_selective_extraction_modes_are_compatible(tmp_path):
     ).success
     full = second_service.prepare_case(case_id=second_case_id, build_index=False)
     assert full.success
-    assert (selective_case / "logs.zip.unpacked" / "two.log").is_file()
+    assert (selective_case / "logs" / "two.log").is_file()
 
 
 def test_prepare_reuses_extraction_and_index(tmp_path):
@@ -527,7 +527,7 @@ def test_prepare_writes_next_to_archive_and_reopen_ignores_generated_files(tmp_p
     prepared = service.prepare_case(case_id=case_id)
 
     assert prepared.success
-    assert (case_dir / "logs.zip.unpacked" / "nested" / "main.log").is_file()
+    assert (case_dir / "logs" / "nested" / "main.log").is_file()
     reopened = registry.open_case(str(case_dir))
     assert reopened.success
     assert reopened.data["case"]["artifact_count"] == 1
@@ -539,7 +539,7 @@ def test_prepare_does_not_replace_unmanaged_sibling_directory(tmp_path):
     archive_path = case_dir / "logs.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr("main.log", "archive content\n")
-    conflict = case_dir / "logs.zip.unpacked"
+    conflict = case_dir / "logs"
     conflict.mkdir()
     user_file = conflict / "user-notes.txt"
     user_file.write_text("keep me", encoding="utf-8")
@@ -560,7 +560,7 @@ def test_prepare_does_not_delete_user_file_added_to_managed_directory(tmp_path):
         archive.writestr("main.log", "archive content\n")
     case_id = _open(service, case_dir)
     assert service.prepare_case(case_id=case_id).success
-    destination = case_dir / "logs.zip.unpacked"
+    destination = case_dir / "logs"
     user_file = destination / "my-notes.txt"
     user_file.write_text("do not delete", encoding="utf-8")
 
@@ -578,7 +578,7 @@ def test_prepare_does_not_delete_extra_empty_directory(tmp_path):
         archive.writestr("main.log", "archive content\n")
     case_id = _open(service, case_dir)
     assert service.prepare_case(case_id=case_id).success
-    extra_dir = case_dir / "logs.zip.unpacked" / "manual-empty-folder"
+    extra_dir = case_dir / "logs" / "manual-empty-folder"
     extra_dir.mkdir()
 
     prepared = service.prepare_case(case_id=case_id, force_rebuild=True)
@@ -857,7 +857,7 @@ def test_prepare_extracts_7z_archive(tmp_path):
 
     assert result.success
     assert result.data["extraction"]["expanded_file_count"] == 2
-    dest = case_dir / "logs.7z.unpacked"
+    dest = case_dir / "logs"
     assert dest.is_dir()
     assert (dest / "kernel.log").read_text() == "kernel panic\n"
     assert (dest / "main.log").read_text() == "main crash\n"
