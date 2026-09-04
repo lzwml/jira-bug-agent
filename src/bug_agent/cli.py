@@ -18,7 +18,7 @@ from jira_bug_mcp.service import JiraService
 from log_analyzer.case_registry import CaseRegistry
 from log_analyzer.service import LogAnalyzerService
 
-from .chat_store import ChatStore, resolve_chat_db_path, resolve_chat_session_id
+from .chat_store import ChatStore, resolve_chat_session_id, resolve_chat_sessions_dir
 from .config import AgentConfig
 from .contracts import BugAnalysisResult, BugAnalysisTask
 from .conversation import ConversationSession, SavedTurn
@@ -513,13 +513,12 @@ async def _run_chat(args: argparse.Namespace) -> int:
         task = BugAnalysisTask(source="local", case_path=args.case_path, **common)
 
     # ---------- 持久化：检测已有会话 ----------
-    db_path = resolve_chat_db_path(task)
+    sessions_dir = resolve_chat_sessions_dir(task)
     session_id = resolve_chat_session_id(task)
-    store = ChatStore(db_path) if db_path is not None else None
+    store = ChatStore(sessions_dir) if sessions_dir is not None else None
     saved_turns: list[SavedTurn] = []
 
     if store is not None:
-        store.initialize()
         existing = store.get_session(session_id)
         if existing is not None and existing["status"] == "active" and existing["turns"]:
             saved_turns = [
@@ -662,8 +661,8 @@ async def _run_chat(args: argparse.Namespace) -> int:
             store.close_session(session_id)
         print(f"\n{'=' * 60}")
         print(f"会话结束。共 {len(result.turns)} 轮，{result.total_steps} 步。")
-        if store is not None and db_path is not None:
-            print(f"会话记录已保存到: {db_path}")
+        if store is not None and sessions_dir is not None:
+            print(f"会话记录已保存到: {sessions_dir / f'{session_id}.json'}")
         print(f"{'=' * 60}")
 
     return 0

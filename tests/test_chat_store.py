@@ -1,94 +1,44 @@
-"""ChatStore 持久化会话存储测试。"""
+"""ChatStore JSON 文件持久化会话存储测试。"""
 
 from __future__ import annotations
 
-import gc
 import json
-import sqlite3
 import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from bug_agent.chat_store import ChatStore
+from bug_agent.chat_store import ChatStore, _session_path
 from bug_agent.contracts import BugAnalysisTask
 
 
-def _temp_db() -> Path:
-    """创建本地唯一临时 SQLite 文件路径。"""
-    tmp = Path(tempfile.gettempdir()) / "bug-agent-chat-test"
-    tmp.mkdir(exist_ok=True)
-    return tmp / f"chat-{uuid4().hex}.db"
+def _temp_dir() -> Path:
+    return Path(tempfile.gettempdir()) / "bug-agent-chat-test" / uuid4().hex
 
 
-def _close_and_cleanup(db_path: Path) -> None:
-    """强制关闭可能残留的 SQLite 连接，然后删除文件。"""
-    gc.collect()
+def test_chat_store_creates_session_json_file():
+    sessions_dir = _temp_dir()
     try:
-        db_path.unlink()
-    except OSError:
-        pass
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
+        assert store.create_session("test-session", task) is True
 
-
-def test_chat_store_creates_tables_with_tool_events_column():
-    db_path = _temp_db()
-    try:
-        store = ChatStore(db_path)
-        store.initialize()
-
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_turns)")}
-        assert "tool_events_json" in columns
-        conn.close()
+        path = _session_path(sessions_dir, "test-session")
+        assert path.is_file()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["schema_version"] == 1
+        assert data["session_id"] == "test-session"
+        assert data["status"] == "active"
+        assert data["turns"] == []
     finally:
-        _close_and_cleanup(db_path)
-
-
-def test_chat_store_migrates_old_table_without_tool_events_column():
-    db_path = _temp_db()
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("""
-            CREATE TABLE chat_sessions (
-                session_id TEXT PRIMARY KEY,
-                task_json TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE chat_turns (
-                turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                turn_index INTEGER NOT NULL,
-                user_message TEXT NOT NULL,
-                assistant_answer TEXT NOT NULL,
-                steps INTEGER NOT NULL DEFAULT 0,
-                agent_status TEXT NOT NULL DEFAULT 'completed',
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.close()
-
-        store = ChatStore(db_path)
-        store.initialize()
-
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_turns)")}
-        assert "tool_events_json" in columns
-        conn.close()
-    finally:
-        _close_and_cleanup(db_path)
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
 
 
 def test_chat_store_add_turn_with_tool_events():
-    db_path = _temp_db()
+    sessions_dir = _temp_dir()
     try:
-        store = ChatStore(db_path)
-        store.initialize()
-        task = BugAnalysisTask(source="local", case_path=str(db_path.parent))
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
         store.create_session("test-session", task)
 
         tool_events = [
@@ -107,38 +57,38 @@ def test_chat_store_add_turn_with_tool_events():
         assert turn["user_message"] == "分析 Bug"
         assert turn["assistant_answer"] == "根因是 OOM"
         assert turn["steps"] == 2
-        events = json.loads(turn["tool_events_json"])
+        events = turn["tool_events"]
         assert len(events) == 2
         assert events[0]["tool_name"] == "open_case"
         assert events[0]["success"] is True
         assert events[1]["tool_name"] == "search_evidence"
     finally:
-        _close_and_cleanup(db_path)
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
 
 
 def test_chat_store_add_turn_without_tool_events_defaults_to_empty():
-    db_path = _temp_db()
+    sessions_dir = _temp_dir()
     try:
-        store = ChatStore(db_path)
-        store.initialize()
-        task = BugAnalysisTask(source="local", case_path=str(db_path.parent))
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
         store.create_session("test-session", task)
 
         store.add_turn("test-session", 1, "问题", "回答", 1, "completed")
 
         session = store.get_session("test-session")
         turn = session["turns"][0]
-        assert turn["tool_events_json"] == "[]"
+        assert turn["tool_events"] == []
     finally:
-        _close_and_cleanup(db_path)
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
 
 
 def test_chat_store_session_init_and_close():
-    db_path = _temp_db()
+    sessions_dir = _temp_dir()
     try:
-        store = ChatStore(db_path)
-        store.initialize()
-        task = BugAnalysisTask(source="local", case_path=str(db_path.parent))
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
 
         assert store.create_session("test-session", task) is True
         session = store.get_session("test-session")
@@ -148,21 +98,80 @@ def test_chat_store_session_init_and_close():
         session = store.get_session("test-session")
         assert session["status"] == "closed"
 
+        # 关闭的会话重新创建应重新激活
         assert store.create_session("test-session", task) is True
         session = store.get_session("test-session")
         assert session["status"] == "active"
     finally:
-        _close_and_cleanup(db_path)
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
 
 
 def test_chat_store_duplicate_active_session_returns_false():
-    db_path = _temp_db()
+    sessions_dir = _temp_dir()
     try:
-        store = ChatStore(db_path)
-        store.initialize()
-        task = BugAnalysisTask(source="local", case_path=str(db_path.parent))
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
 
         assert store.create_session("test-session", task) is True
         assert store.create_session("test-session", task) is False
     finally:
-        _close_and_cleanup(db_path)
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
+
+
+def test_chat_store_get_nonexistent_session_returns_none():
+    sessions_dir = _temp_dir()
+    try:
+        store = ChatStore(sessions_dir)
+        assert store.get_session("nonexistent") is None
+    finally:
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
+
+
+def test_chat_store_multiple_turns():
+    sessions_dir = _temp_dir()
+    try:
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
+        store.create_session("multi-turn", task)
+
+        store.add_turn("multi-turn", 1, "第一问", "第一答", 3, "completed",
+                       tool_events=[{"tool_name": "open_case"}])
+        store.add_turn("multi-turn", 2, "第二问", "第二答", 2, "completed",
+                       tool_events=[{"tool_name": "search_evidence"}])
+        store.add_turn("multi-turn", 3, "第三问", "第三答", 1, "max_steps",
+                       tool_events=[])
+
+        session = store.get_session("multi-turn")
+        assert len(session["turns"]) == 3
+        assert session["turns"][0]["turn_index"] == 1
+        assert session["turns"][1]["turn_index"] == 2
+        assert session["turns"][2]["turn_index"] == 3
+        assert session["turns"][2]["agent_status"] == "max_steps"
+    finally:
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
+
+
+def test_chat_store_json_is_human_readable():
+    """JSON 文件应对人类可读，包含缩进和换行。"""
+    sessions_dir = _temp_dir()
+    try:
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
+        store.create_session("readable", task)
+        store.add_turn("readable", 1, "分析", "结果", 1, "completed")
+
+        path = _session_path(sessions_dir, "readable")
+        raw = path.read_text(encoding="utf-8")
+        # 应该有多行（indent=2）
+        assert "\n" in raw
+        assert "  " in raw
+        # 重新解析确认是合法 JSON
+        data = json.loads(raw)
+        assert data["session_id"] == "readable"
+    finally:
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
