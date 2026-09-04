@@ -29,7 +29,8 @@ from pydantic import BaseModel, Field
 # - ArtifactKind 是语义分类，由 CaseRegistry 根据文件内容、路径等综合判断。
 ArtifactKind = Literal[
     "logcat", "kernel", "anr", "tombstone", "trace",
-    "sos", "text", "archive", "binary",
+    "sos", "aee_db", "text", "archive", "binary",
+    "platform",    # platform-specific logs: scp/sspm/adsp/mcupm/atf/gz/bsp/tee/hypervisor/vcp/apusys/connsys/wifi_driver/vm_*/dpmaif
 ]
 
 
@@ -288,6 +289,13 @@ class ExtractArchiveMembersInput(BaseModel):
     artifact_id: str = Field(min_length=1)
     member_ids: list[str] = Field(min_length=1, max_length=200)
     force_rebuild: bool = False
+
+
+class ExtractAeeDbInput(BaseModel):
+    """Decode one registered MTK AEE DB artifact with the server-controlled extractor."""
+
+    case_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1, description="inspect_case 返回的 aee_db artifact_id")
 
 
 class ProbeArchiveMembersInput(BaseModel):

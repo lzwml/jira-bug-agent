@@ -11,17 +11,11 @@ Android 和 Yocto 的 `mobile_log_d` 是**同一套 C 源码**，编译配置不
 
 ## MobileLog
 
-Typical evidence under `debuglogger/mobilelog` includes rotating `APLog_*` rounds, current `.curf` buffers, compressed historical rounds and a `boot__normal` subtree. Relevant streams commonly include:
+完整的 26 种日志源清单和目录树见 `references/log-directory-reference.md`。以下是 Android 侧关键文件摘要：
 
-- `main_log`: framework, system service, application and native service messages;
-- `kernel_log`: driver, memory, scheduler, panic and watchdog evidence;
-- `events_log`: structured Android event tags;
-- `radio_log`: modem/connectivity evidence;
-- `crash_log`: crash summaries;
-- `atf_log`, `apusys_log`, `connsys_picus_log`: platform subsystems;
-- `bootprof`, `pl_lk`, `properties`, `mblog_history`: boot and capture identity.
+APLog 归档内常见文件：`main_log`, `kernel_log`, `events_log`, `radio_log`, `crash_log`, `sys_log`, `stats_log`, `security_log`（7 种 Android logd）+ `atf_log.log`, `bsp_log.log`, `scp_log.log`, `sspm_log.log`, `adsp_0_log.log`, `adsp_1_log.log`, `mcupm_log.log`, `connsys_picus_log.log`, `apusys_log.log`, `vcp_log.log`, `nebula_tee_log.log`, `nebula_hypervisor_log.log`, `wifi_driver_log.log`, `gz_log.log`, `scp_b_log.log`, `ccci_dpmaif_debug`, `vm_alps_klog`, `vm_tbox_klog`（19 种平台子系统）+ `bootprof`, `pl_lk`, `properties`, `mblog_history`（4 种元数据）。
 
-`boot__normal` often preserves early-boot logs copied when boot completion occurs, but retention and overwrite behavior are product configuration. Confirm its boot identity rather than treating the directory name as proof.
+`boot__normal` is an early-boot log snapshot copied at boot completion. Its retention and overwrite behavior are product configuration. Confirm its boot identity rather than treating the directory name as proof.
 
 ## AEE, ANR and Dropbox
 

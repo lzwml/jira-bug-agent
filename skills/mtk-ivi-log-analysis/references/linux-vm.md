@@ -12,9 +12,11 @@
 
 ### 核心日志流
 
+完整的 26 种日志源清单和目录树见 `references/log-directory-reference.md`。以下是 SOS 独有和关键文件的摘要：
+
 | 文件 | 来源 | 说明 |
 |------|------|------|
-| `syslog.log.NNNN.*.log.gz` | **vlog bridge** | Yocto 业务模块日志（IPCL/Media/Network/Screen/PowerManager/Update），格式为 `[timestamp][uptime][level][seq][module][submodule][PID][file:line func]message`。详见 `references/yocto-vlog-design.md` |
+| `syslog.log.NNNN.*.log.gz` | **vlog bridge** | Yocto 业务模块日志（IPCL/Media/Network/Screen/PowerManager/Update），SOS 独有。格式为 `[timestamp][uptime][level][seq][module][submodule][PID][file:line func]message`。详见 `references/yocto-vlog-design.md` |
 | `main_log.log.*` | Android logd | Framework、SystemService、app 日志 |
 | `kernel_log.log.*` | kernel kmsg | 驱动、内存、调度、panic、watchdog |
 | `events_log.log.*` | Android logd | 结构化事件标签 |
@@ -24,9 +26,10 @@
 | `atf_log.log.*` | `/proc/atf_log/atf_log` | 可信固件和 SMC 访问 |
 | `bootprof` | — | 启动性能分析 |
 | `pl_lk` | — | preloader/LK 日志 |
-| `reboot-reason` | — | 重启原因（panic/watchdog/正常关机） |
+| `reboot-reason` | — | 重启原因（panic/watchdog/正常关机），SOS 独有 |
 | `properties` | — | 系统属性快照 |
 | `mblog_history` | `mobile_log_d` 自身 | 运行日志，包含 `=====MOBILELOG START=======` 和 `log dir:` 记录 |
+| `file_tree.txt` | `mobile_log_d` | 所有 logNN 目录的创建记录，SOS 独有 |
 
 ### `mblog_history` — 最重要的 boot 身份锚点
 

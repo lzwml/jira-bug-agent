@@ -1,97 +1,72 @@
 ---
 name: mtk-ivi-log-analysis
-description: Analyze MTK automotive IVI evidence spanning Android VM, Linux VM/TBox, hypervisor, SCP, MCU, CAN, OTA, or PKI logs. Use for MTK platform cases; do not activate for generic Android logs without MTK or cross-domain evidence.
+description: Analyze MTK automotive IVI evidence across Android VM, Linux VM/TBox, hypervisor, SCP, MCU, CAN, OTA, and PKI domains. Use for MTK platform topology, archives, boot rounds, and clock rules; pair it with one symptom Skill.
 category: platform
 ---
 
 # MTK IVI Log Analysis
 
-Use this Skill as a platform specialization after establishing the reported symptom. Combine it with a symptom Skill such as `android-black-screen` when appropriate; do not replace symptom-driven investigation with a full-platform error sweep.
+Use this platform Skill with one primary symptom Skill. It supplies MTK artifact, archive, boot, and clock semantics; it does not justify a full-platform error sweep.
 
 ## Establish the evidence surface
 
-Call `open_case` and `inspect_case` first. Classify available artifacts by domain:
+Call `open_case` and `inspect_case`, then classify artifacts by domain. The complete 26-type log catalog and directory trees are in `references/log-directory-reference.md`. Quick summary:
 
-- **Android VM:** `main_log`, `kernel_log`, `events_log`, `radio_log`, `crash_log`, `boot__normal`, ANR, AEE, Dropbox, tombstones. When AEE evidence is in `.dbg` format, activate `aee-db-extract` to decode it before indexing.
-- **Linux VM/TBox:** `Linux_Log/logNN`, `syslog.log.*` (vlog bridge output — see `references/yocto-vlog-design.md`), `main_log.log.*`, `kernel_log.log.*`, `bsp_log`, `scp_log`, `nebula_hypervisor_log`, `atf_log`, `bootprof`, `pl_lk`, `reboot-reason`, `mblog_history`.
-- **Peripheral/application:** MCU log, CAN ASC, OTA/HMI, PKI, Go application logs.
+- **Android VM:** `main_log`, `kernel_log`, `events_log`, `radio_log`, `crash_log`, `sys_log`, `stats_log`, `security_log`, `boot__normal`, ANR, AEE, Dropbox, and tombstones. For undecoded AEE `.dbg`, activate `aee-db-extract`.
+- **Linux VM/TBox:** `Linux_Log/logNN`, `syslog.log.*` (vlog bridge, SOS-only), all 26 log types suffixed `.log.NNNN.*.gz`, plus `bootprof`, `pl_lk`, `reboot-reason`, `mblog_history`, `file_tree.txt`.
+- **Platform subsystems:** `scp_log`, `sspm_log`, `adsp_*_log`, `mcupm_log`, `atf_log`, `gz_log`, `bsp_log`, `nebula_tee_log`, `nebula_hypervisor_log`, `vcp_log`, `apusys_log`, `connsys_picus_log`, `wifi_driver_log`, `vm_*_klog`, `ccci_dpmaif_debug`.
+- **Peripheral/application:** `Mcu_Log`, CAN ASC, OTA/HMI, PKI, and application logs.
 
-Trust `logNN` numbering as a reliable boot counter (source-verified: `vlog_bridge_scan_boot_index()` scans existing directories and returns `max_idx + 1`). `log00` < `log01` < `log02` is always a valid boot sequence. However, do not assume the highest-numbered directory contains the incident — crashes often trigger a reboot, so the incident logs are typically in `log(N-1)` rather than `logN` (current boot). Confirm the active round by matching content timestamps to the reported incident time. Use `mblog_history` (search for `log dir:`) as the strongest boot identity anchor when available.
+When evidence is archived, read [the shared archive-selection contract](references/incident-archive-selection.md), then read exactly one format guide:
 
-If required evidence is inside an archive, first call `inspect_archive` (without `time_range`) to inspect the member catalog. Check `time_groups` for `earliest_path_time_reliability`:
+- APLog or `boot__normal`: [APLog selection](references/aplog-archive-selection.md)
+- SOS/TBox or `Linux_Log/logNN`: [SOS selection](references/sos-archive-selection.md)
 
-- **`unreliable_device_clock`**: the filename timestamps are unreliable due to unsynchronized device clock. Do not use `inspect_archive(time_range=...)`. **Do not immediately call `prepare_case`** — first use `logNN` directory ordering (which is a reliable counter, not clock-dependent) to identify candidate boot rounds. Extract only the lowest-index `syslog.log.*` file from each candidate round to probe content time ranges via `extract_timeline`. Use `uptime` values (CLOCK_MONOTONIC, always reliable within a boot) for intra-boot ordering. Only fall back to `prepare_case` full extraction when content probing cannot establish any round's actual time coverage.
-- **`reliable`**: the filename timestamps are in a plausible range (2024-2030). If the incident time is well-defined from Jira context, use `inspect_archive` with `time_range` + `time_neighbor_count=1` to select only the relevant members, then `extract_archive_members` + `build_index`. If the format is unsupported or a safety budget rejects it, return missing evidence with the reported reason.
+Do not duplicate those selection rules in a symptom Skill.
 
-For APLog archives: 参见 `references/aplog-archive-selection.md`。APLog 文件名格式为 `APLog_YYYY_MMDD_HHMMSS__NN`。`__NN` 推测为 boot round 计数器（类似 SOS 的 `logNN`，依据：Android/Yocto 共享同一套 mobile_log_d C 源码，Yocto 侧 `logNN` 已源码验证为递增）。不要立即调用 `prepare_case` — 先用 `__NN` 顺序 + 内容探测选择候选 round。注意：文件名时间戳的绝对值和相对顺序均不可靠（时钟回拨/NTP 跳跃可能破坏时序），应优先信任内容探测结果。
+The runtime-safe archive sequence is `inspect_archive` → `probe_archive_members` → `extract_archive_members` → `build_index`. Select the smallest incident round and stream set supported by content coverage. Use `prepare_case` only when bounded probing cannot establish usable coverage or the incident genuinely requires broad extraction.
 
-For SOS/TBox archives containing `Linux_Log/logNN` boot rounds, `Mcu_Log`, `can_log`, `ota`, `pki`, or `data` directories, use the time-based boot round selection strategy in `references/sos-archive-selection.md`. Do not default to the highest-numbered `logNN` directory — the incident often occurred in an earlier round. Use generic `time_groups` to identify candidate directory prefixes, then request their members with `path_prefix`; the Skill, not the tool, decides the incident/predecessor/successor rounds and required reboot evidence. For reboot analysis, always include `reboot-reason`, `pl_lk`, and `bootprof` from the post-reboot round.
+Treat SOS `logNN` and APLog `__NN` as source-verified round counters for boot ordering. Do not equate the highest counter with the incident round; a failure can be in the predecessor round and trigger the next boot.
 
-## Select the symptom route
-
-This Skill supplies MTK platform context; it is not a substitute for a symptom investigation. Activate one primary symptom Skill, chosen from the reported behavior and the first diagnostic identity:
+## Select one symptom route
 
 | Symptom family | Primary Skill |
 | --- | --- |
-| Boot completes without usable display, delayed display, or frozen display | `android-black-screen` |
-| ANR, frozen UI, input timeout, or application not responding | `android-anr-ui-freeze` |
+| No usable display, delayed display, or frozen display | `android-black-screen` |
+| ANR, frozen UI, input timeout, or app not responding | `android-anr-ui-freeze` |
 | Tombstone, native signal, debuggerd/AEE crash, or native service death | `android-native-crash` |
 | Unexpected reboot, watchdog, kernel panic, or boot loop | `system-reboot-watchdog` |
 | Guest/host startup, IPC, sensor, SCP, or hypervisor boundary failure | `linux-virtualization-failure` |
 | Missing, stale, invalid, or mistimed CAN/MCU signal | `can-mcu-signal-analysis` |
-| OTA stage failure, certificate/authentication failure, or transport loss | `ota-pki-connectivity` |
+| OTA stage, certificate/authentication, or transport failure | `ota-pki-connectivity` |
 
-If the symptom family is still unknown, use `android-log-triage` first. Do not activate every symptom Skill or execute every route. When several symptoms are present, investigate the earliest independently observed failure and treat later symptoms as possible consequences.
-
-The shared route contract and extension rules are documented in `references/symptom-routing.md`.
+If the family remains unknown, use `android-log-triage`. The composition contract is in [symptom routing](references/symptom-routing.md).
 
 ## Respect clock domains
 
-Keep these clocks separate until a synchronization point is observed:
+Keep Android/logcat wall time, kernel/ftrace monotonic time, vlog wall time and uptime, SCP/hypervisor counters, MCU clocks, and CAN capture time separate until an observed anchor permits normalization. Follow [clock-domain rules](references/clock-domains.md).
 
-- Android/logcat wall clock;
-- kernel and ftrace boot-relative monotonic time;
-- SCP and hypervisor local counters;
-- MCU wall clock plus local counter;
-- CAN capture time, which may be relative or absolute.
-
-Build cross-domain ordering from shared boot markers, paired request/response IDs, reboot identities, or events visible in both domains. Record the raw timestamp, clock domain and normalization assumption. Do not search a Linux ftrace log using an Android `MM-DD HH:MM` value unless the file actually contains wall-clock timestamps.
-
-## Test hypotheses at layer boundaries
-
-Form only a few competing hypotheses. For each one, identify:
+At every Android/Linux, guest/host, application/kernel, or MCU/CAN boundary, record:
 
 1. the user-visible symptom window;
 2. the last successful upstream transition;
 3. the first failed or missing downstream transition;
 4. supporting and contradictory evidence;
-5. the cheapest next observation that could falsify it.
+5. the cheapest next observation that could falsify the hypothesis.
 
-Prefer two independent artifacts when crossing Android/Linux, guest/hypervisor, or application/kernel boundaries. A nearby warning, repeated error, AVC, temperature sample or component name does not establish causality.
+Prefer two independent artifacts for cross-domain claims. A nearby warning, repeated error, AVC, temperature sample, or component name does not establish causality.
 
-## Evidence and stopping standard
+## Evidence and stopping
 
-Every confirmed fact must cite an Evidence ID or diagnostic finding with relative path and line information. Preserve process, boot and domain identity when the same tag appears in multiple VMs or rounds.
+Every confirmed fact must cite an Evidence ID or diagnostic finding with relative path and line information. Preserve boot, process, VM/domain, and operation identity.
 
-Return `insufficient_evidence` when the symptom window, required domain, archive contents, clock anchor, or layer boundary is absent. Do not compensate by broad keyword scanning.
+Return `insufficient_evidence` when the symptom window, required domain, archive contents, clock anchor, or layer boundary is absent. Record which boot rounds and content ranges were checked; do not compensate with broad keyword scanning.
 
-## Gap-filling rule: never stop at the first empty search
+## Maintainer references
 
-When searching within a specific APLog boot round and the incident time window returns no matching events, do **not** immediately report `insufficient_evidence`. Instead:
-
-1. **Check coverage**: use `extract_timeline` with a broad anchor (e.g. `bootanimation` or `FATAL`) to determine the actual time span of the current round's logs. Compare with the reported incident time.
-2. **Expand to adjacent rounds**: if the current round doesn't cover the incident time, inspect neighboring boot rounds. Use `inspect_archive` without `time_range` to see all members, identify the predecessor and successor rounds from `time_groups`, then extract and search those rounds.
-3. **Only after exhausting adjacent rounds**: if none of the available boot rounds cover the incident window, report the gap in `missing_evidence` with the specific rounds checked and their observed time spans.
-
-APLog boot round numbering is not a reliable indicator of which round contains the incident — the crash may trigger a reboot and the incident logs are in the prior round, or the device may have booted multiple times.
-
-Platform details for maintainers are separated by concern:
-
-- Yocto-side vlog/mobile_log_d design (source-verified): `references/yocto-vlog-design.md`
-- Android-side mobile_log_d/MTKLogger design (source-verified): `references/android-mobile-log-design.md`
-- Android artifact conventions: `references/android-vm.md`
-- Linux/TBox and peripheral conventions: `references/linux-vm.md`
-- Clock normalization rules: `references/clock-domains.md`
-- Archive handling requirements: `references/archive-safety.md`
-- APLog incident-time archive selection: `references/aplog-archive-selection.md`
-- SOS/TBox incident-time archive selection: `references/sos-archive-selection.md`
+- [Complete log directory trees and 26-type catalog](references/log-directory-reference.md)
+- [Android artifact conventions](references/android-vm.md)
+- [Linux/TBox and peripheral conventions](references/linux-vm.md)
+- [Archive extraction boundary](references/archive-safety.md)
+- [Android mobile_log_d design](references/android-mobile-log-design.md)
+- [Yocto vlog/mobile_log_d design](references/yocto-vlog-design.md)

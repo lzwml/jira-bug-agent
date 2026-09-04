@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from .archive_manager import ArchiveLimits, extraction_destination, is_supported_archive
+from .archive_manager import ArchiveExtractor, ArchiveLimits, extraction_destination, is_supported_archive
 from .domain import Artifact, ArtifactKind, CaseInfo
 from .errors import make_error, make_success
 from .log_index import IndexLimits
@@ -45,6 +45,27 @@ def _is_generated_part(part: str) -> bool:
     )
 
 
+def _is_managed_extraction_dir(path: Path) -> bool:
+    """Return whether *path* is the managed sibling output of an archive.
+
+    A stripped archive stem (``logs`` beside ``logs.zip``) is otherwise an
+    ordinary directory, so it must not be pruned solely by name.  Requiring
+    both a matching archive sibling and a valid extractor manifest preserves
+    user-owned directories with coincidental names.
+    """
+
+    try:
+        has_matching_archive = any(
+            sibling.is_file()
+            and is_supported_archive(sibling)
+            and extraction_destination(sibling) == path
+            for sibling in path.parent.iterdir()
+        )
+    except OSError:
+        return False
+    return has_matching_archive and ArchiveExtractor._is_managed_destination(path)
+
+
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -72,29 +93,54 @@ def _stable_id(prefix: str, value: str, length: int = 16) -> str:
     return f"{prefix}_{digest[:length]}"
 
 
+_PLATFORM_LOG_TOKENS = (
+    "scp_log", "scp_b_log", "sspm_log", "adsp_0_log", "adsp_1_log",
+    "mcupm_log", "atf_log", "gz_log", "bsp_log", "nebula_tee_log",
+    "nebula_hypervisor_log", "vcp_log", "apusys_log", "connsys_picus_log",
+    "wifi_driver_log", "vm_alps_klog", "vm_tbox_klog", "ccci_dpmaif_debug",
+    "mblog_history", "bootprof", "pl_lk", "reboot-reason", "properties",
+)
+
+_METADATA_TOKEN_PATTERNS = (
+    ("mblog", "mblog_history"),
+    ("bootprof", "bootprof"),
+    ("pl_lk", "pl_lk"),
+    ("reboot-reason", "reboot_reason"),
+    ("properties", "properties"),
+    ("file_tree", "file_tree"),
+)
+
+
 def infer_artifact_kind(path: Path) -> ArtifactKind:
     """根据文件名语义和扩展名推断附件类型。
 
-    这里优先看文件名，因为 Android debuglogger 经常使用 .curf 或无扩展名，
-    仅靠 suffix 无法区分 logcat、kernel 和 SOS 日志。
+    覆盖所有 26 种 MTK 平台日志（log_dev_map）和元数据文件。
+    完整参考见 skills/mtk-ivi-log-analysis/references/log-directory-reference.md。
     """
 
     name = path.name.lower()
     if is_supported_archive(path):
         return "archive"
     suffix = path.suffix.lower()
+    if suffix == ".dbg":
+        return "aee_db"
     if "tombstone" in name or "native_crash" in name:
         return "tombstone"
     if "anr" in name or name.startswith("traces"):
         return "anr"
     if any(token in name for token in ("kernel", "dmesg", "kmsg", "pstore", "ramoops")):
         return "kernel"
-    if any(token in name for token in ("logcat", "main_log", "system_log", "events_log", "radio_log")):
+    if any(token in name for token in _PLATFORM_LOG_TOKENS):
+        return "platform"
+    if any(token in name for token in ("sos", "hypervisor", "qnx", "syslog.log")):
+        return "sos"
+    if any(token in name for token in ("logcat", "main_log", "system_log", "events_log", "radio_log",
+                                        "crash_log", "sys_log", "stats_log", "security_log")):
         return "logcat"
     if any(token in name for token in ("perfetto", "systrace", "boottrace")) or suffix == ".trace":
         return "trace"
-    if any(token in name for token in ("sos", "hypervisor", "qnx")):
-        return "sos"
+    if any(token in name for token in _PLATFORM_LOG_TOKENS):
+        return "platform"
     if suffix in TEXT_SUFFIXES:
         return "text"
     return "binary"
@@ -212,7 +258,9 @@ class CaseRegistry:
             # every extracted log even if registration later skipped it.
             dirs[:] = [
                 name for name in dirs
-                if not _is_generated_part(name) and not (root_path / name).is_symlink()
+                if not _is_generated_part(name)
+                and not (root_path / name).is_symlink()
+                and not _is_managed_extraction_dir(root_path / name)
             ]
             for filename in files:
                 if len(artifacts) >= self.max_artifacts:
@@ -240,7 +288,7 @@ class CaseRegistry:
                     kind=kind,
                     size_bytes=stat.st_size,
                     modified_at=str(int(stat.st_mtime)),
-                    readable_text=kind not in ("archive", "binary", "trace"),
+                    readable_text=kind not in ("archive", "aee_db", "binary", "trace"),
                 )
                 artifacts.append(artifact)
                 self._artifact_paths[(case_id, artifact_id)] = real_path
@@ -332,7 +380,7 @@ class CaseRegistry:
                 kind=kind,
                 size_bytes=stat_result.st_size,
                 modified_at=str(int(stat_result.st_mtime)),
-                readable_text=kind not in ("archive", "binary", "trace"),
+                readable_text=kind not in ("archive", "aee_db", "binary", "trace"),
                 origin="archive",
                 source_archive_id=source_archive.artifact_id,
             )
@@ -421,21 +469,27 @@ class CaseRegistry:
             managed_root = extraction_destination(source_path).resolve(strict=False)
             try:
                 current.relative_to(managed_root)
-                manifest = json.loads((managed_root / ".extraction-manifest.json").read_text(encoding="utf-8"))
-                source_stat = source_path.stat()
-                if manifest.get("version") == 1:
-                    source_matches = (
-                        manifest.get("source_size") == source_stat.st_size
-                        and manifest.get("source_mtime_ns") == source_stat.st_mtime_ns
-                    )
-                elif manifest.get("version") == 2:
-                    fingerprint = manifest.get("source_fingerprint", {})
-                    source_matches = (
-                        fingerprint.get("size_bytes") == source_stat.st_size
-                        and fingerprint.get("mtime_ns") == source_stat.st_mtime_ns
-                    )
+                if managed_root.is_file():
+                    # A single .gz expands to a sibling file.  It deliberately
+                    # has no directory manifest, but the registered artifact
+                    # must still be exactly that managed output.
+                    source_matches = current == managed_root
                 else:
-                    source_matches = False
+                    manifest = json.loads((managed_root / ".extraction-manifest.json").read_text(encoding="utf-8"))
+                    source_stat = source_path.stat()
+                    if manifest.get("version") == 1:
+                        source_matches = (
+                            manifest.get("source_size") == source_stat.st_size
+                            and manifest.get("source_mtime_ns") == source_stat.st_mtime_ns
+                        )
+                    elif manifest.get("version") == 2:
+                        fingerprint = manifest.get("source_fingerprint", {})
+                        source_matches = (
+                            fingerprint.get("size_bytes") == source_stat.st_size
+                            and fingerprint.get("mtime_ns") == source_stat.st_mtime_ns
+                        )
+                    else:
+                        source_matches = False
             except (OSError, ValueError, json.JSONDecodeError):
                 return None
             if not source_matches:
