@@ -12,12 +12,18 @@ APLog_2025_0101_080037__9.tar.gz
 
 | 字段 | 来源 | 可信度 |
 |------|------|--------|
-| `YYYY_MMDD_HHMMSS` | 设备 wall clock | **绝对时间可能不可靠**（时钟未同步时），但**同一设备内的相对顺序可信** |
-| `__NN` | boot round 计数器 | **始终可靠**（递增计数器，不依赖时钟） |
+| `YYYY_MMDD_HHMMSS` | 设备 wall clock | **绝对时间不可靠**（时钟未同步时）。相对顺序也不可靠——时钟回拨、NTP 跳跃、手动校时都可能破坏文件名时间戳的顺序 |
+| `__NN` | boot round 计数器 | **推测为递增**（未找到精确生成代码行，但 Android/Yocto 共享同一套 mobile_log_d C 源码，Yocto 侧 `logNN` 已源码验证为 `max_idx+1`）。边界条件（清理日志、恢复出厂、存储满时是否复位）尚未确认 |
 
 ### `__NN` 的语义
 
-`__NN` 是 boot round 序号，类似于 SOS 归档中的 `logNN`。`__1` < `__2` < `__3` 是可靠的递增顺序。事故可能触发 reboot，因此事故日志通常在 `__(N-1)` 而非 `__N`（当前启动）。
+`__NN` 是 boot round 序号，推测为递增计数器：
+- Android 和 Yocto 的 `mobile_log_d` 是同一套 C 源码
+- Yocto 侧 `logNN` 已源码验证：`vlog_bridge_scan_boot_index()` 扫描已有目录取 `max_idx + 1`
+- `__NN` 的精确生成代码行尚未在 Android C 代码中定位，边界条件（清理日志、恢复出厂、存储满时是否复位）待确认
+- 正常使用场景下，`__1` < `__2` < `__3` 可视为递增顺序
+
+事故可能触发 reboot，因此事故日志通常在 `__(N-1)` 而非 `__N`（当前启动）。
 
 ---
 
@@ -70,16 +76,20 @@ APLog_2025_0101_080037__9.tar.gz
 
 当 `time_reliability: "unreliable_device_clock"` 时：
 
-- **仍然信任 `__NN`**：`__NN` 是递增计数器，不依赖时钟，始终可靠
-- **仍然信任文件名时间的相对顺序**：同一设备上，`APLog_2025_0101_080037` 一定在 `APLog_2025_0101_090000` 之前，即使绝对时间错了
-- **不依赖文件名绝对时间做文件选择**：不直接用 `time_range` 筛选
-- **不依赖文件名时间与日志内容时间比较**：内容时间戳同样受时钟影响
+- **不依赖文件名时间戳**：绝对时间不可靠，相对顺序也不可靠（时钟回拨、NTP 跳跃、手动校时都可能改变后续生成的文件名时序）
+- **不依赖文件名时间与日志内容时间比较**：两者都受设备时钟影响
+- **用 `__NN` 编号作为 boot 排序依据**：推测为递增计数器，正常场景下可用。但需注意 `__NN` 的精确生成逻辑和边界条件（复位、清理等）尚未源码确认
 - **用内容探测建立实际时间范围**：解压 `main_log` 的最小编号文件，用 `extract_timeline` 确定 round 的实际覆盖范围
 - **只在内容探测也无法确定时才全量解压**：`prepare_case` 是最后手段
 
-### 为什么 `__NN` 始终可信
+### `__NN` 可信度说明
 
-APLog 的 `__NN` 由 C 层的 `mobile_log_d` 轮转逻辑生成，类似于 SOS 归档中 `logNN` 的 `vlog_bridge_scan_boot_index()`——都是递增计数器，不依赖设备时钟。时钟错误可能让文件名日期变成 1970 年，但 `__NN` 的递增顺序不会变。
+APLog 的 `__NN` 推测为递增计数器，依据：
+- Android 和 Yocto 的 `mobile_log_d` 是同一套 C 源码
+- Yocto 侧 `logNN` 已源码验证为 `max_idx + 1`（`vlog_bridge_scan_boot_index()`）
+- `__NN` 的精确生成代码行尚未在 Android C 代码中定位，边界条件待确认
+
+Agent 在正常场景下可以将 `__NN` 作为 boot 排序依据，但不应将 "始终可靠" 当作毋庸置疑的事实。如果 `__NN` 编号与实际内容时间范围矛盾，优先信任内容探测结果。
 
 ---
 
@@ -102,7 +112,7 @@ APLog 的 `__NN` 由 C 层的 `mobile_log_d` 轮转逻辑生成，类似于 SOS 
 | 方面 | APLog | SOS/TBox |
 |------|-------|----------|
 | Boot round 标识 | `__NN`（双下划线） | `logNN`（log 前缀） |
-| 可靠性 | 始终可靠 | 始终可靠 |
+| 可靠性 | 推测为递增 | 源码验证可靠 |
 | 业务日志 | `main_log`（Android logd） | `syslog.log.*`（vlog bridge） |
 | 时间戳来源 | Android logcat wall clock | CLOCK_REALTIME + CLOCK_MONOTONIC |
 | VLOG Bridge 日志 | **无**（Android 版无此功能） | **有** |
