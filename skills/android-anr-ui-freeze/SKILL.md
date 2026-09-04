@@ -27,3 +27,12 @@ Use `parse_diagnostics` for ANR and Fatal signals. Build a focused timeline arou
 ## Evidence and stopping
 
 Connect the user-visible timeout, the matching process/trace, and the dependency or operation that failed to complete. Report contradictory evidence and the cheapest observation that could distinguish remaining hypotheses. Do not assign root cause from ANR reason text alone.
+
+## When to activate code-search
+
+If the ANR trace names a specific function, lock, or Binder interface that appears stalled, activate `code-search` to:
+- Search for the blocking function or lock owner path with `opengrok_search_code` (search_type="defs" or "refs").
+- Read the relevant code with `locode_read_file` to understand the blocking logic.
+- Check recent commits to the affected file with `locode_get_history` — a synchronization or Binder change near the first occurrence date is a strong regression signal.
+
+Do not activate code-search if the ANR is purely a downstream symptom of OOM, system load, or I/O without a specific code-level hypothesis.

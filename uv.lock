@@ -12,6 +12,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "code-local-mcp",
     "jira-bug-agent",
     "jira-bug-mcp",
     "log-analysis-core",
@@ -392,6 +393,26 @@ sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl", hash = "sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76", size = 119243, upload-time = "2026-06-24T17:45:13.73Z" },
 ]
+
+[[package]]
+name = "code-local-mcp"
+version = "0.1.0"
+source = { editable = "packages/code-local-mcp" }
+dependencies = [
+    { name = "mcp" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mcp", specifier = ">=1.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "colorama"

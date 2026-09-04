@@ -33,6 +33,9 @@ class AgentConfig:
     opengrok_username: str = ""
     opengrok_password: str = ""
     opengrok_verify_ssl: bool = True
+    # 本地源码映射（用于 code_local_mcp）
+    locode_map: str = ""   # "android_b=g:/work/N60/b_android,yocto=g:/work/N60/yocto"
+    locode_root: str = ""  # "g:/work/N60" → 自动发现子目录
     # 视频证据 MCP（可选，默认关闭）
     enable_video_analysis: bool = False
 
@@ -92,9 +95,13 @@ class AgentConfig:
         opengrok_username = os.getenv("OPENGROK_USERNAME", "").strip()
         opengrok_password = os.getenv("OPENGROK_PASSWORD", "").strip()
         opengrok_verify_ssl = os.getenv("OPENGROK_VERIFY_SSL", "true").strip().lower() != "false"
+        locode_map = os.getenv("LOCODE_MAP", "").strip()
+        locode_root = os.getenv("LOCODE_ROOT", "").strip()
         if enable_code_search:
             if not opengrok_base_url:
                 raise ValueError("OPENGROK_BASE_URL 未设置（启用代码搜索时必须配置）")
+            if not locode_map and not locode_root:
+                raise ValueError("LOCODE_MAP 或 LOCODE_ROOT 未设置（启用代码搜索时必须配置本地源码路径）")
         enable_video_analysis = os.getenv("VIDEO_ANALYZER_ENABLE", "").strip().lower() == "true"
         return cls(
             llm_base_url=base_url,
@@ -117,6 +124,8 @@ class AgentConfig:
             opengrok_username=opengrok_username,
             opengrok_password=opengrok_password,
             opengrok_verify_ssl=opengrok_verify_ssl,
+            locode_map=locode_map,
+            locode_root=locode_root,
             enable_video_analysis=enable_video_analysis,
         )
 

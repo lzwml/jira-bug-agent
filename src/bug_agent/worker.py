@@ -172,14 +172,17 @@ class BugAnalysisWorker:
             raise ValueError("Jira MCP 返回了无效的导出结果") from exc
 
     async def _connect_opengrok(self, router: Any) -> None:
-        """如果配置了 OpenGrok，启动 Python MCP Server 并注册其工具。
+        """如果配置了 OpenGrok，启动 opengrok-mcp 和 code-local-mcp 并注册其工具。
 
         只在 OPENGROK_ENABLE_CODE_SEARCH=true 时生效。
-        工具以 opengrok_ 为前缀，通过 connect_python_server 启动。
+        两个 MCP Server 配合使用：
+        1. opengrok_mcp.server — 搜索定位（找到代码在哪）
+        2. code_local_mcp.server — 本地精确读取（完整源码 + git blame/log）
         """
         if not self.config.enable_code_search:
             return
         connect = getattr(router, "connect_python_server")
+        # OpenGrok — 搜索定位
         env = {
             "OPENGROK_BASE_URL": self.config.opengrok_base_url,
             "OPENGROK_VERIFY_SSL": str(self.config.opengrok_verify_ssl).lower(),
@@ -189,6 +192,14 @@ class BugAnalysisWorker:
         if self.config.opengrok_password:
             env["OPENGROK_PASSWORD"] = self.config.opengrok_password
         await connect("opengrok", "opengrok_mcp.server", env)
+        # 本地源码 — 精确读取
+        locode_env = {}
+        if self.config.locode_map:
+            locode_env["LOCODE_MAP"] = self.config.locode_map
+        elif self.config.locode_root:
+            locode_env["LOCODE_ROOT"] = self.config.locode_root
+        if locode_env:
+            await connect("locode", "code_local_mcp.server", locode_env)
 
     async def _connect_video_analysis(self, router: Any, allowed_root: Path) -> None:
         """按需挂载视频 MCP；路径授权始终收敛到当前 Case/导出根目录。"""
@@ -683,7 +694,7 @@ class BugAnalysisWorker:
             {"LOG_ANALYZER_ALLOWED_ROOTS": str(case_path)},
         )
 
-        # 3.5. 挂载 OpenGrok 代码搜索（可选）
+        # 3.5. 挂载 OpenGrok + 本地源码（可选）
         await self._connect_opengrok(router)
         await self._connect_video_analysis(router, case_path)
 

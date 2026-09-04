@@ -27,3 +27,13 @@ Use `parse_diagnostics` for Fatal signals, then inspect the matching tombstone/A
 ## Evidence and stopping
 
 Report crash identity, first relevant failing frame or invariant, preceding trigger, and downstream effect with distinct evidence. If symbols, matching build, complete tombstone, or incident identity is missing, state the resulting confidence limit.
+
+## When to activate code-search
+
+If the tombstone or crash dump contains a symbolized backtrace (library name + function name + offset), activate `code-search` to:
+- Search for the crashing function with `opengrok_search_code` (search_type="defs").
+- Read the faulting code path with `locode_read_file` (20-40 lines around the crash site).
+- Check recent commits to the crashing file with `locode_get_history` — a commit near the first occurrence date is a strong regression signal.
+- Use `locode_get_blame` on the faulting line to identify the module owner.
+
+Do not activate code-search if the backtrace is unsymbolized or if the crash is a pure symptom of OOM/LMK without a specific code-level hypothesis.

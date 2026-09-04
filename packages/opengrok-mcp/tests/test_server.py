@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-import pytest_asyncio
 
 from opengrok_mcp.server import (
     TOOLS,
@@ -14,11 +13,12 @@ from opengrok_mcp.server import (
     _dispatch,
 )
 from opengrok_mcp.client import (
-    _parse_search_response,
-    _parse_projects_html,
-    _parse_history_html,
-    _parse_directory_html,
-    _strip_tags,
+    _parse_search,
+    _parse_projects,
+    _parse_history,
+    _parse_dir,
+    _parse_annotate,
+    _strip,
 )
 
 
@@ -85,8 +85,7 @@ ANNOTATE_HTML = """<html>
 
 
 def test_parse_annotate():
-    from opengrok_mcp.client import _parse_annotate_html
-    lines = _parse_annotate_html(ANNOTATE_HTML)
+    lines = _parse_annotate(ANNOTATE_HTML)
     assert len(lines) == 2
     assert lines[0]["revision"] == "abc123"
     assert lines[0]["author"] == "dev"
@@ -196,27 +195,27 @@ HISTORY_HTML = """<html>
 
 DIRECTORY_HTML = """<html>
 <table id="dirlist">
-  <tr><td><a href="/xref/test-project/src/">src</a></td></tr>
-  <tr><td><a href="/xref/test-project/README.md">README.md</a></td></tr>
+  <tr><td><a href="/source/download/test-project/main.cpp">main.cpp</a></td></tr>
+  <tr><td><a href="/source/download/test-project/README.md">README.md</a></td></tr>
 </table>
 </html>"""
 
 
 def test_parse_projects_select():
-    projects = _parse_projects_html(PROJECTS_HTML)
+    projects = _parse_projects(PROJECTS_HTML)
     assert len(projects) == 3
     assert projects[0] == {"name": "project-a", "category": "Core"}
     assert projects[2] == {"name": "standalone"}
 
 
 def test_parse_projects_fallback():
-    projects = _parse_projects_html(PROJECTS_HTML_FALLBACK)
+    projects = _parse_projects(PROJECTS_HTML_FALLBACK)
     assert len(projects) == 2
     assert {"name": "project-a"} in projects
 
 
 def test_parse_history():
-    entries = _parse_history_html(HISTORY_HTML, 10)
+    entries = _parse_history(HISTORY_HTML, 10)
     assert len(entries) == 2
     assert entries[0]["revision"] == "abc123"
     assert entries[0]["author"] == "dev"
@@ -224,39 +223,38 @@ def test_parse_history():
 
 
 def test_parse_directory():
-    entries = _parse_directory_html(DIRECTORY_HTML, "test-project", "")
+    entries = _parse_dir(DIRECTORY_HTML, "test-project", "")
     assert len(entries) == 2
-    assert entries[0]["name"] == "src"
-    assert entries[0]["isDirectory"] is True
+    assert entries[0]["name"] == "main.cpp"
     assert entries[1]["name"] == "README.md"
-    assert entries[1]["isDirectory"] is False
 
 
-def test_strip_tags():
-    assert _strip_tags("<b>hello</b>") == "hello"
-    assert _strip_tags('<a href="x">link</a>') == "link"
+def test_strip():
+    assert _strip("<b>hello</b>") == "hello"
+    assert _strip('<a href="x">link</a>') == "link"
 
 
 # ============================================================
 # 搜索响应解析
 # ============================================================
 
-def test_parse_search_response():
+def test_parse_search():
     data = {
         "resultCount": 2,
         "start": 0,
         "end": 2,
         "results": {
-            "project-a": [
-                {"line": "int main()", "lineNumber": 42, "path": "src/main.cpp"},
+            "/project-a/src/main.cpp": [
+                {"line": "int main()", "lineNumber": 42},
             ],
-            "project-b": [
-                {"line": "void test()", "lineNumber": 10, "path": "test/test.cpp"},
+            "/project-b/test/test.cpp": [
+                {"line": "void test()", "lineNumber": 10},
             ],
         },
     }
-    result = _parse_search_response(data, "full", "test")
+    result = _parse_search(data, "full", "test")
     assert result["totalCount"] == 2
     assert len(result["results"]) == 2
     assert result["results"][0]["project"] == "project-a"
+    assert result["results"][0]["path"] == "src/main.cpp"
     assert result["results"][0]["matches"][0]["lineNumber"] == 42

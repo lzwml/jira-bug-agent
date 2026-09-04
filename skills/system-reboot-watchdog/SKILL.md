@@ -27,3 +27,13 @@ Use `parse_diagnostics` for kernel stacks, Fatal, ANR, and watchdog signals. Bui
 ## Evidence and stopping
 
 Report reset owner, last successful transition, first fatal or missing transition, and the evidence tying it to a specific boot. Return `insufficient_evidence` when only post-reboot logs exist or reboot identity cannot be established.
+
+## When to activate code-search
+
+If the kernel panic call trace, watchdog bite, or pstore log names a specific function or module, activate `code-search` to:
+- Search for the function in the call trace with `opengrok_search_code` (search_type="defs", projects=["yocto"] for kernel code).
+- Read the faulting code path with `locode_read_file` (20-40 lines around the call trace site).
+- Check recent commits with `locode_get_history` — a driver or subsystem change near the first occurrence date is a strong regression signal.
+- Use `locode_get_blame` on the faulting line to identify the module owner.
+
+Do not activate code-search if the call trace is absent or if the reboot is confirmed as pure power-loss / hardware reset with no software anchoring.

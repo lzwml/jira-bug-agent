@@ -41,3 +41,13 @@ A supported conclusion should connect at least: the user-visible symptom window,
 - The goal is to rule out a multi-layer failure, not to assume the first strong signal is the only cause.
 
 Report `insufficient_evidence` if the necessary layer boundary cannot be observed. Keep plausible alternatives in `hypotheses`; do not label a component as root cause solely because its name appears near an error.
+
+## When to activate code-search
+
+If log evidence names a specific file, library, or function within the display stack (SurfaceFlinger, HWC, DRM, backlight, panel driver, etc.), activate `code-search` to:
+- Search for the error-handling code path with `opengrok_search_code` (search_type="defs" or "refs") on the symbol found in logs.
+- Read the relevant source with `locode_read_file` to understand the failure logic.
+- Check recent git commits to the affected file with `locode_get_history` — a commit close to the bug report date is a strong regression signal.
+- Use `locode_get_blame` to identify the module owner for follow-up.
+
+Do not activate code-search before log evidence has produced a specific code-level hypothesis.

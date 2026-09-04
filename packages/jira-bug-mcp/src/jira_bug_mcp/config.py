@@ -13,7 +13,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 
-_LOCAL_ENV_PREFIXES = ("JIRA_", "BUG_AGENT_", "LOG_ANALYZER_", "VIDEO_ANALYZER_")
+_LOCAL_ENV_PREFIXES = ("JIRA_", "BUG_AGENT_", "LOG_ANALYZER_", "VIDEO_ANALYZER_", "OPENGROK_", "LOCODE_")
 
 
 def load_local_env(path: Path | None = None) -> Path | None:

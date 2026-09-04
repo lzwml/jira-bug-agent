@@ -1,0 +1,1 @@
+"""Local code file reader MCP — reads local source files identified by OpenGrok search results."""

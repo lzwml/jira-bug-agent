@@ -139,6 +139,18 @@ CONVERSATION_FOLLOWUP_SYSTEM_PROMPT = """用户正在追问上一轮分析中的
 5. 不要重复上一轮已经给出的完整 RCA 报告。
 """
 
+# Code search workflow — appended by Worker when OpenGrok is enabled.
+CODE_SEARCH_WORKFLOW_PROMPT = """
+Code Search (OpenGrok + local source):
+When tool lists contain opengrok_ and locode_ prefixed tools, use them together:
+- opengrok_search_code / opengrok_find_file → find where the code is (search orient)
+- locode_read_file → get full local source with line ranges (local precise read)
+- locode_get_history → see recent git commits and authors
+- locode_get_blame → see who changed which lines and when
+- locode_list_roots → see configured local source paths
+Always cross-reference code findings with log evidence — code logic alone is not proof.
+"""
+
 
 ANALYSIS_GUIDE_PROMPT = """你是一位资深工程师，正在向另一位工程师讲解一次 Bug 调查的思路。
 
