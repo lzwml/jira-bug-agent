@@ -2,7 +2,11 @@
 
 每个 Case 的 .bug-agent/chat.db 中保存会话轮次，支持退出后 resume。
 与 runstore.py 不同：runstore 记录的是每次 Agent 运行的完整 trace，
-chat_store 记录的是交互式对话的用户消息和最终回答。
+chat_store 记录的是交互式对话的用户消息、最终回答和工具调用轨迹。
+
+链路可查性：每轮对话的 tool_events 完整落盘，包括每次工具调用的名称、
+参数、结果和成功/失败状态。复盘时可据此判断是 MCP Server 返回了错误数据、
+Skill 指引了错误的调用顺序，还是模型本身推理有误。
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .contracts import BugAnalysisTask
 
@@ -81,10 +86,15 @@ class ChatStore:
                     assistant_answer TEXT NOT NULL,
                     steps INTEGER NOT NULL DEFAULT 0,
                     agent_status TEXT NOT NULL DEFAULT 'completed',
+                    tool_events_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES chat_sessions(session_id)
                 )
             """)
+            # 兼容旧表（无 tool_events_json 列）的迁移
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_turns)")}
+            if "tool_events_json" not in columns:
+                conn.execute("ALTER TABLE chat_turns ADD COLUMN tool_events_json TEXT NOT NULL DEFAULT '[]'")
 
     def get_session(self, session_id: str) -> dict | None:
         """获取会话元数据及所有轮次，不存在时返回 None。"""
@@ -133,15 +143,19 @@ class ChatStore:
     def add_turn(
         self, session_id: str, turn_index: int, user_message: str,
         assistant_answer: str, steps: int, agent_status: str,
+        tool_events: list[dict[str, Any]] | None = None,
     ) -> None:
-        """追加一轮对话记录。"""
+        """追加一轮对话记录，含完整的工具调用轨迹。"""
         timestamp = _now()
+        tool_events_json = json.dumps(tool_events or [], ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO chat_turns
-                   (session_id, turn_index, user_message, assistant_answer, steps, agent_status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, turn_index, user_message, assistant_answer, steps, agent_status, timestamp),
+                   (session_id, turn_index, user_message, assistant_answer,
+                    steps, agent_status, tool_events_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, turn_index, user_message, assistant_answer,
+                 steps, agent_status, tool_events_json, timestamp),
             )
             conn.execute(
                 "UPDATE chat_sessions SET updated_at = ? WHERE session_id = ?",

@@ -603,6 +603,7 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     session_id, 1, first_instruction,
                     turn.result.final_answer, turn.result.steps,
                     turn.result.status,
+                    tool_events=[e.model_dump() for e in turn.result.tool_events],
                 )
 
         # 后续轮次：交互式追问
@@ -652,6 +653,7 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     session_id, session.turn_count, user_input,
                     turn.result.final_answer, turn.result.steps,
                     turn.result.status,
+                    tool_events=[e.model_dump() for e in turn.result.tool_events],
                 )
 
     finally:
