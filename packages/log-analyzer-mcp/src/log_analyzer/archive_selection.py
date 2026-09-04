@@ -20,6 +20,7 @@ import time
 import uuid
 import zipfile
 import re
+from collections import defaultdict
 
 from .archive_manager import (
     COPY_CHUNK_BYTES,
@@ -205,6 +206,72 @@ def summarize_member_times(members: list[ArchiveMemberInfo]) -> list[dict[str, o
             group["latest_path_time"] = value
             group["latest_path_time_reliability"] = parsed.reliability
     return sorted(groups.values(), key=lambda item: str(item["path_prefix"]))
+
+
+_LOG_DOMAIN_PATTERNS = (
+    ("android", re.compile(r"(?:^|\n)\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}|AndroidRuntime|logcat", re.I)),
+    ("kernel", re.compile(r"(?:^|\n)\s*\[\s*\d+(?:\.\d+)?\]|kernel:|Call Trace:|Kernel panic", re.I)),
+    ("linux", re.compile(r"systemd\[|journal|syslog|daemon\[", re.I)),
+    ("mcu", re.compile(r"\b(?:MCU|CAN|A2B)\b", re.I)),
+)
+_BOOT_ID_RE = re.compile(r"\b(?:boot[_ -]?id|BOOT_ID)\s*[:=]\s*([0-9a-f]{8,}(?:-[0-9a-f-]+)?)", re.I)
+_BOOT_MARKER_RE = re.compile(r"\b(?:reboot|boot completed|Linux version|init: starting service)\b", re.I)
+_CLOCK_CORRECTION_RE = re.compile(r"\b(?:time (?:has been )?(?:changed|set|updated)|clock.*(?:adjust|sync)|NTP.*(?:sync|set))\b", re.I)
+_ANCHOR_RE = re.compile(r"\b(?:FATAL EXCEPTION|ANR in|Watchdog|Kernel panic|Call Trace:|avc: denied|reboot|boot completed)\b", re.I)
+_WALL_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)")
+_ANDROID_RE = re.compile(r"(?<!\d)(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)")
+_KERNEL_RE = re.compile(r"^\s*\[\s*(\d+(?:\.\d+)?)\]", re.M)
+
+
+def _read_probe_bytes(archive_path: Path, archive_format: str, member_path: str, limit: int) -> bytes:
+    """Read a member prefix only; no extraction output is written."""
+    if archive_format == "zip":
+        with zipfile.ZipFile(archive_path) as archive, archive.open(member_path) as source:
+            return source.read(limit)
+    if archive_format == "tar":
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            source = archive.extractfile(member_path)
+            if source is None:
+                raise ArchiveRejected("ARCHIVE_READ_ERROR", f"无法读取 TAR 成员: {member_path}")
+            with source:
+                return source.read(limit)
+    if archive_format == "gzip":
+        with gzip.open(archive_path, "rb") as source:
+            return source.read(limit)
+    raise ArchiveRejected("PROBE_FORMAT_UNSUPPORTED", "7z 成员探测暂不支持无落盘读取")
+
+
+def probe_archive_members(archive_path: Path | str, archive_artifact_id: str, member_ids: list[str], limits: ArchiveLimits, *, max_bytes_per_member: int, max_total_bytes: int) -> list[dict[str, object]]:
+    """Return content-derived, prefix-only profiles for stable catalog member IDs."""
+    inventory = inventory_archive(archive_path, archive_artifact_id, limits)
+    safe = {item.member_id: item for item in inventory.members if item.safe}
+    requested = list(dict.fromkeys(member_ids))
+    invalid = next((item for item in requested if item not in safe), None)
+    if invalid is not None:
+        raise ArchiveRejected("ARCHIVE_MEMBER_ID_INVALID", "成员 ID 不存在、归档已变化或不允许读取")
+    if len(requested) * max_bytes_per_member > max_total_bytes:
+        raise ArchiveRejected("PROBE_BUDGET_LIMIT", "成员探测总读取量超过服务端预算")
+    results: list[dict[str, object]] = []
+    for member_id in requested:
+        item = safe[member_id]
+        payload = _read_probe_bytes(inventory.archive_path, inventory.format, item.member_path, max_bytes_per_member)
+        text = payload.decode("utf-8", errors="replace")
+        domains = [domain for domain, pattern in _LOG_DOMAIN_PATTERNS if pattern.search(text)]
+        values = {"wall": _WALL_RE.findall(text), "android": _ANDROID_RE.findall(text), "kernel_monotonic": _KERNEL_RE.findall(text)}
+        time_ranges = []
+        for domain, found in values.items():
+            if found:
+                ordered = sorted(found, key=lambda value: float(value) if domain == "kernel_monotonic" else value)
+                time_ranges.append({"clock_domain": domain, "start": ordered[0], "end": ordered[-1]})
+        boot_ids = list(dict.fromkeys(_BOOT_ID_RE.findall(text)))
+        anchors = list(dict.fromkeys(match.group(0) for match in _ANCHOR_RE.finditer(text)))[:20]
+        corrections = list(dict.fromkeys(match.group(0) for match in _CLOCK_CORRECTION_RE.finditer(text)))[:10]
+        limitations = (["只读取了成员前缀；后续内容未探测"] if len(payload) >= max_bytes_per_member else [])
+        if not boot_ids:
+            limitations.append("样本中未发现显式 Boot ID")
+        confidence = "high" if boot_ids and time_ranges else "medium" if (time_ranges or anchors) else "low"
+        results.append({"member_id": member_id, "member_path": item.member_path, "bytes_read": len(payload), "log_domains": domains, "content_time_ranges": time_ranges, "boot_identity": f"boot_id:{boot_ids[0]}" if boot_ids else ("boot_marker_observed" if _BOOT_MARKER_RE.search(text) else "unknown"), "anchors": anchors, "clock_corrections": corrections, "coverage_confidence": confidence, "limitations": limitations})
+    return results
 
 
 @dataclass(frozen=True)

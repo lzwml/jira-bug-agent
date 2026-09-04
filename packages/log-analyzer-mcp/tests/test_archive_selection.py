@@ -361,3 +361,174 @@ def test_summarize_member_times_all_reliable():
     assert groups[0]["unreliable_timestamped_member_count"] == 0
     assert groups[0]["earliest_path_time_reliability"] == "reliable"
     assert groups[0]["latest_path_time_reliability"] == "reliable"
+
+
+# ---------------------------------------------------------------------------
+# probe_archive_members tests
+# ---------------------------------------------------------------------------
+
+
+def _make_syslog_content(timestamp: str = "2026-09-04 10:30:45.123", uptime: str = "123.456") -> str:
+    return (
+        f"[{timestamp}][{uptime}][I][1][IPCL][Main][PID:1234][ipcl.c:42 main]Service started\n"
+        + f"[{timestamp}][{uptime}][W][2][Screen][Display][PID:5678][screen.c:99 init]Resolution: 1920x1080\n"
+        + f"[{timestamp}][{uptime}][E][3][Network][TCP][PID:9012][net.c:10 connect]Connection failed: timeout\n"
+    )
+
+
+def test_probe_zip_members_returns_content_profiles(tmp_path: Path):
+    """probe_archive_members reads member prefixes without writing to disk."""
+    path = tmp_path / "probe.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Linux_Log/log00/syslog.log.0001.log", _make_syslog_content())
+        archive.writestr("Linux_Log/log01/syslog.log.0001.log", _make_syslog_content(
+            "2026-09-04 11:00:00.000", "4000.000"
+        ))
+
+    inventory = inventory_archive(path, "artifact-probe", LIMITS)
+    by_path = _by_path(inventory)
+
+    profiles = archive_selection.probe_archive_members(
+        path, "artifact-probe",
+        [by_path[p].member_id for p in by_path],
+        LIMITS,
+        max_bytes_per_member=64 * 1024,
+        max_total_bytes=10 * 1024 * 1024,
+    )
+
+    assert len(profiles) == 2
+    for profile in profiles:
+        assert "log_domains" in profile
+        assert "content_time_ranges" in profile
+        assert "boot_identity" in profile
+        assert "coverage_confidence" in profile
+        assert profile["bytes_read"] > 0
+        assert "linux" in profile["log_domains"]  # syslog pattern matches
+
+    # log00: 10:30 wall time
+    log00 = next(p for p in profiles if "log00" in p["member_path"])
+    wall_times = next(r for r in log00["content_time_ranges"] if r["clock_domain"] == "wall")
+    assert "10:30:45" in wall_times["start"]
+    # Kernel monotonic
+    kernel_times = next(r for r in log00["content_time_ranges"] if r["clock_domain"] == "kernel_monotonic")
+    assert kernel_times["start"] == "123.456"
+
+    # log01: different time
+    log01 = next(p for p in profiles if "log01" in p["member_path"])
+    wall_times = next(r for r in log01["content_time_ranges"] if r["clock_domain"] == "wall")
+    assert "11:00:00" in wall_times["start"]
+
+
+def test_probe_rejects_member_ids_not_in_inventory(tmp_path: Path):
+    path = tmp_path / "probe_reject.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("a.log", "content")
+
+    with pytest.raises(ArchiveRejected) as caught:
+        archive_selection.probe_archive_members(
+            path, "artifact-bad", ["fake-id"],
+            LIMITS, max_bytes_per_member=4096, max_total_bytes=10 * 1024 * 1024,
+        )
+    assert caught.value.code == "ARCHIVE_MEMBER_ID_INVALID"
+
+
+def test_probe_respects_budget(tmp_path: Path):
+    path = tmp_path / "probe_budget.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("a.log", "x" * 5000)
+        archive.writestr("b.log", "y" * 5000)
+
+    inventory = inventory_archive(path, "artifact-budget", LIMITS)
+    by_path = _by_path(inventory)
+
+    # 2 members * 5000 bytes each = 10000 > budget of 5000
+    with pytest.raises(ArchiveRejected) as caught:
+        archive_selection.probe_archive_members(
+            path, "artifact-budget",
+            [by_path[p].member_id for p in by_path],
+            LIMITS,
+            max_bytes_per_member=5000,
+            max_total_bytes=5000,
+        )
+    assert caught.value.code == "PROBE_BUDGET_LIMIT"
+
+
+def test_probe_tar_members(tmp_path: Path):
+    tar_path = tmp_path / "probe.tar.gz"
+    payload = _make_syslog_content().encode()
+    with tarfile.open(tar_path, "w:gz") as archive:
+        info = tarfile.TarInfo("log00/syslog.log")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    inventory = inventory_archive(tar_path, "artifact-tar", LIMITS)
+    profiles = archive_selection.probe_archive_members(
+        tar_path, "artifact-tar",
+        [inventory.members[0].member_id],
+        LIMITS,
+        max_bytes_per_member=64 * 1024,
+        max_total_bytes=10 * 1024 * 1024,
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0]["bytes_read"] == len(payload)
+
+
+def test_probe_anchors_and_diagnostics(tmp_path: Path):
+    path = tmp_path / "probe_anchors.zip"
+    content = (
+        "[2026-09-04 10:30:45.000][100.000][E][1][APP][Main][PID:1][app.c:1 main]FATAL EXCEPTION: main\n"
+        + "[2026-09-04 10:30:46.000][101.000][I][2][APP][Main][PID:1][app.c:2 main]ANR in com.example\n"
+        + "[2026-09-04 10:31:00.000][115.000][W][3][KERNEL][K][PID:0][k.c:1 k]Kernel panic - not syncing\n"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("crash.log", content)
+
+    inventory = inventory_archive(path, "artifact-anchors", LIMITS)
+    profiles = archive_selection.probe_archive_members(
+        path, "artifact-anchors",
+        [inventory.members[0].member_id],
+        LIMITS,
+        max_bytes_per_member=64 * 1024,
+        max_total_bytes=10 * 1024 * 1024,
+    )
+
+    assert len(profiles) == 1
+    anchors = profiles[0]["anchors"]
+    assert "FATAL EXCEPTION" in anchors
+    assert "ANR in" in anchors
+    assert "Kernel panic" in anchors
+
+
+def test_probe_coverage_confidence_levels(tmp_path: Path):
+    """low=no time/no boot, medium=time or anchors, high=time+boot."""
+    path = tmp_path / "probe_conf.zip"
+    # Content with time + boot_id → high
+    rich = (
+        "boot_id=abc123-def456-7890\n"
+        + _make_syslog_content()
+    )
+    # Content with only time → medium
+    medium = _make_syslog_content()
+    # Content with no time, no boot → low
+    bare = "just some random text without any timestamp or boot marker\n"
+
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("rich.log", rich)
+        archive.writestr("medium.log", medium)
+        archive.writestr("bare.log", bare)
+
+    inventory = inventory_archive(path, "artifact-conf", LIMITS)
+    by_path = _by_path(inventory)
+    profiles = archive_selection.probe_archive_members(
+        path, "artifact-conf",
+        [by_path[p].member_id for p in sorted(by_path)],
+        LIMITS,
+        max_bytes_per_member=64 * 1024,
+        max_total_bytes=10 * 1024 * 1024,
+    )
+
+    conf_map = {p["member_path"]: p["coverage_confidence"] for p in profiles}
+    assert conf_map["bare.log"] == "low"
+    assert conf_map["medium.log"] == "medium"
+    assert conf_map["rich.log"] == "high"

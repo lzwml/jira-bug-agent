@@ -47,6 +47,7 @@ from .domain import (
     OpenCaseInput,
     ParseDiagnosticsInput,
     PrepareCaseInput,
+    ProbeArchiveMembersInput,
     SearchEvidenceInput,
 )
 from .errors import make_error
@@ -97,8 +98,12 @@ TOOL_DEFINITIONS = {
         "只读检查归档成员清单，不解压、不将成员内容落盘；返回通用的路径时间和目录时间摘要，并可按路径前缀或路径时间筛选稳定 member_id。",
         InspectArchiveInput,
     ),
+    "probe_archive_members": (
+        "不落盘、不展开整个归档，只读取指定成员的前缀内容样本。返回每个成员的日志域、内容时间范围、boot 身份、诊断锚点和覆盖置信度。用于在解压前快速判断哪些 boot round 的日志覆盖事故时间窗口。",
+        ProbeArchiveMembersInput,
+    ),
     "extract_archive_members": (
-        "使用 inspect_archive 返回的稳定 member_id 选择性解压归档成员，避免默认全量展开。",
+        "使用 inspect_archive 或 probe_archive_members 返回的稳定 member_id 选择性解压归档成员，避免默认全量展开。",
         ExtractArchiveMembersInput,
     ),
     "build_index": (

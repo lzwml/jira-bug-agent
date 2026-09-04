@@ -49,11 +49,12 @@ APLog_2025_0101_080037__9.tar.gz
      - **`"reliable"`**：使用 `inspect_archive(time_range=..., time_neighbor_count=1)` 直接选择事故前后相关成员
      - **`"unreliable_device_clock"`**：文件名中的绝对时间不可信，但可以：
        - 用 `__NN` 编号确定 boot 顺序
-       - 对每个候选 `__NN` round，本次只解压 `main_log` 的最小编号文件，用 `extract_timeline` 确认实际内容时间范围
-       - 选择内容时间范围覆盖事故窗口的 round
+       - 对每个候选 `__NN` round，用 `probe_archive_members` 读取 `main_log` 成员前缀（不落盘）
+       - 从返回的 `content_time_ranges` 获取实际内容时间范围
+       - 选择覆盖事故窗口的 round
 3. 如果事故时间未知：
-   - 解压所有 `__NN` round 的 `main_log` 最小编号文件
-   - 用 `build_index` + `extract_timeline` 建立每个 round 的时间画像
+   - 用 `probe_archive_members` 读取所有 `__NN` round 的 `main_log` 成员
+   - 从返回的 `content_time_ranges` 和 `anchors` 建立每个 round 的时间画像
    - 根据 Issue 描述的症状匹配对应 round
 
 ### 第四步：增量解压与索引
@@ -79,8 +80,8 @@ APLog_2025_0101_080037__9.tar.gz
 - **不依赖文件名时间戳**：绝对时间不可靠，相对顺序也不可靠（时钟回拨、NTP 跳跃、手动校时都可能改变后续生成的文件名时序）
 - **不依赖文件名时间与日志内容时间比较**：两者都受设备时钟影响
 - **用 `__NN` 编号作为 boot 排序依据**：推测为递增计数器，正常场景下可用。但需注意 `__NN` 的精确生成逻辑和边界条件（复位、清理等）尚未源码确认
-- **用内容探测建立实际时间范围**：解压 `main_log` 的最小编号文件，用 `extract_timeline` 确定 round 的实际覆盖范围
-- **只在内容探测也无法确定时才全量解压**：`prepare_case` 是最后手段
+- **用 `probe_archive_members` 建立实际时间范围**：不落盘读取 `main_log` 成员前缀，从返回的 `content_time_ranges` 直接获取时间覆盖范围，无需先解压再 `extract_timeline`
+- **只在 probe 也无法确定时才全量解压**：`prepare_case` 是最后手段
 
 ### `__NN` 可信度说明
 

@@ -37,6 +37,7 @@ from .archive_selection import (
     inspect_reusable_extraction,
     inventory_archive,
     parse_path_timestamp,
+    probe_archive_members,
     summarize_member_times,
 )
 from .case_registry import CaseRegistry
@@ -52,6 +53,7 @@ from .domain import (
     OpenCaseInput,
     ParseDiagnosticsInput,
     PrepareCaseInput,
+    ProbeArchiveMembersInput,
     SearchEvidenceInput,
     TimelineEvent,
 )
@@ -74,6 +76,7 @@ class LogAnalyzerService:
             "open_case": self.open_case,
             "inspect_case": self.inspect_case,
             "inspect_archive": self.inspect_archive,
+            "probe_archive_members": self.probe_archive_members,
             "extract_archive_members": self.extract_archive_members,
             "build_index": self.build_index,
             "prepare_case": self.prepare_case,
@@ -448,6 +451,44 @@ class LogAnalyzerService:
             "reset": result.reset,
             "member_count": len(items),
             "members": items,
+        })
+
+    def probe_archive_members(self, **kwargs) -> ToolResult:
+        """在不落盘、不展开整个归档的前提下，读取成员的有界内容样本。
+
+        返回每个成员的内容画像：日志域、内容时间范围、boot 身份、
+        诊断锚点、时钟校正记录和覆盖置信度。
+        """
+        params = ProbeArchiveMembersInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        _, info = entry
+        archive = next((item for item in info.artifacts if item.artifact_id == params.artifact_id), None)
+        if archive is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 不存在")
+        if archive.kind != "archive":
+            return make_error("ARTIFACT_NOT_ARCHIVE", "指定 Artifact 不是归档文件")
+        path = self.registry.get_artifact_path(params.case_id, archive.artifact_id)
+        if path is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 路径不可用")
+        try:
+            profiles = probe_archive_members(
+                path,
+                archive.artifact_id,
+                params.member_ids,
+                self.registry.archive_limits,
+                max_bytes_per_member=params.max_bytes_per_member,
+                max_total_bytes=self.registry.archive_limits.max_archive_bytes,
+            )
+        except ArchiveRejected as exc:
+            return make_error(exc.code, exc.message)
+        return make_success({
+            "case_id": params.case_id,
+            "artifact_id": archive.artifact_id,
+            "relative_path": archive.relative_path,
+            "member_count": len(profiles),
+            "profiles": profiles,
         })
 
     def build_index(self, **kwargs) -> ToolResult:

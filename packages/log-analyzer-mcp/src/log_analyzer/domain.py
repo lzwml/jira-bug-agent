@@ -290,6 +290,18 @@ class ExtractArchiveMembersInput(BaseModel):
     force_rebuild: bool = False
 
 
+class ProbeArchiveMembersInput(BaseModel):
+    """在不落盘、不展开整个归档的前提下，读取成员的有界内容样本。"""
+
+    case_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    member_ids: list[str] = Field(min_length=1, max_length=50)
+    max_bytes_per_member: int = Field(
+        default=64 * 1024, ge=1024, le=256 * 1024,
+        description="每个成员最多读取的未压缩字节数；服务端仍会施加总预算。",
+    )
+
+
 class BuildIndexInput(BaseModel):
     """把指定 Artifact 增量加入该 Case 的持久化日志索引集合。
 

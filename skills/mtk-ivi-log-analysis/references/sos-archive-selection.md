@@ -90,14 +90,15 @@ else
 1. 列出所有 `logNN` 目录，按 NN 递增排序
 2. 如果事故时间已知（来自 Jira 描述）：
    - 对每个候选 `logNN` 目录，先用 `path_prefix` 选择该目录的 `syslog.log.*` 成员
-   - 从最早的 `logNN` 开始，每个目录只解压 `syslog.log` 的最小索引文件（通常 `0001`）
-   - 用 `extract_timeline` 确认该 round 的实际内容时间范围
-   - 选择内容时间范围覆盖事故窗口的 round
+   - **不要立即解压**。用 `probe_archive_members` 读取每个候选 `logNN` 目录中 `syslog.log` 的最小编号成员前缀（不落盘，默认只读 64KB）
+   - 从返回的 `content_time_ranges` 获取该 round 的实际内容时间范围，从 `boot_identity` 获取 boot 身份
+   - 选择 `content_time_ranges` 覆盖事故窗口的 round
 3. 如果事故时间未知：
-   - 解压 **所有** `logNN` 目录的 `syslog.log.*` 最小编号文件
-   - 用 `build_index` + `extract_timeline` 建立每个 round 的时间画像
+   - 用 `probe_archive_members` 读取所有 `logNN` 目录的 `syslog.log` 最小编号成员
+   - 从返回的 `content_time_ranges` 和 `anchors` 建立每个 round 的时间画像
    - 根据 Issue 描述的症状（如"今天早上启动黑屏"）匹配对应 round
-4. 对于 reboot 分析，始终包含 post-reboot round 的 `reboot-reason`、`pl_lk` 和 `bootprof`
+4. 选定目标 round 后，再用 `extract_archive_members` + `build_index` 增量解压
+5. 对于 reboot 分析，始终包含 post-reboot round 的 `reboot-reason`、`pl_lk` 和 `bootprof`
 
 ### 第四步：`time_reliability` 的处理
 
@@ -106,16 +107,17 @@ else
 - **`"reliable"`**：文件名时间戳在 2024-2030 范围。可以使用 `time_range` 参数辅助筛选，但仍需用内容时间戳验证。
 - **`"unreliable_device_clock"`**：文件名时间戳不可信（年份异常或为 0）。
 
-**重要**：即使 `time_reliability` 为 `"unreliable_device_clock"`，仍应**优先使用 `logNN` 递增顺序 + 内容探测**来选择候选目录，而不是直接调用 `prepare_case` 全量解压。理由：
+**重要**：即使 `time_reliability` 为 `"unreliable_device_clock"`，仍应**优先使用 `logNN` 递增顺序 + `probe_archive_members`** 来选择候选目录，而不是直接调用 `prepare_case` 全量解压。理由：
 
 - `logNN` 编号不依赖时钟，是可靠的递增计数器
-- 可以只解压每个候选目录的 `syslog.log.0001.*` 来确认内容时间范围
-- 用 `uptime_ms` 字段进行同一 boot 内的相对时间排序（不受时钟错误影响）
+- `probe_archive_members` 不落盘，只读 64KB 前缀就能获取内容时间范围和 boot 身份
+- 返回的 `content_time_ranges` 包含 wall clock 和 kernel_monotonic 两个域的时间范围
+- 返回的 `boot_identity` 和 `anchors` 可以帮助确认 boot 身份
 
 **只有在以下情况才使用 `prepare_case` 全量解压：**
-- 候选目录的内容探测无法确定任何 round 的实际时间范围
-- 日志内容时间戳也全部不可信（如全部为 0）
-- 事故涉及跨 boot 的复杂时序分析
+- `probe_archive_members` 无法确定任何 round 的实际时间范围
+- 所有候选 round 的 `coverage_confidence` 均为 `"low"`
+- 事故涉及跨 boot 的复杂时序分析且 probe 返回的信息不足
 
 ### 第五步：增量解压与索引
 

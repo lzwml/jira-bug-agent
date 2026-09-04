@@ -23,7 +23,7 @@ JIRA_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 3. 以 JIRA_CONTEXT 中的当前状态、已做动作、工程师建议和调查线索制定首轮计划；COMPILED_JIRA_CONTEXT 可能遗漏细节，需要核对时调用 get_case_comment(comment_id)，不得把评论观点直接当作根因证据。
 4. 对 summary.archives 中的每个归档，先调用 inspect_archive（不带 time_range）查看成员清单和 time_groups。根据 time_groups 中 earliest_path_time_reliability 决定选择策略：
    - "reliable"：文件名时间戳可信。如果事故时间明确，使用 time_range + time_neighbor_count=1 选择事故前后相关成员，然后 extract_archive_members + build_index。
-   - "unreliable_device_clock"：文件名时间戳不可信。不要立即调用 prepare_case。改为：利用归档中的结构化 boot round 标识（SOS 归档的 logNN 目录编号、APLog 归档的 __NN 编号）识别候选 boot round。每个候选 round 只解压该 round 最小编号的关键日志文件（如 main_log 或 syslog.log），用 extract_timeline 探测实际内容时间范围。选择内容时间覆盖事故窗口的 round，再增量解压该 round 的其余成员。prepare_case 全量解压仅作为最后手段——当内容探测无法确定任何 round 的实际时间范围时才使用。具体策略参考已激活的 mtk-ivi-log-analysis Skill 中的 references/。
+   - "unreliable_device_clock"：文件名时间戳不可信。不要立即调用 prepare_case。改为：利用归档中的结构化 boot round 标识（SOS 归档的 logNN 目录编号、APLog 归档的 __NN 编号）识别候选 boot round。对每个候选 round，用 probe_archive_members 读取关键日志的最小编号成员前缀（不落盘），从返回的 content_time_ranges 和 boot_identity 直接获取该 round 的实际时间覆盖范围和 boot 身份，无需解压。选择覆盖事故窗口的 round，再 extract_archive_members + build_index 增量解压该 round 的成员。prepare_case 全量解压仅作为最后手段——当 probe 无法确定任何 round 的实际时间范围时才使用。具体策略参考已激活的 mtk-ivi-log-analysis Skill 中的 references/。
 5. 使用 search_evidence、extract_timeline、parse_diagnostics 收集并验证证据。事故时间只作为搜索线索，仍须用日志证据验证事故窗口。如果在当前 boot round 的日志中搜索事故时间无结果，先用 extract_timeline 确认当前 round 的实际时间跨度，再搜索相邻的 boot round（前驱/后继），不要直接报 missing_evidence。
 6. 综合经验证的 Jira 线索与日志证据输出结论。
 """
@@ -36,7 +36,7 @@ LOCAL_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 4. 评论只是调查线索，不是根因证明；必须用日志、时间线或确定性诊断验证。
 5. 对 summary.archives 中的每个归档，先调用 inspect_archive（不带 time_range）查看成员清单和 time_groups。根据 time_groups 中 earliest_path_time_reliability 决定选择策略：
    - "reliable"：文件名时间戳可信。如果事故时间明确，使用 time_range + time_neighbor_count=1 选择事故前后相关成员，然后 extract_archive_members + build_index。
-   - "unreliable_device_clock"：文件名时间戳不可信。不要立即调用 prepare_case。改为：利用归档中的结构化 boot round 标识（SOS 归档的 logNN 目录编号、APLog 归档的 __NN 编号）识别候选 boot round。每个候选 round 只解压该 round 最小编号的关键日志文件（如 main_log 或 syslog.log），用 extract_timeline 探测实际内容时间范围。选择内容时间覆盖事故窗口的 round，再增量解压该 round 的其余成员。prepare_case 全量解压仅作为最后手段——当内容探测无法确定任何 round 的实际时间范围时才使用。具体策略参考已激活的 mtk-ivi-log-analysis Skill 中的 references/。
+   - "unreliable_device_clock"：文件名时间戳不可信。不要立即调用 prepare_case。改为：利用归档中的结构化 boot round 标识（SOS 归档的 logNN 目录编号、APLog 归档的 __NN 编号）识别候选 boot round。对每个候选 round，用 probe_archive_members 读取关键日志的最小编号成员前缀（不落盘），从返回的 content_time_ranges 和 boot_identity 直接获取该 round 的实际时间覆盖范围和 boot 身份，无需解压。选择覆盖事故窗口的 round，再 extract_archive_members + build_index 增量解压。prepare_case 仅作为最后手段——当 probe 无法确定任何 round 的实际时间范围时才使用。具体策略参考已激活的 mtk-ivi-log-analysis Skill 中的 references/。
 6. 使用 search_evidence、extract_timeline、parse_diagnostics 收集证据。如果在当前 boot round 搜索事故时间无结果，先用 extract_timeline 确认实际时间跨度，再搜索相邻 boot round（前驱/后继），不要直接报 missing_evidence。
 """
 
