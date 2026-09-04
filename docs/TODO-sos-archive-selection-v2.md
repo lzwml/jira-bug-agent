@@ -1,40 +1,32 @@
-# TODO：SOS 归档按时间选择 → 方案二选一
+# TODO：SOS 归档按时间选择 → 已解决
 
-更新时间：2026-09-03
+更新时间：2026-09-04
 
-## 背景
+## 结论
 
-当前 `inspect_archive` 的 `time_range` 参数通过 `select_sos_time_range()` 在工具层硬编码了 SOS 归档的目录结构（`Linux_Log/logNN/`、`Mcu_Log/`、`can_log/` 等），与已有的 `select_aplog_time_range()` 处于同一抽象层级。这种模式的问题是每新增一种归档格式就要改代码。
+已选择 **方案 B（工具只返回清单，Agent/Skill 做选择）** 的改进版：
 
-## 两种方案
+**最终方案：工具层返回 `logNN` 目录分组 + 时间组，Agent/Skill 按源码验证的策略选择**
 
-### 方案 A：工具层做格式识别（当前做法）
+具体策略：
+1. `inspect_archive` 返回 `time_groups`，其中 `logNN` 目录分组是可靠信息（源码验证：递增计数器）
+2. Agent 不依赖文件名时间戳，而是信任 `logNN` 递增顺序
+3. 对候选目录只做最小内容探测（解压 `syslog.log.0001`），用内容时间戳验证实际覆盖范围
+4. 只在内容探测无法确定任何 round 时间范围时才全量解压
 
-`inspect_archive` 的 `time_range` 参数自动识别归档格式，Agent 传入 `time_range` 即可拿到正确子集。
+## 已实现
 
-**优点：**
-- Agent 侧简单，一次调用就能拿到筛选结果
-- 减少 Agent 的 token 消耗（不用传全部成员列表）
+- `sos-archive-selection.md` 已重写为源码验证版本
+- `yocto-vlog-design.md` 新建，记录完整的源码分析结论
+- `linux-vm.md`、`clock-domains.md`、`SKILL.md` 均已同步更新
+- `android-log-triage/SKILL.md` 已更新
 
-**缺点：**
-- 每新增一种归档格式就要改代码、发版
-- 格式识别逻辑和业务耦合在工具层
+## 原始方案对比
 
-### 方案 B：工具只返回清单，Agent/Skill 做选择
-
-`inspect_archive` 不做时间过滤，只返回全部 `member_id` + `member_path`。Agent 按 Skill 文档指导，自己从路径中解析时间戳，选出需要的 `member_id` 传给 `extract_archive_members`。
-
-**优点：**
-- 不需要改代码，只更新 Skill 文档就能支持新格式
-- 工具层保持纯粹，"时间窗口选择"是分析策略而非工具能力
-
-**缺点：**
-- 大归档（几百个成员）全部返回会消耗大量 token
-- 需要 Skill 文档足够精确，Agent 才能正确解析时间戳
-- 对 Agent 的推理能力要求更高
-
-## 待讨论
-
-1. 是否接受方案 B 的 token 消耗？大归档的成员列表可能几百条，每条包含 `member_id`、`member_path`、`size_bytes` 等字段
-2. 是否需要工具层提供一个轻量的"分组摘要"（如按 `Linux_Log/logNN` 分组，每组给出最早/最晚时间戳），既不暴露全部成员，又给 Agent 足够信息做选择？
-3. 如果选方案 B，当前已实现的 `select_sos_time_range()` 是保留作为备用还是移除？
+| 维度 | 方案 A（工具层过滤） | 方案 B（Agent 选择） | 最终方案 |
+|------|---------------------|---------------------|---------|
+| 工具层改动 | 需要改代码 | 不需要 | 不需要 |
+| Token 消耗 | 低 | 高（全部成员） | **中**（`logNN` 分组摘要） |
+| Agent 推理负担 | 低 | 高 | **中**（有源码验证的精确策略） |
+| 新格式支持 | 改代码 | 改 Skill | 改 Skill |
+| `logNN` 可信度 | 未利用 | 未利用 | **已利用**（源码验证） |

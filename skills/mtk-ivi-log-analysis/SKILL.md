@@ -13,14 +13,14 @@ Use this Skill as a platform specialization after establishing the reported symp
 Call `open_case` and `inspect_case` first. Classify available artifacts by domain:
 
 - **Android VM:** `main_log`, `kernel_log`, `events_log`, `radio_log`, `crash_log`, `boot__normal`, ANR, AEE, Dropbox, tombstones. When AEE evidence is in `.dbg` format, activate `aee-db-extract` to decode it before indexing.
-- **Linux VM/TBox:** `Linux_Log/logNN`, `syslog`, `bsp_log`, `scp_log`, `nebula_hypervisor_log`, `atf_log`, `bootprof`, `pl_lk`, `reboot-reason`.
+- **Linux VM/TBox:** `Linux_Log/logNN`, `syslog.log.*` (vlog bridge output — see `references/yocto-vlog-design.md`), `main_log.log.*`, `kernel_log.log.*`, `bsp_log`, `scp_log`, `nebula_hypervisor_log`, `atf_log`, `bootprof`, `pl_lk`, `reboot-reason`, `mblog_history`.
 - **Peripheral/application:** MCU log, CAN ASC, OTA/HMI, PKI, Go application logs.
 
-Do not infer the active boot round from `log00`/`log01` numbering alone. Confirm it with `mblog_history`, timestamps, reboot markers, or another boot identity. Treat claims about `boot__normal` retention as platform conventions that require confirmation from the collected file tree.
+Trust `logNN` numbering as a reliable boot counter (source-verified: `vlog_bridge_scan_boot_index()` scans existing directories and returns `max_idx + 1`). `log00` < `log01` < `log02` is always a valid boot sequence. However, do not assume the highest-numbered directory contains the incident — crashes often trigger a reboot, so the incident logs are typically in `log(N-1)` rather than `logN` (current boot). Confirm the active round by matching content timestamps to the reported incident time. Use `mblog_history` (search for `log dir:`) as the strongest boot identity anchor when available.
 
 If required evidence is inside an archive, first call `inspect_archive` (without `time_range`) to inspect the member catalog. Check `time_groups` for `earliest_path_time_reliability`:
 
-- **`unreliable_device_clock`**: the filename timestamps are unreliable due to unsynchronized device clock. Do not use `inspect_archive(time_range=...)`. Call `prepare_case` to extract and index all members. If the archive is too large and `prepare_case` returns skipped archives, fall back to `inspect_archive` without `time_range` to browse members manually, then use `extract_archive_members` with the stable `member_id`.
+- **`unreliable_device_clock`**: the filename timestamps are unreliable due to unsynchronized device clock. Do not use `inspect_archive(time_range=...)`. **Do not immediately call `prepare_case`** — first use `logNN` directory ordering (which is a reliable counter, not clock-dependent) to identify candidate boot rounds. Extract only the lowest-index `syslog.log.*` file from each candidate round to probe content time ranges via `extract_timeline`. Use `uptime` values (CLOCK_MONOTONIC, always reliable within a boot) for intra-boot ordering. Only fall back to `prepare_case` full extraction when content probing cannot establish any round's actual time coverage.
 - **`reliable`**: the filename timestamps are in a plausible range (2024-2030). If the incident time is well-defined from Jira context, use `inspect_archive` with `time_range` + `time_neighbor_count=1` to select only the relevant members, then `extract_archive_members` + `build_index`. If the format is unsupported or a safety budget rejects it, return missing evidence with the reported reason.
 
 For APLog archives: 参见 `references/aplog-archive-selection.md`。先检查 `time_groups` 中的 `path_time_reliability`，根据可靠性决定使用全量解压还是时间筛选。
@@ -87,6 +87,7 @@ APLog boot round numbering is not a reliable indicator of which round contains t
 
 Platform details for maintainers are separated by concern:
 
+- Yocto-side vlog/mobile_log_d design (source-verified): `references/yocto-vlog-design.md`
 - Android artifact conventions: `references/android-vm.md`
 - Linux/TBox and peripheral conventions: `references/linux-vm.md`
 - Clock normalization rules: `references/clock-domains.md`
