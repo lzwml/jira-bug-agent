@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,15 @@ def test_local_env_loads_supported_values_without_overriding_process_env(tmp_pat
     assert config.base_url == "https://file.example"
     assert config.deployment == "datacenter"
     assert config.token == "process-token"
+
+
+def test_local_env_accepts_video_analyzer_settings(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("VIDEO_ANALYZER_ENABLE=true\n", encoding="utf-8")
+
+    load_local_env(env_file)
+
+    assert os.environ["VIDEO_ANALYZER_ENABLE"] == "true"
 
 
 def test_local_env_rejects_unrelated_environment_names(tmp_path):

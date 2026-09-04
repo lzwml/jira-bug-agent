@@ -33,6 +33,7 @@ from .archive_manager import (
 )
 from .archive_selection import extract_archive_members as extract_selected_members
 from .archive_selection import (
+    TimeReliability,
     inspect_reusable_extraction,
     inventory_archive,
     parse_path_timestamp,
@@ -254,27 +255,58 @@ class LogAnalyzerService:
         if params.path_prefix is not None:
             members = [item for item in members if item.member_path.startswith(params.path_prefix)]
         if params.time_range is not None:
+            # 分离有时间戳和无时间戳的成员
             timestamped = sorted(
                 ((item, parsed) for item in members if (parsed := parse_path_timestamp(item.member_path))),
                 key=lambda item: (item[1].value, item[0].member_path),
             )
+            untimed = [item for item in members if item not in {t[0] for t in timestamped}]
+            untimed.sort(key=lambda item: item.member_path.casefold())
+
             in_range = [item for item in timestamped if params.time_range.start <= item[1].value <= params.time_range.end]
             before = [item for item in timestamped if item[1].value < params.time_range.start]
             after = [item for item in timestamped if item[1].value > params.time_range.end]
             selected = [
-                *[(item, "predecessor") for item, _ in before[-params.time_neighbor_count:]],
+                *[(item, "predecessor") for item, _ in (before[-params.time_neighbor_count:] if params.time_neighbor_count > 0 else [])],
                 *[(item, "in_range") for item, _ in in_range],
-                *[(item, "successor") for item, _ in after[:params.time_neighbor_count]],
+                *[(item, "successor") for item, _ in (after[:params.time_neighbor_count] if params.time_neighbor_count > 0 else [])],
             ]
-            members = [item for item, relation in selected]
+            # 保留有时间戳的筛选结果，并在末尾追加无时间戳的成员
+            members = [item for item, _ in selected]
+            if untimed:
+                members.extend(untimed)
             time_relations = {item.member_id: relation for item, relation in selected}
+            for item in untimed:
+                time_relations[item.member_id] = "untimed"
+
+            # 评估时间戳可信度：检查是否有不可靠的时钟
+            all_reliabilities = [
+                parsed.reliability for _, parsed in timestamped
+            ]
+            unreliable_count = sum(
+                1 for r in all_reliabilities if r != TimeReliability.RELIABLE
+            )
+            if unreliable_count > 0:
+                time_reliability = "unreliable_device_clock"
+                time_reliability_detail = (
+                    f"{unreliable_count}/{len(timestamped)} 个成员的文件名时间戳不受信任"
+                    f"（设备时钟未同步），时间筛选结果可能不可靠"
+                )
+            else:
+                time_reliability = TimeReliability.RELIABLE
+                time_reliability_detail = None
+
             selection_payload = {
                 "mode": "path_timestamp",
                 "requested_start": params.time_range.start.isoformat(),
                 "requested_end": params.time_range.end.isoformat(),
                 "path_prefix": params.path_prefix,
                 "time_neighbor_count": params.time_neighbor_count,
-                "matched_member_count": len(members),
+                "matched_member_count": len(timestamped),
+                "selected_member_count": len(selected),
+                "untimed_member_count": len(untimed),
+                "time_reliability": time_reliability,
+                "time_reliability_detail": time_reliability_detail,
             }
         elif params.path_prefix is not None:
             selection_payload = {"mode": "path_prefix", "path_prefix": params.path_prefix}
@@ -316,6 +348,8 @@ class LogAnalyzerService:
                 "relative_path": virtual_path if registered_artifact else None,
                 "path_timestamp": parsed_time.value.isoformat() if parsed_time else None,
                 "path_timestamp_pattern": parsed_time.pattern if parsed_time else None,
+                "path_timestamp_reliability": parsed_time.reliability if parsed_time else None,
+                "path_timestamp_clock_domain": parsed_time.clock_domain if parsed_time else None,
                 "path_time_relation": time_relations.get(item.member_id),
             })
         has_more = page_end < len(members)

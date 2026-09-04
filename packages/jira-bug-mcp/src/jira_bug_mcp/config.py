@@ -13,14 +13,14 @@ from typing import Literal
 from urllib.parse import urlparse
 
 
-_LOCAL_ENV_PREFIXES = ("JIRA_", "BUG_AGENT_", "LOG_ANALYZER_")
+_LOCAL_ENV_PREFIXES = ("JIRA_", "BUG_AGENT_", "LOG_ANALYZER_", "VIDEO_ANALYZER_")
 
 
 def load_local_env(path: Path | None = None) -> Path | None:
     """加载项目本地 `.env`，但不覆盖进程已有环境变量。
 
     这不是 Shell 解释器：不执行命令、不展开变量，且只接受 Agent
-    明确使用的三类配置前缀。生产环境仍应优先使用密钥管理系统。
+    明确使用的四类配置前缀。生产环境仍应优先使用密钥管理系统。
     """
 
     env_path = (path or Path.cwd() / ".env").resolve()

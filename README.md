@@ -14,6 +14,7 @@ jira-bug-agent
 ├── Agent Harness             模型调用、Tool Loop、状态与终止条件
 ├── Jira MCP                  Issue、评论、附件
 ├── Log MCP                   Evidence、Timeline、Diagnostics
+├── Video Analysis MCP         录屏关键帧、视觉证据与问题时间点（可选）
 ├── Model Provider            OpenAI-compatible API
 └── Tests / Docs / CI         可回归、可独立 clone
 ```
@@ -37,6 +38,7 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - 稳定的 `BugAnalysisTask → BugAnalysisResult` Worker 契约。
 - 异步 HTTP 任务 API：SQLite 状态、幂等提交、受控并发和重启恢复。
 - Case 级 RCA 迭代：续分析会继承已有证据状态，并保留完整任务链与变更审计。
+- 可选视频证据 MCP：受限于当前 Case 路径，按需抽帧、调用视觉模型并返回可复核时间点。
 
 当前尚未实现 Code Search MCP、RAG 和 Jira 回写；路线见下方 Roadmap。
 
@@ -47,6 +49,7 @@ src/bug_agent/                    # Worker / Agent Core / Harness / CLI
 packages/jira-bug-mcp/            # Jira Adapter
 packages/log-analysis-core/       # 与协议无关的确定性解析引擎
 packages/log-analyzer-mcp/        # Core 的 MCP 安全适配层
+packages/video-analysis-mcp/      # 录屏/视频证据 MCP（ffmpeg + 可替换视觉模型）
 skills/                           # 团队维护的领域分析方法
 tests/                            # Agent 与 Provider 测试
 docs/architecture.md              # 分层与数据流
@@ -302,6 +305,7 @@ uv run pytest -q packages/log-analyzer-mcp/tests
 - [x] 根据 Issue 与首轮证据自动激活专项 Skill，并记录可审计理由
 - [ ] 历史 Bug RAG
 - [x] RCAReport Schema、兼容解析与 Markdown Renderer
+- [x] 可选 Video Analysis MCP：安全视频注册、关键帧、视觉分析和问题片段导出
 - [ ] 使用模型原生 constrained output 强制 RCAReport
 - [ ] Eval 数据集与 LLM-as-Judge
 - [ ] Human-in-the-loop Jira 回写

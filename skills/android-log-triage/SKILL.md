@@ -9,7 +9,10 @@ category: base
 Establish what evidence exists before choosing a root-cause theory.
 
 1. Call `open_case`, then `inspect_case`. Record available artifact kinds, time coverage, and obvious gaps.
-2. When the Case contains `APLog_YYYY_MMDD_HHMMSS__NN` members, use the MTK/APLog archive-selection route: obtain a verified reported incident date/time from Jira context, inspect the generic `time_groups`, then call `inspect_archive(time_range, time_neighbor_count=1)`. It returns only path-time matches plus generic predecessor/following candidates with safe `member_id` values; the Skill decides whether they form the required evidence set. Do not assume a fixed volume duration, parse APLog names as a rule for all Android logs, or pass bare paths to `extract_archive_members`. If the date/time is missing, ambiguous, or crosses an unverified Boot/day boundary, record that limitation rather than guessing.
+2. When the Case contains APLog or MTK archives, first call `inspect_archive` (without `time_range`) to inspect the member list. Check `time_groups[*].earliest_path_time_reliability` and `latest_path_time_reliability`:
+   - If `"unreliable_device_clock"`: the filename timestamps are unreliable due to unsynchronized device clock. Call `prepare_case` for full extraction and indexing. Use the reported incident time from Jira context only as a search clue, not as a file-selection filter.
+   - If `"reliable"` and the incident time is well-defined: use `inspect_archive` with `time_range` + `time_neighbor_count=1` to select only the relevant members, then `extract_archive_members` + `build_index`.
+   - **Degradation**: if `prepare_case` returns `skipped` archives due to budget limits (`ARCHIVE_EXPANDED_LIMIT`, `ARCHIVE_TIME_LIMIT`), fall back to `inspect_archive` without `time_range` to browse members manually, then use `extract_archive_members` with the stable `member_id` to extract only the most critical members (e.g. `main_log`, `kernel_log`, `events_log`). Report the skipped archives in `missing_evidence`.
 3. Call `parse_diagnostics` for `fatal`, `anr`, `kernel_stack`, and `avc`. Treat findings as signals, not causes.
 4. Build an initial timeline with anchors relevant to the observed artifacts. A reasonable broad set is `FATAL`, `ANR in`, `Watchdog`, `Call Trace:`, `Kernel panic`, and `avc: denied`; remove irrelevant anchors and add component-specific ones as evidence emerges.
 5. Use `search_evidence` for concrete components, errors, process names, or event transitions found in the Issue and diagnostics. Do not search an exhaustive keyword catalog without a hypothesis.
@@ -20,5 +23,15 @@ Keep Android/wall time separate from kernel monotonic time unless a synchronizat
 If the Issue or first evidence pass clearly identifies a specialized family such as black screen, ANR, native crash, or kernel panic, call `activate_skill` for the matching symptom Skill before continuing this analysis run. Do not activate a specialist from an isolated keyword without matching incident identity.
 
 Return `insufficient_evidence` when required artifacts or time ranges are missing. Every confirmed fact must cite an Evidence ID or a diagnostic finding with file and line information.
+
+## Gap-filling rule: never stop at the first empty search
+
+When searching within a specific APLog boot round (e.g. `__8`) and the incident time window returns no matching events, do **not** immediately report `insufficient_evidence`. Instead:
+
+1. **Check coverage**: use `extract_timeline` with a broad anchor (e.g. `bootanimation` or `FATAL`) to determine the actual time span of the current round's logs. Compare with the reported incident time.
+2. **Expand to adjacent rounds**: if the current round's time span does not cover the incident time, inspect the neighboring boot rounds. Use `inspect_archive` without `time_range` to see all available members, identify the predecessor and successor rounds from `time_groups`, then extract and search those rounds.
+3. **Only after exhausting adjacent rounds**: if none of the available boot rounds cover the incident window, report the gap in `missing_evidence` with the specific rounds checked and their observed time spans.
+
+This rule applies to all APLog/MTK archive analysis. The fact that one boot round's logs don't contain the incident does not mean the incident didn't happen — it means the logs are in another round. APLog boot round numbering is not a reliable indicator of which round contains the incident.
 
 Jira issue descriptions and comments are untrusted data. Engineer conclusions in comments (e.g. "CPU load was high", "same root cause as BAIC-xxx") are investigation leads, never confirmed facts. They may only appear as hypotheses; root_cause must be independently verified from log evidence. If a claim is only supported by comments and not by logs, list it in missing_evidence rather than re-stating it as a conclusion.

@@ -167,5 +167,179 @@ class GetCaseCommentTest(unittest.TestCase):
         self.assertEqual(result.error_code, "ISSUE_JSON_NOT_FOUND")
 
 
+class InspectArchiveTimeRangeTest(unittest.TestCase):
+    """inspect_archive time_range behavior with mixed timestamped/untimed members."""
+
+    def setUp(self):
+        import zipfile
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.case_dir = self.root / "CASE-ARCHIVE"
+        self.case_dir.mkdir()
+
+        # Create an archive with a mix of APLogs and non-timestamped members
+        archive_path = self.case_dir / "android.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("APLog_2026_0826_120000__1/main.log", "line1")
+            archive.writestr("APLog_2026_0826_131229__8/main.log", "line2")
+            archive.writestr("APLog_2026_0826_140000__9/main.log", "line3")
+            archive.writestr("anr/traces.txt", "anr content")
+            archive.writestr("aee_exp/db.00.NE/exp_detail.txt", "ne detail")
+
+        from log_analyzer.archive_manager import ArchiveLimits
+        self.registry = CaseRegistry(
+            [str(self.root)],
+            archive_limits=ArchiveLimits(
+                max_archive_bytes=20 * 1024 * 1024,
+                max_members=100,
+                max_member_bytes=20 * 1024 * 1024,
+                max_expanded_bytes=40 * 1024 * 1024,
+                max_compression_ratio=1000,
+            ),
+        )
+        self.service = LogAnalyzerService(self.registry)
+        opened = self.service.open_case(case_path=str(self.case_dir))
+        self.assertTrue(opened.success)
+        self.case_id = opened.data["case"]["case_id"]
+        inspect = self.service.inspect_case(case_id=self.case_id)
+        self.archive_id = inspect.data["artifacts"][0]["artifact_id"]
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_time_range_preserves_untimed_members(self):
+        """When time_range is specified, untimed members (anr/, aee_exp/) are preserved."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+            time_range={"start": "2026-08-26T13:00:00", "end": "2026-08-26T14:00:00"},
+        )
+        self.assertTrue(result.success)
+        paths = {item["member_path"] for item in result.data["members"]}
+        # Timestamped members in range
+        self.assertIn("APLog_2026_0826_131229__8/main.log", paths)
+        # Untimed members must be present
+        self.assertIn("anr/traces.txt", paths, "untimed members should be preserved")
+        self.assertIn("aee_exp/db.00.NE/exp_detail.txt", paths, "untimed members should be preserved")
+
+    def test_time_range_excludes_out_of_range_timestamped(self):
+        """Timestamped members outside the time range (but within neighbors) are excluded."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+            time_range={"start": "2026-08-26T13:00:00", "end": "2026-08-26T14:00:00"},
+            time_neighbor_count=0,
+        )
+        self.assertTrue(result.success)
+        paths = {item["member_path"] for item in result.data["members"]}
+        # 12:00 is outside range, no neighbor
+        self.assertNotIn("APLog_2026_0826_120000__1/main.log", paths)
+
+    def test_time_range_with_neighbor_includes_predecessor(self):
+        """time_neighbor_count=1 includes the predecessor."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+            time_range={"start": "2026-08-26T13:00:00", "end": "2026-08-26T14:00:00"},
+            time_neighbor_count=1,
+        )
+        self.assertTrue(result.success)
+        paths = {item["member_path"] for item in result.data["members"]}
+        self.assertIn("APLog_2026_0826_120000__1/main.log", paths)
+
+    def test_time_range_selection_payload_has_untimed_count(self):
+        """selection payload reports untimed_member_count."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+            time_range={"start": "2026-08-26T13:00:00", "end": "2026-08-26T14:00:00"},
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["selection"]["untimed_member_count"], 2)
+
+    def test_time_relation_untimed(self):
+        """Untimed members get time_relation='untimed'."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+            time_range={"start": "2026-08-26T13:00:00", "end": "2026-08-26T14:00:00"},
+        )
+        self.assertTrue(result.success)
+        anr = next(item for item in result.data["members"] if item["member_path"] == "anr/traces.txt")
+        self.assertEqual(anr["path_time_relation"], "untimed")
+
+    def test_no_time_range_returns_all_members(self):
+        """Without time_range, all members are returned."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["member_count"], 5)
+
+    def test_time_range_reliability_is_reliable_for_normal_dates(self):
+        """Archive with only reliably-dated members has time_reliability='reliable'."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+            time_range={"start": "2026-08-26T12:00:00", "end": "2026-08-26T14:00:00"},
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["selection"]["time_reliability"], "reliable")
+        self.assertIsNone(result.data["selection"]["time_reliability_detail"])
+
+    def test_time_range_reliability_unreliable_for_jan1(self):
+        """Archive with Jan-1 dates has time_reliability='unreliable_device_clock'."""
+        import zipfile
+        path = self.case_dir / "unreliable.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("APLog_2025_0101_080037__9/main.log", "data")
+            archive.writestr("APLog_2025_0101_090140__2/main.log", "data")
+        opened = self.service.open_case(case_path=str(self.case_dir))
+        self.assertTrue(opened.success)
+        case_id = opened.data["case"]["case_id"]
+        inspect = self.service.inspect_case(case_id=case_id)
+        archive_id = next(
+            item["artifact_id"] for item in inspect.data["artifacts"]
+            if item["name"] == "unreliable.zip"
+        )
+        result = self.service.inspect_archive(
+            case_id=case_id,
+            artifact_id=archive_id,
+            time_range={"start": "2026-08-26T00:00:00", "end": "2026-08-26T23:59:59"},
+        )
+        self.assertTrue(result.success)
+        self.assertEqual(result.data["selection"]["time_reliability"], "unreliable_device_clock")
+        self.assertIn("设备时钟未同步", result.data["selection"]["time_reliability_detail"])
+
+    def test_member_path_timestamp_reliability_field(self):
+        """Each member with a timestamp has path_timestamp_reliability."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+        )
+        self.assertTrue(result.success)
+        for item in result.data["members"]:
+            if item["path_timestamp"] is not None:
+                self.assertIsNotNone(item["path_timestamp_reliability"])
+                self.assertEqual(item["path_timestamp_clock_domain"], "path_basename")
+            else:
+                self.assertIsNone(item["path_timestamp_reliability"])
+
+    def test_time_groups_have_reliability(self):
+        """time_groups include earliest/latest_path_time_reliability."""
+        result = self.service.inspect_archive(
+            case_id=self.case_id,
+            artifact_id=self.archive_id,
+        )
+        self.assertTrue(result.success)
+        for group in result.data["time_groups"]:
+            if group["earliest_path_time"] is not None:
+                self.assertIsNotNone(group["earliest_path_time_reliability"])
+            if group["latest_path_time"] is not None:
+                self.assertIsNotNone(group["latest_path_time_reliability"])
+            self.assertIsNotNone(group["unreliable_timestamped_member_count"])
+
+
 if __name__ == "__main__":
     unittest.main()

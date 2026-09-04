@@ -61,12 +61,50 @@ class ArchiveMemberInfo:
     reason: str | None = None
 
 
+class TimeReliability:
+    """路径时间戳的可信度分类。
+
+    RELIABLE: 年份在合理范围内且不像是默认日期，时间戳可参与筛选。
+    UNRELIABLE_DEVICE_CLOCK: 设备时钟未同步（年份过旧，或日期为可疑的默认值如 1月1日），时间戳不可用于筛选。
+    UNRELIABLE_FUTURE: 年份远在未来（> 2030），时间戳不可用于筛选。
+    """
+
+    RELIABLE = "reliable"
+    UNRELIABLE_DEVICE_CLOCK = "unreliable_device_clock"
+    UNRELIABLE_FUTURE = "unreliable_future"
+
+    # 年份可信范围：2024 年（常见设备出厂年份）到 2030 年（未来合理范围）
+    _MIN_RELIABLE_YEAR = 2024
+    _MAX_RELIABLE_YEAR = 2030
+
+    @staticmethod
+    def assess(parsed: datetime) -> str:
+        year = parsed.year
+        if year < TimeReliability._MIN_RELIABLE_YEAR:
+            return TimeReliability.UNRELIABLE_DEVICE_CLOCK
+        if year > TimeReliability._MAX_RELIABLE_YEAR:
+            return TimeReliability.UNRELIABLE_FUTURE
+        # 年份在合理范围但日期是 1月1日——这是设备时钟重置后的默认日期，
+        # 例如 APLog_2025_0101_080037 中 2025-01-01 是设备 RTC 未同步时的值
+        if parsed.month == 1 and parsed.day == 1:
+            return TimeReliability.UNRELIABLE_DEVICE_CLOCK
+        return TimeReliability.RELIABLE
+
+
 @dataclass(frozen=True)
 class ParsedPathTimestamp:
-    """从成员路径中直接读出的时间事实，不包含领域或时钟推断。"""
+    """从成员路径中直接读出的时间事实。
+
+    clock_domain: 始终为 "path_basename"，表示这是文件名中嵌入的本地时钟，
+                  不经过日志内容验证，可能与日志内部时间戳不在同一时钟域。
+    reliability: 时间戳的可信度。RELIABLE 表示年份在合理范围；
+                 UNRELIABLE_DEVICE_CLOCK 表示设备时钟未同步。
+    """
 
     value: datetime
     pattern: str
+    clock_domain: str = "path_basename"
+    reliability: str = TimeReliability.RELIABLE
 
 
 _PATH_TIMESTAMP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -90,28 +128,48 @@ _PATH_TIMESTAMP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def parse_path_timestamp(member_path: str) -> ParsedPathTimestamp | None:
-    """解析 basename 中的常见绝对时间，不识别产品、目录或日志语义。"""
+    """从成员路径中解析常见绝对时间，返回带 clock_domain 和 reliability 标记的结果。
 
-    name = PurePosixPath(member_path).name
-    for pattern_name, pattern in _PATH_TIMESTAMP_PATTERNS:
-        match = pattern.search(name)
-        if match is None:
-            continue
-        try:
-            return ParsedPathTimestamp(
-                value=datetime(
+    依次检查路径的每个组成部分（从 basename 到最顶层父目录），
+    第一个匹配到的时间戳即为结果。这覆盖了 APLog 归档中常见的两种布局：
+    - 扁平命名：APLog_2026_0826_131229__8.tar.gz（时间戳在 basename）
+    - 目录嵌套：APLog_2026_0826_131229__8/main.log（时间戳在父目录名）
+
+    返回值始终标记 clock_domain="path_basename"：文件名时间戳来自设备本地时钟，
+    可能与日志内部时间戳不在同一时钟域，不应直接与日志内容时间比较。
+
+    reliability 标记：
+    - "reliable": 年份在 2024-2030 范围且非 1月1日，可参与时间筛选
+    - "unreliable_device_clock": 年份 < 2024 或日期为 1月1日，设备时钟未同步
+    - "unreliable_future": 年份 > 2030，明显异常
+    """
+
+    # 从 basename 开始逐层向上检查路径的每个组成部分
+    parts = PurePosixPath(member_path).parts
+    # 反转顺序：从 basename 到顶层目录
+    for part in reversed(parts):
+        for pattern_name, pattern in _PATH_TIMESTAMP_PATTERNS:
+            match = pattern.search(part)
+            if match is None:
+                continue
+            try:
+                parsed = datetime(
                     int(match["year"]), int(match["month"]), int(match["day"]),
                     int(match["hour"]), int(match["minute"]), int(match["second"]),
-                ),
-                pattern=pattern_name,
-            )
-        except ValueError:
-            continue
+                )
+                return ParsedPathTimestamp(
+                    value=parsed,
+                    pattern=pattern_name,
+                    clock_domain="path_basename",
+                    reliability=TimeReliability.assess(parsed),
+                )
+            except ValueError:
+                continue
     return None
 
 
 def summarize_member_times(members: list[ArchiveMemberInfo]) -> list[dict[str, object]]:
-    """按直接父目录聚合路径时间，供调用方决定领域相关成员。"""
+    """按直接父目录聚合路径时间，包含可靠性标记，供调用方决定领域相关成员。"""
 
     groups: dict[str, dict[str, object]] = {}
     for member in members:
@@ -120,9 +178,12 @@ def summarize_member_times(members: list[ArchiveMemberInfo]) -> list[dict[str, o
             "path_prefix": "" if parent == "." else f"{parent}/",
             "member_count": 0,
             "timestamped_member_count": 0,
+            "unreliable_timestamped_member_count": 0,
             "untimestamped_member_count": 0,
             "earliest_path_time": None,
+            "earliest_path_time_reliability": None,
             "latest_path_time": None,
+            "latest_path_time_reliability": None,
         })
         group["member_count"] = int(group["member_count"]) + 1
         parsed = parse_path_timestamp(member.member_path)
@@ -130,13 +191,19 @@ def summarize_member_times(members: list[ArchiveMemberInfo]) -> list[dict[str, o
             group["untimestamped_member_count"] = int(group["untimestamped_member_count"]) + 1
             continue
         group["timestamped_member_count"] = int(group["timestamped_member_count"]) + 1
+        if parsed.reliability != TimeReliability.RELIABLE:
+            group["unreliable_timestamped_member_count"] = int(
+                group["unreliable_timestamped_member_count"]
+            ) + 1
         value = parsed.value.isoformat()
         earliest = group["earliest_path_time"]
         latest = group["latest_path_time"]
         if earliest is None or value < earliest:
             group["earliest_path_time"] = value
+            group["earliest_path_time_reliability"] = parsed.reliability
         if latest is None or value > latest:
             group["latest_path_time"] = value
+            group["latest_path_time_reliability"] = parsed.reliability
     return sorted(groups.values(), key=lambda item: str(item["path_prefix"]))
 
 

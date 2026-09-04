@@ -246,3 +246,118 @@ def test_extra_user_content_makes_destination_a_conflict(tmp_path: Path):
 
     assert caught.value.code == "ARCHIVE_DESTINATION_CONFLICT"
     assert (result.destination / "notes.txt").read_text() == "user content"
+
+
+# ---------------------------------------------------------------------------
+# parse_path_timestamp reliability tests (pure functions, no tmp_path needed)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_path_timestamp_reliable_year():
+    """2026-08-26 is a normal device date — reliable."""
+    p = parse_path_timestamp("APLog_2026_0826_131229__8.tar.gz")
+    assert p is not None
+    assert p.reliability == "reliable"
+    assert p.clock_domain == "path_basename"
+    assert p.value == datetime(2026, 8, 26, 13, 12, 29)
+
+
+def test_parse_path_timestamp_jan1_is_unreliable():
+    """Jan 1st is a default date when device RTC resets — unreliable."""
+    p = parse_path_timestamp("APLog_2025_0101_080037__9.tar.gz")
+    assert p is not None
+    assert p.reliability == "unreliable_device_clock"
+
+
+def test_parse_path_timestamp_old_year():
+    """Year < 2024 — unreliable device clock."""
+    p = parse_path_timestamp("APLog_2023_0615_120000__1.tar.gz")
+    assert p is not None
+    assert p.reliability == "unreliable_device_clock"
+
+
+def test_parse_path_timestamp_future_year():
+    """Year > 2030 — unreliable future."""
+    p = parse_path_timestamp("APLog_2031_0101_120000__1.tar.gz")
+    assert p is not None
+    assert p.reliability == "unreliable_future"
+
+
+def test_parse_path_timestamp_march_is_reliable():
+    """March 15 in a valid year is not Jan 1 — reliable."""
+    p = parse_path_timestamp("APLog_2025_0315_120000__1.tar.gz")
+    assert p is not None
+    assert p.reliability == "reliable"
+
+
+def test_parse_path_timestamp_no_timestamp():
+    """Names without timestamp patterns return None."""
+    p = parse_path_timestamp("anr/traces.txt")
+    assert p is None
+
+
+def test_parse_path_timestamp_all_patterns():
+    """All four documented patterns parse correctly."""
+    patterns = [
+        ("APLog_2026_0826_131229__8.tar.gz", datetime(2026, 8, 26, 13, 12, 29)),
+        ("logs/2026_08_26_14_30_00_main.log", datetime(2026, 8, 26, 14, 30)),
+        ("log_20260826_153000.txt", datetime(2026, 8, 26, 15, 30)),
+        ("trace_20260826-163000.perfetto", datetime(2026, 8, 26, 16, 30)),
+    ]
+    for path, expected in patterns:
+        p = parse_path_timestamp(path)
+        assert p is not None, f"Failed to parse: {path}"
+        assert p.value == expected, f"{path}: expected {expected}, got {p.value}"
+        assert p.clock_domain == "path_basename"
+        assert p.reliability == "reliable"
+
+
+# ---------------------------------------------------------------------------
+# summarize_member_times with reliability
+# ---------------------------------------------------------------------------
+
+
+def test_summarize_member_times_reliability():
+    from log_analyzer.archive_selection import ArchiveMemberInfo
+
+    members = [
+        ArchiveMemberInfo("id1", "APLog_2025_0101_080037__9.tar.gz", 100, None, "archive", True, True, None),
+        ArchiveMemberInfo("id2", "APLog_2026_0826_131229__8.tar.gz", 200, None, "archive", True, True, None),
+        ArchiveMemberInfo("id3", "anr/traces.txt", 50, None, "text", False, True, None),
+    ]
+    groups = summarize_member_times(members)
+    assert len(groups) == 2
+
+    # Root group: both APLogs
+    root = groups[0]
+    assert root["timestamped_member_count"] == 2
+    assert root["unreliable_timestamped_member_count"] == 1
+    assert root["untimestamped_member_count"] == 0
+    # Earliest is 2025-01-01 (unreliable)
+    assert root["earliest_path_time"] == "2025-01-01T08:00:37"
+    assert root["earliest_path_time_reliability"] == "unreliable_device_clock"
+    # Latest is 2026-08-26 (reliable)
+    assert root["latest_path_time"] == "2026-08-26T13:12:29"
+    assert root["latest_path_time_reliability"] == "reliable"
+
+    # anr/ group: no timestamps
+    anr = groups[1]
+    assert anr["timestamped_member_count"] == 0
+    assert anr["unreliable_timestamped_member_count"] == 0
+    assert anr["untimestamped_member_count"] == 1
+    assert anr["earliest_path_time"] is None
+    assert anr["earliest_path_time_reliability"] is None
+
+
+def test_summarize_member_times_all_reliable():
+    from log_analyzer.archive_selection import ArchiveMemberInfo
+
+    members = [
+        ArchiveMemberInfo("id1", "APLog_2026_0826_120000__1.tar.gz", 100, None, "archive", True, True, None),
+        ArchiveMemberInfo("id2", "APLog_2026_0826_131229__8.tar.gz", 200, None, "archive", True, True, None),
+    ]
+    groups = summarize_member_times(members)
+    assert groups[0]["timestamped_member_count"] == 2
+    assert groups[0]["unreliable_timestamped_member_count"] == 0
+    assert groups[0]["earliest_path_time_reliability"] == "reliable"
+    assert groups[0]["latest_path_time_reliability"] == "reliable"

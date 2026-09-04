@@ -18,9 +18,12 @@ Call `open_case` and `inspect_case` first. Classify available artifacts by domai
 
 Do not infer the active boot round from `log00`/`log01` numbering alone. Confirm it with `mblog_history`, timestamps, reboot markers, or another boot identity. Treat claims about `boot__normal` retention as platform conventions that require confirmation from the collected file tree.
 
-If required evidence is inside an archive, call `inspect_archive` first. Select the smallest useful member set from the symptom, incident-time window, log domain, filename and size, then call `extract_archive_members` and `build_index` for the returned Artifact IDs. Expand the selection only when evidence is insufficient. Use `prepare_case` only as an explicit full-extraction fallback after progressive selection fails or the user requests complete preparation. If the format is unsupported or a safety budget rejects it, return missing evidence with the reported reason. Never pretend an archive filename proves its contents.
+If required evidence is inside an archive, first call `inspect_archive` (without `time_range`) to inspect the member catalog. Check `time_groups` for `earliest_path_time_reliability`:
 
-For members named `APLog_YYYY_MMDD_HHMMSS__NN`, first take the reported incident date/time from validated Jira context. Inspect the generic `time_groups`, then call `inspect_archive(time_range, time_neighbor_count=1)` to obtain the timestamp-matched members and generic predecessor/successor candidates with safe `member_id` values. Treat the names as a selection signal only: do not assume a fixed APLog duration, infer a Boot round from the sequence number, or guess when Jira provides only a time-of-day or an ambiguous date. A returned `extracted=true` plus `artifact_id` is reusable evidence and must not be extracted again.
+- **`unreliable_device_clock`**: the filename timestamps are unreliable due to unsynchronized device clock. Do not use `inspect_archive(time_range=...)`. Call `prepare_case` to extract and index all members. If the archive is too large and `prepare_case` returns skipped archives, fall back to `inspect_archive` without `time_range` to browse members manually, then use `extract_archive_members` with the stable `member_id`.
+- **`reliable`**: the filename timestamps are in a plausible range (2024-2030). If the incident time is well-defined from Jira context, use `inspect_archive` with `time_range` + `time_neighbor_count=1` to select only the relevant members, then `extract_archive_members` + `build_index`. If the format is unsupported or a safety budget rejects it, return missing evidence with the reported reason.
+
+For APLog archives: 参见 `references/aplog-archive-selection.md`。先检查 `time_groups` 中的 `path_time_reliability`，根据可靠性决定使用全量解压还是时间筛选。
 
 For SOS/TBox archives containing `Linux_Log/logNN` boot rounds, `Mcu_Log`, `can_log`, `ota`, `pki`, or `data` directories, use the time-based boot round selection strategy in `references/sos-archive-selection.md`. Do not default to the highest-numbered `logNN` directory — the incident often occurred in an earlier round. Use generic `time_groups` to identify candidate directory prefixes, then request their members with `path_prefix`; the Skill, not the tool, decides the incident/predecessor/successor rounds and required reboot evidence. For reboot analysis, always include `reboot-reason`, `pl_lk`, and `bootprof` from the post-reboot round.
 
@@ -71,6 +74,16 @@ Prefer two independent artifacts when crossing Android/Linux, guest/hypervisor, 
 Every confirmed fact must cite an Evidence ID or diagnostic finding with relative path and line information. Preserve process, boot and domain identity when the same tag appears in multiple VMs or rounds.
 
 Return `insufficient_evidence` when the symptom window, required domain, archive contents, clock anchor, or layer boundary is absent. Do not compensate by broad keyword scanning.
+
+## Gap-filling rule: never stop at the first empty search
+
+When searching within a specific APLog boot round and the incident time window returns no matching events, do **not** immediately report `insufficient_evidence`. Instead:
+
+1. **Check coverage**: use `extract_timeline` with a broad anchor (e.g. `bootanimation` or `FATAL`) to determine the actual time span of the current round's logs. Compare with the reported incident time.
+2. **Expand to adjacent rounds**: if the current round doesn't cover the incident time, inspect neighboring boot rounds. Use `inspect_archive` without `time_range` to see all members, identify the predecessor and successor rounds from `time_groups`, then extract and search those rounds.
+3. **Only after exhausting adjacent rounds**: if none of the available boot rounds cover the incident window, report the gap in `missing_evidence` with the specific rounds checked and their observed time spans.
+
+APLog boot round numbering is not a reliable indicator of which round contains the incident — the crash may trigger a reboot and the incident logs are in the prior round, or the device may have booted multiple times.
 
 Platform details for maintainers are separated by concern:
 

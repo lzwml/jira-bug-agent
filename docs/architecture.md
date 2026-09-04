@@ -51,6 +51,8 @@ Skill                  怎么调查、关注什么、证据何时充分
 Log MCP                安全注册 Case、执行有预算的工具调用
   ↓
 Log Analysis Core      时间戳、稳定 ID、诊断信号等确定性解析
+
+Video Analysis MCP     安全注册 Case 内录屏、抽取关键帧、调用视觉模型
 ```
 
 Skill 不执行文件操作，也不承担安全控制。Core 不决定某条 Fatal 或 AVC 是否是
@@ -102,6 +104,13 @@ local directory
 两条流程最终复用同一套日志证据契约，这就是 Jira Adapter 与 Agent Core 解耦
 后的直接收益。
 
+当 `VIDEO_ANALYZER_ENABLE=true` 时，Worker 会额外挂载 Video Analysis MCP，并把
+当前 Case（Jira 模式下为导出根目录）作为唯一允许读取根目录。Agent 只有在需要确认
+操作路径、UI 状态或故障发生时刻时才应注册视频。MCP 使用 `ffprobe` 读取元数据，
+使用 `ffmpeg` 在服务端工作区提取有限关键帧；`analyze_video` 将关键帧发送给配置的
+OpenAI-compatible 视觉端点，并返回带 `timestamp_ms` 的证据。视频模型结论只是一项
+观察，必须与日志或确定性诊断交叉验证，不能单独认定根因。
+
 ## 和 DSH/Harness 的关系
 
 Harness 负责模型调用、Tool Call 循环、错误观察、状态和终止条件；MCP 提供外部
@@ -116,3 +125,4 @@ Harness 负责模型调用、Tool Call 循环、错误观察、状态和终止�
 - Jira 描述、评论和日志都视为不可信数据；
 - Tool Result 有字符预算，Agent Loop 有步骤预算；
 - 当前 Agent 不会回写 Jira，也不会执行附件。
+- Video MCP 不向模型暴露绝对路径；视频大小、时长、关键帧数量和裁剪长度均有服务端上限。

@@ -41,7 +41,7 @@ class ArchiveLimits:
     max_member_bytes: int = 4 * 1024 * 1024 * 1024
     max_expanded_bytes: int = 16 * 1024 * 1024 * 1024
     max_compression_ratio: float = 200.0
-    max_depth: int = 2
+    max_depth: int = 3
     max_runtime_seconds: float = 300.0
 
 
@@ -413,20 +413,34 @@ class ArchiveExtractor:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             source_stat = archive_path.stat()
-            if (
-                manifest.get("version") != 1
-                or manifest.get("mode", "full") != "full"
-                or manifest.get("source_size") != source_stat.st_size
-                or manifest.get("source_mtime_ns") != source_stat.st_mtime_ns
-                or not isinstance(manifest.get("source_sha256"), str)
-            ):
+            version = manifest.get("version")
+            if version == 1:
+                if (
+                    manifest.get("mode", "full") != "full"
+                    or manifest.get("source_size") != source_stat.st_size
+                    or manifest.get("source_mtime_ns") != source_stat.st_mtime_ns
+                    or not isinstance(manifest.get("source_sha256"), str)
+                ):
+                    return None
+                source_sha256 = manifest["source_sha256"]
+            elif version == 2:
+                fingerprint = manifest.get("source_fingerprint")
+                if (
+                    not isinstance(fingerprint, dict)
+                    or fingerprint.get("size_bytes") != source_stat.st_size
+                    or fingerprint.get("mtime_ns") != source_stat.st_mtime_ns
+                    or not isinstance(fingerprint.get("sha256"), str)
+                ):
+                    return None
+                source_sha256 = fingerprint["sha256"]
+            else:
                 return None
-            if _source_sha256(archive_path, budget) != manifest["source_sha256"]:
+            if _source_sha256(archive_path, budget) != source_sha256:
                 return None
             members: list[ExtractedMember] = []
             seen: set[str] = set()
             for raw in manifest.get("members", []):
-                member_path = _safe_member_path(str(raw["path"]))
+                member_path = _safe_member_path(str(raw.get("member_path", raw.get("path"))))
                 key = member_path.casefold()
                 if key in seen:
                     return None

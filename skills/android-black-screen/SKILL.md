@@ -12,7 +12,9 @@ Determine the lowest layer at which the expected frame or display transition sto
 
 Call `open_case` and `inspect_case`. Identify whether the Case contains logcat, kernel logs, dumpsys/SurfaceFlinger state, tombstones, ANR traces, or display traces. Establish the user-visible start/end event from the Issue when possible. If the reproduction time is unknown, report that limitation before making timing claims.
 
-**Log selection: when extracting from APLog/MTK archives, you must include at least one `sys_log` and one `events_log` in addition to `main_log` and `kernel_log`. SurfaceFlinger, HWC, WindowManager, and display power events are logged in sys_log/events_log, not in main_log. Searching for SurfaceFlinger in main_log alone will return zero matches and falsely suggest the display layer is clean.**
+**Log selection: when extracting from APLog/MTK archives, first call `inspect_archive` (without `time_range`) to check member timestamps. If `time_groups` shows `earliest_path_time_reliability: "unreliable_device_clock"`, the filename timestamps are unreliable — call `prepare_case` to extract and index all members. If timestamps are `"reliable"` and incident time is known, use `inspect_archive` with `time_range` + `time_neighbor_count=1` to select only relevant members, then `extract_archive_members` + `build_index`. You must include at least one `sys_log` and one `events_log` in addition to `main_log` and `kernel_log`. SurfaceFlinger, HWC, WindowManager, and display power events are logged in sys_log/events_log, not in main_log. Searching for SurfaceFlinger in main_log alone will return zero matches and falsely suggest the display layer is clean.**
+
+**Degradation (budget limits): if `prepare_case` returns `skipped` archives, fall back to `inspect_archive` without `time_range` to browse members, then use `extract_archive_members` with the stable `member_id` to extract only the critical display-layer members (`main_log`, `sys_log`, `events_log`, `kernel_log`). If these logs are not available in the archive, report the gap in `missing_evidence`.**
 
 ## Build the display timeline
 
@@ -41,3 +43,11 @@ A supported conclusion should connect at least: the user-visible symptom window,
 - The goal is to rule out a multi-layer failure, not to assume the first strong signal is the only cause.
 
 Report `insufficient_evidence` if the necessary layer boundary cannot be observed. Keep plausible alternatives in `hypotheses`; do not label a component as root cause solely because its name appears near an error.
+
+## Gap-filling rule: never stop at the first empty search
+
+When searching within a specific APLog boot round and the incident time window returns no matching events, do **not** immediately report `insufficient_evidence`. Instead:
+
+1. **Check coverage**: use `extract_timeline` with a broad anchor (e.g. `bootanimation`) to determine the actual time span of the current round's logs. Compare with the reported incident time.
+2. **Expand to adjacent rounds**: if the current round doesn't cover the incident time, inspect neighboring boot rounds. Use `inspect_archive` without `time_range` to see all members, identify the predecessor and successor rounds from `time_groups`, then extract and search those rounds.
+3. **Only after exhausting adjacent rounds**: if none of the available boot rounds cover the incident window, report the gap in `missing_evidence` with the specific rounds checked and their observed time spans.

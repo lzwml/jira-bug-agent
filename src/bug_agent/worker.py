@@ -23,6 +23,7 @@ from .prompts import (
     JIRA_WORKFLOW_PROMPT,
     LOCAL_WORKFLOW_PROMPT,
     REPORT_FORMAT_PROMPT,
+    VIDEO_ANALYSIS_WORKFLOW_PROMPT,
 )
 from .provider import OpenAICompatibleProvider, ProviderError
 from .runstore import RunRecorder, write_run_record
@@ -189,6 +190,16 @@ class BugAnalysisWorker:
             env["OPENGROK_PASSWORD"] = self.config.opengrok_password
         await connect("opengrok", "opengrok_mcp.server", env)
 
+    async def _connect_video_analysis(self, router: Any, allowed_root: Path) -> None:
+        """按需挂载视频 MCP；路径授权始终收敛到当前 Case/导出根目录。"""
+        if not self.config.enable_video_analysis:
+            return
+        connect = getattr(router, "connect_python_server")
+        await connect(
+            "video", "video_analysis.server",
+            {"VIDEO_ANALYZER_ALLOWED_ROOTS": str(allowed_root)},
+        )
+
     @staticmethod
     def _context_metadata(
         verified: JiraInitialContext | None,
@@ -344,6 +355,10 @@ class BugAnalysisWorker:
                     if recorder_active:
                         recorder.on_phase(phase)
                     await self._connect_opengrok(router)
+                    phase = "video_analysis_setup"
+                    if recorder_active:
+                        recorder.on_phase(phase)
+                    await self._connect_video_analysis(router, export_root)
                     prompt = JIRA_WORKFLOW_PROMPT
                     instruction = (
                         f"任务编号：{task.task_id}\n"
@@ -363,6 +378,10 @@ class BugAnalysisWorker:
                     if recorder_active:
                         recorder.on_phase(phase)
                     await self._connect_opengrok(router)
+                    phase = "video_analysis_setup"
+                    if recorder_active:
+                        recorder.on_phase(phase)
+                    await self._connect_video_analysis(router, case_path)
                     prompt = LOCAL_WORKFLOW_PROMPT
                     instruction = (
                         f"任务编号：{task.task_id}\n"
@@ -416,12 +435,17 @@ class BugAnalysisWorker:
                             CODE_SEARCH_WORKFLOW_PROMPT
                             if self.config.enable_code_search else ""
                         )
+                    video_prompt = (
+                        VIDEO_ANALYSIS_WORKFLOW_PROMPT
+                        if self.config.enable_video_analysis else ""
+                    )
                     run = await BugAnalysisAgent(run_config, provider).run(
                         instruction,
                         prompt
                         + "\n\n" + skill_prompt
                         + ("\n\n" + catalog_prompt if catalog_prompt else "")
                         + code_search_prompt
+                        + video_prompt
                         + REPORT_FORMAT_PROMPT,
                         skill_router,
                         on_tool_event=recorder.on_tool_event if recorder_active else None,
@@ -661,6 +685,7 @@ class BugAnalysisWorker:
 
         # 3.5. 挂载 OpenGrok 代码搜索（可选）
         await self._connect_opengrok(router)
+        await self._connect_video_analysis(router, case_path)
 
         # 4. 创建 Provider
         provider = self.provider_factory(run_config)
@@ -687,6 +712,8 @@ class BugAnalysisWorker:
         prompt += "\n\n" + skill_prompt
         if self.config.enable_code_search:
             prompt += CODE_SEARCH_WORKFLOW_PROMPT
+        if self.config.enable_video_analysis:
+            prompt += VIDEO_ANALYSIS_WORKFLOW_PROMPT
         prompt += REPORT_FORMAT_PROMPT
 
         # 7. 构建初始用户任务

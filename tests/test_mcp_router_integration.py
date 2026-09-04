@@ -26,3 +26,19 @@ async def test_router_discovers_jira_and_log_tools(tmp_path):
             "prepare_case", "extract_timeline", "parse_diagnostics",
             "get_case_comment",
         }
+
+
+@pytest.mark.anyio
+async def test_router_discovers_video_evidence_tools(tmp_path):
+    async with McpToolRouter() as router:
+        await router.connect_python_server(
+            "video", "video_analysis.server",
+            {"VIDEO_ANALYZER_ALLOWED_ROOTS": str(tmp_path)},
+        )
+
+        names = {item["function"]["name"] for item in router.openai_tools()}
+
+    assert names == {
+        "open_video", "inspect_video", "extract_keyframes",
+        "analyze_video", "query_video", "get_clip",
+    }

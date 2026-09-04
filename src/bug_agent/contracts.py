@@ -67,6 +67,9 @@ class EvidenceReference(BaseModel):
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
     excerpt: str | None = Field(default=None, max_length=4000)
+    # 视频帧不具备行号；timestamp_ms 保留可复核的画面时间锚点。
+    timestamp_ms: int | None = Field(default=None, ge=0)
+    frame_path: str | None = None
 
     @model_validator(mode="after")
     def validate_line_range(self) -> "EvidenceReference":

@@ -207,6 +207,25 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_local_worker_optionally_connects_video_mcp_with_case_scoped_access(tmp_path):
+    harness = Harness(report_json())
+    worker = BugAnalysisWorker(
+        replace(CONFIG, enable_video_analysis=True),
+        harness.provider_factory, harness.router_factory,
+    )
+
+    result = await worker.execute(BugAnalysisTask(source="local", case_path=str(tmp_path)))
+
+    assert result.status == "completed"
+    assert [(name, module) for name, module, _ in harness.router.connections] == [
+        ("log", "log_analyzer.server"),
+        ("video", "video_analysis.server"),
+    ]
+    assert harness.router.connections[-1][2] == {"VIDEO_ANALYZER_ALLOWED_ROOTS": str(tmp_path)}
+    assert "视频证据" in harness.provider.messages[0][0]["content"]
+
+
+@pytest.mark.anyio
 async def test_continuation_worker_injects_prior_case_rca_as_untrusted_context(tmp_path):
     first = Harness(report_json())
     worker = BugAnalysisWorker(CONFIG, first.provider_factory, first.router_factory)

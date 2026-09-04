@@ -153,7 +153,7 @@ class CaseRegistry:
             max_member_bytes=_env_int("LOG_ANALYZER_MAX_MEMBER_BYTES", 4 * 1024**3),
             max_expanded_bytes=_env_int("LOG_ANALYZER_MAX_EXTRACTED_BYTES", 16 * 1024**3),
             max_compression_ratio=_env_float("LOG_ANALYZER_MAX_COMPRESSION_RATIO", 200.0),
-            max_depth=_env_int("LOG_ANALYZER_MAX_ARCHIVE_DEPTH", 2),
+            max_depth=_env_int("LOG_ANALYZER_MAX_ARCHIVE_DEPTH", 3),
             max_runtime_seconds=_env_float("LOG_ANALYZER_MAX_EXTRACT_SECONDS", 300.0),
         )
         index_limits = IndexLimits(

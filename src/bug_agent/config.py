@@ -33,6 +33,8 @@ class AgentConfig:
     opengrok_username: str = ""
     opengrok_password: str = ""
     opengrok_verify_ssl: bool = True
+    # 视频证据 MCP（可选，默认关闭）
+    enable_video_analysis: bool = False
 
     @classmethod
     def from_environment(cls) -> "AgentConfig":
@@ -93,6 +95,7 @@ class AgentConfig:
         if enable_code_search:
             if not opengrok_base_url:
                 raise ValueError("OPENGROK_BASE_URL 未设置（启用代码搜索时必须配置）")
+        enable_video_analysis = os.getenv("VIDEO_ANALYZER_ENABLE", "").strip().lower() == "true"
         return cls(
             llm_base_url=base_url,
             llm_api_key=api_key,
@@ -114,6 +117,7 @@ class AgentConfig:
             opengrok_username=opengrok_username,
             opengrok_password=opengrok_password,
             opengrok_verify_ssl=opengrok_verify_ssl,
+            enable_video_analysis=enable_video_analysis,
         )
 
 
