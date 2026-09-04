@@ -9,6 +9,15 @@ from pathlib import Path
 from jira_bug_mcp.config import load_local_env
 
 
+def _find_project_root() -> Path:
+    """从当前文件向上查找 pyproject.toml，确定项目根目录。"""
+    current = Path(__file__).resolve().parent
+    for ancestor in [current, *current.parents]:
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor
+    return Path.cwd()
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     llm_base_url: str
@@ -41,7 +50,10 @@ class AgentConfig:
 
     @classmethod
     def from_environment(cls) -> "AgentConfig":
-        load_local_env()
+        # 优先从项目根目录加载 .env（pyproject.toml 所在目录），
+        # 回退到 CWD，避免从上级目录运行时找不到配置文件。
+        _env_path = _find_project_root() / ".env"
+        load_local_env(_env_path if _env_path.is_file() else None)
         base_url = os.getenv("BUG_AGENT_LLM_BASE_URL", "").strip().rstrip("/")
         api_key = os.getenv("BUG_AGENT_LLM_API_KEY", "").strip()
         model = os.getenv("BUG_AGENT_LLM_MODEL", "").strip()
