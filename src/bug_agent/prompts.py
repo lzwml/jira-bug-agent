@@ -21,7 +21,9 @@ JIRA_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 1. Worker 已在进入本循环前确定性导出 Jira Case 并校验全部评论收集完整性；较小上下文位于 DIRECT_JIRA_CONTEXT，较大上下文以有损摘要形式位于 COMPILED_JIRA_CONTEXT。不要重复调用 collect_issue_context 或 export_issue_case。
 2. 先调用 open_case 注册导出的 Case，再调用 inspect_case。inspect_case 返回的 summary.archives 和 summary.large_text_files 是归档和大文件的优先索引，即使 artifacts 列表被截断这些摘要也始终完整。必须先处理 summary.archives 中的归档。
 3. 以 JIRA_CONTEXT 中的当前状态、已做动作、工程师建议和调查线索制定首轮计划；COMPILED_JIRA_CONTEXT 可能遗漏细节，需要核对时调用 get_case_comment(comment_id)，不得把评论观点直接当作根因证据。
-4. 对 summary.archives 中的每个归档，先调用 inspect_archive（不带 time_range）查看成员清单。如果 time_groups 中 earliest_path_time_reliability 或 latest_path_time_reliability 为 "unreliable_device_clock"，说明文件名时间戳不可信——此时必须直接调用 prepare_case 全部解压并建立索引，不要依赖路径时间做筛选。如果 reliability 为 "reliable"，且事故时间明确，可以使用 time_range + time_neighbor_count=1 只选择事故前后相关成员，然后用 extract_archive_members 解压选中的成员，最后用 build_index 建立索引。
+4. 对 summary.archives 中的每个归档，先调用 inspect_archive（不带 time_range）查看成员清单和 time_groups。根据 time_groups 中 earliest_path_time_reliability 决定选择策略：
+   - "reliable"：文件名时间戳可信。如果事故时间明确，使用 time_range + time_neighbor_count=1 选择事故前后相关成员，然后 extract_archive_members + build_index。
+   - "unreliable_device_clock"：文件名时间戳不可信。不要立即调用 prepare_case。改为：利用归档中的结构化 boot round 标识（SOS 归档的 logNN 目录编号、APLog 归档的 __NN 编号）识别候选 boot round。每个候选 round 只解压该 round 最小编号的关键日志文件（如 main_log 或 syslog.log），用 extract_timeline 探测实际内容时间范围。选择内容时间覆盖事故窗口的 round，再增量解压该 round 的其余成员。prepare_case 全量解压仅作为最后手段——当内容探测无法确定任何 round 的实际时间范围时才使用。具体策略参考已激活的 mtk-ivi-log-analysis Skill 中的 references/。
 5. 使用 search_evidence、extract_timeline、parse_diagnostics 收集并验证证据。事故时间只作为搜索线索，仍须用日志证据验证事故窗口。如果在当前 boot round 的日志中搜索事故时间无结果，先用 extract_timeline 确认当前 round 的实际时间跨度，再搜索相邻的 boot round（前驱/后继），不要直接报 missing_evidence。
 6. 综合经验证的 Jira 线索与日志证据输出结论。
 """
@@ -32,7 +34,9 @@ LOCAL_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 2. 调用 inspect_case 了解 Artifact 类型与规模。inspect_case 返回的 summary.archives 和 summary.large_text_files 是归档和大文件的优先索引，即使 artifacts 列表被截断，这些摘要也始终完整。必须先处理 summary.archives 中的归档，再处理其他附件。
 3. 如果输入中存在 DIRECT_JIRA_CONTEXT 或 COMPILED_JIRA_CONTEXT，说明 Worker 已硬校验 Jira 描述与全部评论；必须以其中的当前状态、已做动作、工程师建议和线索制定调查计划。编译摘要是有损的，需要核对精确措辞时使用 get_case_comment(comment_id)。纯本地日志 Case 可能没有该区块。
 4. 评论只是调查线索，不是根因证明；必须用日志、时间线或确定性诊断验证。
-5. 对 summary.archives 中的每个归档，先调用 inspect_archive（不带 time_range）查看成员清单。如果 time_groups 中 earliest_path_time_reliability 或 latest_path_time_reliability 为 "unreliable_device_clock"，说明文件名时间戳不可信——此时必须直接调用 prepare_case 全部解压并建立索引。如果 reliability 为 "reliable" 且事故时间明确，可以使用 time_range + time_neighbor_count=1 只选择事故前后相关成员，然后用 extract_archive_members 解压选中的成员，再用 build_index 建立索引。
+5. 对 summary.archives 中的每个归档，先调用 inspect_archive（不带 time_range）查看成员清单和 time_groups。根据 time_groups 中 earliest_path_time_reliability 决定选择策略：
+   - "reliable"：文件名时间戳可信。如果事故时间明确，使用 time_range + time_neighbor_count=1 选择事故前后相关成员，然后 extract_archive_members + build_index。
+   - "unreliable_device_clock"：文件名时间戳不可信。不要立即调用 prepare_case。改为：利用归档中的结构化 boot round 标识（SOS 归档的 logNN 目录编号、APLog 归档的 __NN 编号）识别候选 boot round。每个候选 round 只解压该 round 最小编号的关键日志文件（如 main_log 或 syslog.log），用 extract_timeline 探测实际内容时间范围。选择内容时间覆盖事故窗口的 round，再增量解压该 round 的其余成员。prepare_case 全量解压仅作为最后手段——当内容探测无法确定任何 round 的实际时间范围时才使用。具体策略参考已激活的 mtk-ivi-log-analysis Skill 中的 references/。
 6. 使用 search_evidence、extract_timeline、parse_diagnostics 收集证据。如果在当前 boot round 搜索事故时间无结果，先用 extract_timeline 确认实际时间跨度，再搜索相邻 boot round（前驱/后继），不要直接报 missing_evidence。
 """
 
