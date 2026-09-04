@@ -57,6 +57,7 @@ def test_mtk_ivi_skill_keeps_route_selection_in_the_runtime_entrypoint():
     assert "inspect_archive" in item.instructions
     assert "extract_archive_members" in item.instructions
     assert "prepare_case" in item.instructions
+    assert "source-verified round counters" in item.instructions
 
 
 def test_mtk_ivi_skill_references_are_present():
@@ -64,11 +65,14 @@ def test_mtk_ivi_skill_references_are_present():
     expected = {
         "android-vm.md",
         "linux-vm.md",
-            "clock-domains.md",
-                "archive-safety.md",
-                "aplog-archive-selection.md",
-                "sos-archive-selection.md",
-                "symptom-routing.md",
+        "clock-domains.md",
+        "archive-safety.md",
+        "aplog-archive-selection.md",
+        "sos-archive-selection.md",
+        "incident-archive-selection.md",
+        "symptom-routing.md",
+        "android-mobile-log-design.md",
+        "yocto-vlog-design.md",
     }
 
     assert {path.name for path in reference_root.glob("*.md")} == expected

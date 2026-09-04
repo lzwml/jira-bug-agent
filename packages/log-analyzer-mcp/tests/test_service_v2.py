@@ -6,6 +6,8 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from log_analyzer.case_registry import CaseRegistry
 from log_analyzer.service import LogAnalyzerService
@@ -48,6 +50,57 @@ class LogAnalyzerServiceV2Test(unittest.TestCase):
         self.assertEqual(diagnostics.data["finding_count"], 2)
         avc = next(item for item in diagnostics.data["findings"] if item["diagnostic_type"] == "avc")
         self.assertEqual(avc["attributes"]["permissions"], ["read", "write"])
+
+    def test_aee_db_is_highlighted_decoded_registered_and_indexed(self):
+        # The .dbg suffix must win over the embedded ANR token; binary AEE DBs
+        # must never be misclassified as directly readable ANR text.
+        dbg_path = self.case_dir / "db.03.ANR-sample.dbg"
+        dbg_path.write_bytes(b"aee-binary")
+        opened = self.service.open_case(case_path=str(self.case_dir))
+        self.assertTrue(opened.success)
+        self.case_id = opened.data["case"]["case_id"]
+
+        inspected = self.service.inspect_case(case_id=self.case_id)
+        self.assertTrue(inspected.success)
+        aee_items = inspected.data["summary"]["aee_databases"]
+        self.assertEqual(inspected.data["kinds"]["aee_db"], 1)
+        self.assertEqual(aee_items[0]["name"], "db.03.ANR-sample.dbg")
+        self.assertEqual(aee_items[0]["activation_skill"], "aee-db-extract")
+        self.assertFalse(aee_items[0]["decoded"])
+        self.assertEqual(
+            inspected.data["summary"]["required_skill_activations"][0]["name"],
+            "aee-db-extract",
+        )
+
+        def fake_run(command, **kwargs):
+            source = Path(command[1])
+            output = Path(f"{source}.DEC")
+            output.mkdir()
+            (output / "__exp_main.txt").write_text("Process: demo\nFatal signal 11\n", encoding="utf-8")
+            (output / "SYS_KERNEL_LOG").write_text("kernel marker\n", encoding="utf-8")
+            return SimpleNamespace(returncode=0)
+
+        with patch("log_analyzer.service.subprocess.run", side_effect=fake_run) as decoder:
+            extracted = self.service.extract_aee_db(
+                case_id=self.case_id,
+                artifact_id=aee_items[0]["artifact_id"],
+            )
+
+        self.assertTrue(extracted.success)
+        self.assertFalse(extracted.data["reused"])
+        self.assertEqual(extracted.data["decoded_file_count"], 2)
+        self.assertIsNotNone(extracted.data["recommended_first"])
+        decoder.assert_called_once()
+
+        text_ids = [
+            item["artifact_id"] for item in extracted.data["artifacts"]
+            if item["readable_text"]
+        ]
+        indexed = self.service.build_index(case_id=self.case_id, artifact_ids=text_ids)
+        self.assertTrue(indexed.success)
+        searched = self.service.search_evidence(case_id=self.case_id, query="Fatal signal 11")
+        self.assertTrue(searched.success)
+        self.assertEqual(searched.data["match_count"], 1)
 
 
 class GetCaseCommentTest(unittest.TestCase):

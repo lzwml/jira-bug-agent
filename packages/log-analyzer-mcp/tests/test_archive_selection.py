@@ -95,6 +95,16 @@ def test_inventory_truncates_without_writing_output(tmp_path: Path):
     assert not (tmp_path / "many").exists()
 
 
+def test_inventory_marks_nested_dbg_as_aee_db(tmp_path: Path):
+    path = tmp_path / "sos.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("aee_exp/db.03.ANR-sample.dbg", b"binary")
+
+    inventory = inventory_archive(path, "artifact-aee", LIMITS)
+
+    assert inventory.members[0].kind == "aee_db"
+
+
 def test_generic_path_timestamp_and_directory_summary_do_not_require_a_product_format(tmp_path: Path):
     path = tmp_path / "mixed.zip"
     with zipfile.ZipFile(path, "w") as archive:
@@ -109,11 +119,14 @@ def test_generic_path_timestamp_and_directory_summary_do_not_require_a_product_f
     summary = summarize_member_times(inventory.members)
     assert summary == [{
         "path_prefix": "logs/",
-        "member_count": 3,
-        "timestamped_member_count": 1,
-        "untimestamped_member_count": 2,
-        "earliest_path_time": "2026-09-01T12:01:00",
-        "latest_path_time": "2026-09-01T12:01:00",
+            "member_count": 3,
+            "timestamped_member_count": 1,
+            "unreliable_timestamped_member_count": 0,
+            "untimestamped_member_count": 2,
+            "earliest_path_time": "2026-09-01T12:01:00",
+            "earliest_path_time_reliability": "reliable",
+            "latest_path_time": "2026-09-01T12:01:00",
+            "latest_path_time_reliability": "reliable",
     }]
 
 

@@ -39,6 +39,7 @@ import mcp.types as types
 from .case_registry import CaseRegistry
 from .domain import (
     BuildIndexInput,
+    ExtractAeeDbInput,
     ExtractArchiveMembersInput,
     ExtractTimelineInput,
     GetCaseCommentInput,
@@ -87,7 +88,7 @@ TOOL_DEFINITIONS = {
         OpenCaseInput,
     ),
     "inspect_case": (
-        "查看已注册 Case 的附件类型、大小和样本清单，用于制定分析计划。",
+        "查看已注册 Case 的附件类型、大小和样本清单；发现未解码 aee_db 时返回 required_skill_activations，要求激活 aee-db-extract。",
         InspectCaseInput,
     ),
     "prepare_case": (
@@ -95,7 +96,7 @@ TOOL_DEFINITIONS = {
         PrepareCaseInput,
     ),
     "inspect_archive": (
-        "只读检查归档成员清单，不解压、不将成员内容落盘；返回通用的路径时间和目录时间摘要，并可按路径前缀或路径时间筛选稳定 member_id。",
+        "只读检查归档成员清单，不解压、不将成员内容落盘；返回通用路径时间、目录摘要和稳定 member_id，发现 aee_db 成员时返回 required_skill_activations。",
         InspectArchiveInput,
     ),
     "probe_archive_members": (
@@ -105,6 +106,10 @@ TOOL_DEFINITIONS = {
     "extract_archive_members": (
         "使用 inspect_archive 或 probe_archive_members 返回的稳定 member_id 选择性解压归档成员，避免默认全量展开。",
         ExtractArchiveMembersInput,
+    ),
+    "extract_aee_db": (
+        "使用服务端受控的 aee_extract.exe 解码 inspect_case 返回的 aee_db Artifact，注册 .DEC 文本产物并返回可传给 build_index 的 artifact_id。",
+        ExtractAeeDbInput,
     ),
     "build_index": (
         "把指定 artifact_id 增量加入 Case 的持久化分块索引集合，用于逐轮扩大日志范围。",

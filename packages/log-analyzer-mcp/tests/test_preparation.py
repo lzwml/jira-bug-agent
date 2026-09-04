@@ -100,6 +100,23 @@ def test_agent_flow_inspects_extracts_and_indexes_only_selected_member(tmp_path)
     assert service.search_evidence(case_id=case_id, query="radio evidence").data["match_count"] == 0
 
 
+def test_inspect_archive_requires_aee_skill_for_dbg_member(tmp_path):
+    case_dir, _, service = _service(tmp_path)
+    with zipfile.ZipFile(case_dir / "sos.zip", "w") as archive:
+        archive.writestr("aee_exp/db.00.NE.dbg", b"binary")
+    case_id = _open(service, case_dir)
+    archive_id = service.inspect_case(case_id=case_id).data["artifacts"][0]["artifact_id"]
+
+    inventory = service.inspect_archive(case_id=case_id, artifact_id=archive_id)
+
+    assert inventory.success
+    assert inventory.data["members"][0]["kind"] == "aee_db"
+    assert inventory.data["required_skill_activations"] == [{
+        "name": "aee-db-extract",
+        "reason": "Archive selection contains one or more aee_db members",
+    }]
+
+
 def test_new_analysis_reuses_extracted_member_without_extract_call(tmp_path):
     case_dir, registry, first_service = _service(tmp_path)
     with zipfile.ZipFile(case_dir / "android.zip", "w") as archive:
@@ -208,16 +225,21 @@ def test_inspect_archive_filters_generic_path_times_and_neighbors_before_paginat
         "requested_end": "2026-08-31T06:30:00",
         "path_prefix": None,
         "time_neighbor_count": 1,
+        "timestamped_member_count": 44,
         "matched_member_count": 18,
+        "selected_member_count": 18,
+        "untimed_member_count": 1,
+        "time_reliability": "reliable",
+        "time_reliability_detail": None,
     }
-    assert len(result.data["members"]) == 18
+    assert len(result.data["members"]) == 19
     assert [item["path_time_relation"] for item in result.data["members"]] == [
-        "predecessor", *(["in_range"] * 16), "successor",
+        "predecessor", *(["in_range"] * 16), "successor", "untimed",
     ]
     assert result.data["members"][0]["path_timestamp"] == "2026-08-31T06:14:00"
-    assert result.data["members"][-1]["path_timestamp"] == "2026-08-31T06:31:00"
+    assert result.data["members"][-2]["path_timestamp"] == "2026-08-31T06:31:00"
     assert all(item["member_id"] for item in result.data["members"])
-    assert "unrelated.txt" not in {item["member_path"] for item in result.data["members"]}
+    assert "unrelated.txt" in {item["member_path"] for item in result.data["members"]}
 
 
 def test_archive_inventory_rejects_stale_pagination_fingerprint(tmp_path):

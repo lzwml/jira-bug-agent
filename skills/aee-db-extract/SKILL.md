@@ -35,14 +35,9 @@ After `open_case` and `inspect_case`, identify all `.dbg` files in the case dire
 
 The number (e.g. `03`, `08`, `00`) is the AEE category ID. The type suffix (`NE`, `ANR`, `KE`) indicates the crash family.
 
-### 2. Run aee_extract.exe
+### 2. Decode through the controlled tool
 
-Execute from the `tools/` directory, passing the dbg file path as argument:
-
-```bash
-cd <project_root>/tools
-./aee_extract.exe <path_to_dbg_file>
-```
+Call `extract_aee_db` with the `case_id` and the `.dbg` artifact's `artifact_id`. Do not run `aee_extract.exe` through a shell or pass a raw filesystem path. The MCP tool invokes the configured decoder, enforces the Case boundary and budgets, reuses an existing non-empty `.DEC` result, and registers decoded files.
 
 The tool creates a `<dbg_filename>.DEC/` directory next to the dbg file, containing decoded text files. Example:
 
@@ -79,13 +74,13 @@ If the dbg type is unknown or ambiguous, read `__exp_main.txt` and `SYS_KERNEL_L
 
 ### 4. Build the evidence index
 
-After extraction, the `.DEC/` directory must be indexed so that `parse_diagnostics`, `search_evidence`, and `extract_timeline` can work with the decoded files. Call `build_index` on the `.DEC/` directory path.
+After extraction, index the returned readable `artifacts[*].artifact_id` values with `build_index` so that `parse_diagnostics`, `search_evidence`, and `extract_timeline` can use the decoded files. Read the artifact identified by `recommended_first` (`__exp_main.txt`) before choosing the symptom route.
 
-If the dbg file came from within an archive (e.g. inside a SOS/tar.gz), the `.DEC/` output will be inside the archive extraction directory. Always index the `.DEC/` directory at its actual location.
+If the `.dbg` came from an archive, first extract that member with `extract_archive_members`; then call `extract_aee_db` using the registered derived artifact ID.
 
 ## Important notes
 
-- `aee_extract.exe` is **Windows-only**. The tool runs from the project's `tools/` directory.
+- `aee_extract.exe` is **Windows-only**. The MCP server uses the bundled tool or `AEE_EXTRACT_BIN` configured by the operator.
 - The `.DEC/` output directory is in `.gitignore` and will not be committed.
 - `.dbg` files may be renamed — the hash suffix (e.g. `-fedeaa2ad13f0d63`) is not meaningful for analysis; the extraction output depends only on the file contents.
 - Some dbg files contain empty logs (`SYS_ANDROID_LOG` = 0 bytes) — this is a platform limitation, not an extraction failure. Cross-reference with other log sources in the same case.

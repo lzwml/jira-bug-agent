@@ -51,7 +51,7 @@ async def test_prepare_local_does_not_require_llm_and_extracts_archive(monkeypat
     assert Path(payload["work_dir"]) == (case_dir / ".bug-agent").resolve()
     assert payload["extraction_layout"] == "archive_sibling"
     assert Path(payload["extracted_root"]) == case_dir.resolve()
-    assert (case_dir / "logs.zip.unpacked" / "main_log.txt").is_file()
+    assert (case_dir / "logs" / "main_log.txt").is_file()
     assert (case_dir / ".bug-agent" / "index" / "logs.sqlite3").is_file()
     assert not (tmp_path / "CASE-1_prepared").exists()
 
@@ -101,5 +101,5 @@ async def test_prepare_local_keeps_extraction_beside_archive_with_explicit_work_
 
     assert await cli._run(args) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert (case_dir / "android.zip.unpacked" / "logs" / "main.log").is_file()
+    assert (case_dir / "android" / "logs" / "main.log").is_file()
     assert (work_dir / "index" / "logs.sqlite3").is_file()

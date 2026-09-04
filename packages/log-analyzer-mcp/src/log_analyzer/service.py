@@ -13,7 +13,10 @@ from __future__ import annotations
 from collections import Counter, deque
 import hashlib
 import json
+import os
+from pathlib import Path
 import sqlite3
+import subprocess
 from typing import Callable
 
 from log_analysis_core import (
@@ -45,6 +48,7 @@ from .domain import (
     BuildIndexInput,
     DiagnosticFinding,
     Evidence,
+    ExtractAeeDbInput,
     ExtractArchiveMembersInput,
     ExtractTimelineInput,
     GetCaseCommentInput,
@@ -78,6 +82,7 @@ class LogAnalyzerService:
             "inspect_archive": self.inspect_archive,
             "probe_archive_members": self.probe_archive_members,
             "extract_archive_members": self.extract_archive_members,
+            "extract_aee_db": self.extract_aee_db,
             "build_index": self.build_index,
             "prepare_case": self.prepare_case,
             "search_evidence": self.search_evidence,
@@ -122,7 +127,7 @@ class LogAnalyzerService:
         entry = self.registry.get_case(params.case_id)
         if entry is None:
             return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
-        _, info = entry
+        case_root, info = entry
         kind_counts = Counter(artifact.kind for artifact in info.artifacts)
         text_bytes = sum(a.size_bytes for a in info.artifacts if a.readable_text)
         index = self._get_index(info.case_id)
@@ -130,8 +135,8 @@ class LogAnalyzerService:
 
         # 按类型分组排序：archive 在最前，然后按大小降序，确保模型优先看到大文件。
         sorted_artifacts = sorted(info.artifacts, key=lambda a: (
-            {"archive": 0, "text": 1, "anr": 2, "tombstone": 3, "trace": 4,
-             "kernel": 5, "logcat": 6, "sos": 7, "binary": 8}.get(a.kind, 9),
+            {"archive": 0, "aee_db": 1, "text": 2, "anr": 3, "tombstone": 4,
+             "trace": 5, "kernel": 6, "logcat": 7, "sos": 8, "binary": 9}.get(a.kind, 10),
             -a.size_bytes,
         ))
         sample = [a.model_dump() for a in sorted_artifacts[: params.sample_limit]]
@@ -148,6 +153,32 @@ class LogAnalyzerService:
             }
             for a in sorted_artifacts if a.kind == "archive"
         ]
+
+        def aee_is_decoded(item) -> bool:
+            source = self.registry.get_artifact_path(params.case_id, item.artifact_id)
+            if source is None:
+                return False
+            target = Path(f"{source}.DEC")
+            is_junction = getattr(target, "is_junction", lambda: False)
+            return (
+                target.is_dir()
+                and not target.is_symlink()
+                and not is_junction()
+                and any(path.is_file() and not path.is_symlink() for path in target.rglob("*"))
+            )
+
+        aee_db_summary = [
+            {
+                "artifact_id": a.artifact_id,
+                "name": a.name,
+                "relative_path": a.relative_path,
+                "size_bytes": a.size_bytes,
+                "kind": a.kind,
+                "decoded": aee_is_decoded(a),
+                "activation_skill": "aee-db-extract",
+            }
+            for a in sorted_artifacts if a.kind == "aee_db"
+        ]
         large_text = [
             {
                 "artifact_id": a.artifact_id,
@@ -156,7 +187,7 @@ class LogAnalyzerService:
                 "kind": a.kind,
             }
             for a in sorted_artifacts
-            if a.kind not in ("archive", "binary") and a.size_bytes > 50_000
+            if a.readable_text and a.size_bytes > 50_000
         ][:20]
 
         return make_success({
@@ -168,8 +199,18 @@ class LogAnalyzerService:
             "kinds": dict(sorted(kind_counts.items())),
             "summary": {
                 "archives": archive_summary,
+                "aee_databases": aee_db_summary,
                 "large_text_files": large_text,
                 "total_archives": len(archive_summary),
+                "total_aee_databases": len(aee_db_summary),
+                "required_skill_activations": (
+                    [{
+                        "name": "aee-db-extract",
+                        "reason": "Case contains one or more undecoded aee_db artifacts",
+                    }]
+                    if any(not item["decoded"] for item in aee_db_summary)
+                    else []
+                ),
                 "total_artifacts": info.artifact_count,
                 "artifacts_truncated": truncated,
             },
@@ -177,10 +218,127 @@ class LogAnalyzerService:
             "artifacts_truncated": truncated,
             "preparation": {
                 "archive_count": kind_counts.get("archive", 0),
+                "aee_db_count": kind_counts.get("aee_db", 0),
                 "extracted_artifact_count": sum(a.origin == "archive" for a in info.artifacts),
                 "index_available": bool(indexed_ids),
                 "indexed_artifact_count": len(indexed_ids),
             },
+        })
+
+    def extract_aee_db(self, **kwargs) -> ToolResult:
+        """Decode one registered MTK AEE DB and register its text outputs."""
+
+        params = ExtractAeeDbInput.model_validate(kwargs)
+        entry = self.registry.get_case(params.case_id)
+        if entry is None:
+            return make_error("CASE_NOT_OPEN", "Case 尚未注册，请先调用 open_case")
+        case_root, info = entry
+        artifact = next((item for item in info.artifacts if item.artifact_id == params.artifact_id), None)
+        if artifact is None:
+            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 不存在")
+        if artifact.kind != "aee_db":
+            return make_error("ARTIFACT_NOT_AEE_DB", "指定 Artifact 不是 MTK AEE DB")
+        source_path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)
+        if source_path is None:
+            return make_error("ARTIFACT_NOT_FOUND", "AEE DB 路径不可用")
+
+        output_dir = Path(f"{source_path}.DEC")
+        is_junction = getattr(output_dir, "is_junction", lambda: False)
+        if output_dir.is_symlink() or is_junction():
+            return make_error("AEE_OUTPUT_UNSAFE", "AEE 解码目录不能是符号链接或 Junction")
+
+        existing_files = list(output_dir.rglob("*")) if output_dir.is_dir() else []
+        reused = any(path.is_file() and not path.is_symlink() for path in existing_files)
+        if output_dir.exists() and not output_dir.is_dir():
+            return make_error("AEE_OUTPUT_CONFLICT", "AEE 解码目标已存在且不是目录")
+        if output_dir.is_dir() and not reused:
+            return make_error("AEE_OUTPUT_CONFLICT", "AEE 解码目录已存在但没有可注册文件")
+
+        if not reused:
+            configured = os.getenv("AEE_EXTRACT_BIN")
+            extractor = (
+                Path(configured).expanduser()
+                if configured
+                else Path(__file__).resolve().parents[4] / "tools" / "aee_extract.exe"
+            ).resolve(strict=False)
+            if not extractor.is_file():
+                return make_error(
+                    "AEE_EXTRACTOR_NOT_FOUND",
+                    "未找到受控 AEE 解码器；请配置 AEE_EXTRACT_BIN",
+                )
+            try:
+                completed = subprocess.run(
+                    [str(extractor), str(source_path)],
+                    cwd=str(extractor.parent),
+                    check=False,
+                    capture_output=True,
+                    timeout=self.registry.archive_limits.max_runtime_seconds,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except subprocess.TimeoutExpired:
+                return make_error("AEE_EXTRACT_TIMEOUT", "AEE 解码超过服务端运行时间预算", retryable=True)
+            if completed.returncode != 0:
+                return make_error("AEE_EXTRACT_FAILED", f"AEE 解码器退出码: {completed.returncode}")
+
+        is_junction = getattr(output_dir, "is_junction", lambda: False)
+        if not output_dir.is_dir() or output_dir.is_symlink() or is_junction():
+            return make_error("AEE_OUTPUT_MISSING", "AEE 解码器未生成安全的 .DEC 目录")
+
+        decoded_paths: list[Path] = []
+        expanded_bytes = 0
+        for candidate in output_dir.rglob("*"):
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            try:
+                checked = candidate.resolve(strict=True)
+                checked.relative_to(output_dir.resolve(strict=True))
+                checked.relative_to(case_root)
+            except (OSError, ValueError):
+                return make_error("AEE_OUTPUT_UNSAFE", "AEE 解码结果逃出受控目录")
+            size = checked.stat().st_size
+            if size > self.registry.archive_limits.max_member_bytes:
+                return make_error("AEE_MEMBER_SIZE_LIMIT", "AEE 解码单文件超过服务端预算")
+            decoded_paths.append(checked)
+            expanded_bytes += size
+            if len(decoded_paths) > self.registry.archive_limits.max_members:
+                return make_error("AEE_MEMBER_LIMIT", "AEE 解码文件数量超过服务端预算")
+            if expanded_bytes > self.registry.archive_limits.max_expanded_bytes:
+                return make_error("AEE_EXPANDED_LIMIT", "AEE 解码总字节数超过服务端预算")
+        if not decoded_paths:
+            return make_error("AEE_OUTPUT_EMPTY", "AEE 解码结果为空")
+
+        refreshed = self.registry.open_case(str(case_root))
+        if not refreshed.success:
+            return refreshed
+        refreshed_entry = self.registry.get_case(params.case_id)
+        if refreshed_entry is None:
+            return make_error("CASE_NOT_OPEN", "AEE 解码后 Case 刷新失败")
+        _, refreshed_info = refreshed_entry
+        source_relative_path = source_path.relative_to(case_root).as_posix()
+        prefix = f"{source_relative_path}.DEC/".casefold()
+        decoded = [
+            item for item in refreshed_info.artifacts
+            if item.relative_path.casefold().startswith(prefix)
+        ]
+        refreshed_source = next(
+            (item for item in refreshed_info.artifacts if item.relative_path == source_relative_path),
+            None,
+        )
+        return make_success({
+            "case_id": params.case_id,
+            "aee_db_artifact_id": (
+                refreshed_source.artifact_id if refreshed_source is not None else artifact.artifact_id
+            ),
+            "aee_db_relative_path": artifact.relative_path,
+            "output_relative_path": f"{artifact.relative_path}.DEC",
+            "reused": reused,
+            "decoded_file_count": len(decoded),
+            "decoded_size_bytes": expanded_bytes,
+            "artifacts": [item.model_dump() for item in decoded],
+            "recommended_first": next(
+                (item.artifact_id for item in decoded if item.name == "__exp_main.txt"),
+                None,
+            ),
         })
 
     def _get_index(self, case_id: str) -> LogIndex | None:
@@ -274,7 +432,8 @@ class LogAnalyzerService:
                 *[(item, "in_range") for item, _ in in_range],
                 *[(item, "successor") for item, _ in (after[:params.time_neighbor_count] if params.time_neighbor_count > 0 else [])],
             ]
-            # 保留有时间戳的筛选结果，并在末尾追加无时间戳的成员
+            # 保留无法依据路径时间判断的成员；ANR、AEE 等诊断文件通常正是
+            # 这类成员，调用方可结合路径和类型继续缩小范围。
             members = [item for item, _ in selected]
             if untimed:
                 members.extend(untimed)
@@ -305,7 +464,8 @@ class LogAnalyzerService:
                 "requested_end": params.time_range.end.isoformat(),
                 "path_prefix": params.path_prefix,
                 "time_neighbor_count": params.time_neighbor_count,
-                "matched_member_count": len(timestamped),
+                "timestamped_member_count": len(timestamped),
+                "matched_member_count": len(selected),
                 "selected_member_count": len(selected),
                 "untimed_member_count": len(untimed),
                 "time_reliability": time_reliability,
@@ -382,6 +542,14 @@ class LogAnalyzerService:
             "time_group_count": len(time_groups),
             "time_groups_truncated": len(time_groups) > len(returned_time_groups),
             "members": member_payloads,
+            "required_skill_activations": (
+                [{
+                    "name": "aee-db-extract",
+                    "reason": "Archive selection contains one or more aee_db members",
+                }]
+                if any(item.kind == "aee_db" for item in page)
+                else []
+            ),
         })
 
     def extract_archive_members(self, **kwargs) -> ToolResult:

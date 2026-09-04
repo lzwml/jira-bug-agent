@@ -147,15 +147,15 @@ MTKLogger **不负责**：
 ```
 APLog_2025_0101_080037__9.tar.gz
        ^^^^ ^^^^ ^^^^^^  ^
-       year mmdd HHMMSS  __NN (boot round 序号)
+       year mmdd HHMMSS  __NN (源码验证的 APLog folder/boot round 序号)
 ```
 
 - `YYYY`：年份（4 位）
 - `MMDD`：月日（4 位）
 - `HHMMSS`：时分秒（6 位）
-- `__NN`：boot round 序号（注意是双下划线）
+- `__NN`：源码验证的 APLog folder/boot round 序号（注意是双下划线）
 
-**`__NN` 的语义**：位于 C 层的 mobile_log_d 轮转逻辑中，不在 MTKLogger Java 代码中。从 Yocto 版本的 `logging.c` 分析，`__NN` 类似于 `logNN` 目录编号，是一个递增的 boot round 计数器。
+**`__NN` 的语义**：位于 C 层的 mobile_log_d，不在 MTKLogger Java 代码中。`daemon.c` 调用 `read_folder_index()` 取得持久化 folder index，以 `APLog_%s__%lu/` 生成目录名，再由 `update_folder_list()` 更新目录记录和索引状态；`size_control.c` 实现索引文件的读取与写回。因此 `__NN` 是源码验证的 round 计数器，可用于确定 APLog boot/collection round 顺序。
 
 ### 与 SOS 日志的对应关系
 
@@ -194,9 +194,7 @@ APLog_*__N.tar.gz               Linux_Log/logNN/
 
 ### 1. APLog 的 `__NN` 编号
 
-`__NN` 是 boot round 序号，类似于 `logNN`。但需要注意：
-- `__NN` 的编号规则在 C 代码中，需要进一步确认是否与 `logNN` 具有相同的递增语义
-- 同一个事故可能横跨多个 `__NN` rounds（事故触发 reboot）
+`__NN` 是源码验证的 round 序号，和 Yocto `logNN` 一样可以确定 round 顺序。但编号只回答先后关系，不回答事故位于哪个 round；同一个事故可能横跨多个 `__NN` rounds，例如事故触发 reboot 后进入下一编号。
 
 ### 2. Android 侧没有 `syslog.log.*`
 

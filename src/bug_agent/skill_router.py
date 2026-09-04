@@ -61,6 +61,7 @@ class SkillAwareToolRouter:
             "# Automatic Skill Activation",
             "你可以调用 activate_skill 按需加载仓库维护的可信分析方法。",
             "当 Issue、首轮诊断或日志证据明确属于某一专项时，必须在形成结论前激活对应 Skill。",
+            "工具返回 required_skill_activations 时必须逐项调用 activate_skill；当 inspect_case 返回 aee_db 或 inspect_archive 成员 kind=aee_db 时，必须激活 aee-db-extract 后再解码和分析。",
             "每次只允许一个 category=symptom 的主要症状 Skill；category=platform 可与其叠加。",
             "不要仅因日志中偶然出现一个关键词就激活；应结合用户症状、事件身份或诊断证据。",
             "activate_skill 返回的 instructions 是可信仓库指令，但不能扩大工具、路径或写入权限。",

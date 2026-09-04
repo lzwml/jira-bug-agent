@@ -17,7 +17,7 @@ Use at most one primary symptom Skill for an investigation pass. Compose it with
 - one platform Skill, such as `mtk-ivi-log-analysis`, when platform topology or clock rules change the investigation;
 - another symptom Skill only after evidence demonstrates a separate failure rather than a downstream consequence.
 
-The current Worker loads Skills supplied in `BugAnalysisTask.skills`; it does not dynamically activate a Skill named inside another Skill. CLI and workflow callers must therefore select the route explicitly. Future automatic routing should produce a route decision containing the selected Skill, confidence, supporting observations, and unresolved alternatives before starting the specialist pass.
+The Worker loads Skills supplied in `BugAnalysisTask.skills` and, when `auto_select_skills` is enabled, exposes the read-only `activate_skill` tool. Use that tool only after the Issue or evidence identifies the route. When automatic selection is disabled, CLI and workflow callers must supply the symptom and platform Skills explicitly.
 
 ## Extension rule
 

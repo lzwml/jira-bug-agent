@@ -262,7 +262,10 @@ class ArchiveExtractor:
                     raise ArchiveRejected("ARCHIVE_SOURCE_CHANGED", "归档在解压过程中发生变化")
                 temp.replace(destination)
                 return ExtractionResult(
-                    [ExtractedMember(destination, item.member_path, item.size_bytes) for item in members],
+                    [
+                        ExtractedMember(destination, _safe_member_path(destination.name), item.size_bytes)
+                        for item in members
+                    ],
                     reused=False,
                 )
             except ArchiveRejected:
@@ -413,6 +416,16 @@ class ArchiveExtractor:
             parts = PurePosixPath(member_key).parts[:-1]
             for index in range(1, len(parts) + 1):
                 expected_dirs.add(PurePosixPath(*parts[:index]).as_posix().casefold())
+
+        def nested_archive_source(output: Path) -> Path | None:
+            """Find an expected archive member whose managed output is *output*."""
+
+            for member_key in expected:
+                source = destination / Path(*PurePosixPath(member_key).parts)
+                if is_supported_archive(source) and extraction_destination(source) == output:
+                    return source
+            return None
+
         for root, dirs, files in os.walk(destination, topdown=True, followlinks=False):
             root_path = Path(root)
             if root_path.is_symlink():
@@ -431,7 +444,9 @@ class ArchiveExtractor:
                     continue
                 child_rel = child.relative_to(destination).as_posix().casefold()
                 if child_rel not in expected_dirs:
-                    return False
+                    if nested_archive_source(child) is None or not ArchiveExtractor._is_managed_destination(child):
+                        return False
+                    dirs.remove(dirname)
             for filename in files:
                 candidate = root_path / filename
                 if candidate == manifest_path:
@@ -442,6 +457,14 @@ class ArchiveExtractor:
                 key = relative.casefold()
                 if key in actual:
                     return False
+                if key not in expected:
+                    # A single .gz member creates a sibling file rather than a
+                    # manifest directory.  It is valid only when it maps back
+                    # to an expected nested archive member.
+                    source = nested_archive_source(candidate)
+                    if source is None or not source.name.casefold().endswith(".gz") or source.name.casefold().endswith((".tar.gz", ".tgz")):
+                        return False
+                    continue
                 actual[key] = candidate.stat().st_size
         return actual == expected
 
@@ -468,6 +491,11 @@ class ArchiveExtractor:
                     return None
                 source_sha256 = manifest["source_sha256"]
             elif version == 2:
+                # Version 2 without mode is the selective-extraction manifest.
+                # Its member set is intentionally incomplete and must never be
+                # reused as a successful full extraction.
+                if manifest.get("mode") != "full":
+                    return None
                 fingerprint = manifest.get("source_fingerprint")
                 if (
                     not isinstance(fingerprint, dict)

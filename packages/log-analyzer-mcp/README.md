@@ -33,6 +33,7 @@ Case
 | `inspect_case` | 查看附件类型、大小和样本清单 |
 | `inspect_archive` | 只读取归档成员清单和安全元数据，不把内容落盘 |
 | `extract_archive_members` | 使用稳定成员 ID 选择性安全展开归档内容 |
+| `extract_aee_db` | 通过受控的 MTK AEE 解码器处理 `aee_db`，注册 `.DEC` 产物 |
 | `build_index` | 按需为选中的文本日志建立持久化分块索引 |
 | `prepare_case` | 全量安全展开归档并建立索引；仅作为显式批处理或兜底入口 |
 | `search_evidence` | 字面量搜索日志，返回带前后文和行号的 Evidence |
@@ -74,6 +75,11 @@ python -m log_analyzer.server
 ```
 
 如果未配置，只允许 Server 的当前工作目录。
+
+`.dbg` 文件会被识别为不可直接索引的 `aee_db`。调用 `extract_aee_db` 时只能传入
+`inspect_case` 返回的 `artifact_id`；Server 默认使用仓库 `tools/aee_extract.exe`，
+部署到其他位置时可由运维配置 `AEE_EXTRACT_BIN`。解码结果必须位于原文件旁的
+`.DEC` 目录且仍在 Case 根目录内，随后以新的 Artifact ID 返回。
 
 选择性展开和 `prepare_case` 都不修改原始附件。每个归档展开到它旁边的
 `<归档文件名>.unpacked/`，缓存清单保存在该目录中；SQLite 索引写入

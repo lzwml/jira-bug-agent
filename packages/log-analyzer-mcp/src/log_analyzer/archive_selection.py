@@ -211,16 +211,17 @@ def summarize_member_times(members: list[ArchiveMemberInfo]) -> list[dict[str, o
 _LOG_DOMAIN_PATTERNS = (
     ("android", re.compile(r"(?:^|\n)\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}|AndroidRuntime|logcat", re.I)),
     ("kernel", re.compile(r"(?:^|\n)\s*\[\s*\d+(?:\.\d+)?\]|kernel:|Call Trace:|Kernel panic", re.I)),
-    ("linux", re.compile(r"systemd\[|journal|syslog|daemon\[", re.I)),
+    ("linux", re.compile(r"systemd\[|journal|syslog|daemon\[|^\[\d{4}-\d{2}-\d{2}[ T]", re.I | re.M)),
     ("mcu", re.compile(r"\b(?:MCU|CAN|A2B)\b", re.I)),
 )
-_BOOT_ID_RE = re.compile(r"\b(?:boot[_ -]?id|BOOT_ID)\s*[:=]\s*([0-9a-f]{8,}(?:-[0-9a-f-]+)?)", re.I)
+_BOOT_ID_RE = re.compile(r"\b(?:boot[_ -]?id|BOOT_ID)\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9-]{5,})", re.I)
 _BOOT_MARKER_RE = re.compile(r"\b(?:reboot|boot completed|Linux version|init: starting service)\b", re.I)
 _CLOCK_CORRECTION_RE = re.compile(r"\b(?:time (?:has been )?(?:changed|set|updated)|clock.*(?:adjust|sync)|NTP.*(?:sync|set))\b", re.I)
 _ANCHOR_RE = re.compile(r"\b(?:FATAL EXCEPTION|ANR in|Watchdog|Kernel panic|Call Trace:|avc: denied|reboot|boot completed)\b", re.I)
 _WALL_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)")
 _ANDROID_RE = re.compile(r"(?<!\d)(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)")
 _KERNEL_RE = re.compile(r"^\s*\[\s*(\d+(?:\.\d+)?)\]", re.M)
+_VLOG_UPTIME_RE = re.compile(r"^\s*\[[^\]\r\n]+\]\[\s*(\d+\.\d+)\]", re.M)
 
 
 def _read_probe_bytes(archive_path: Path, archive_format: str, member_path: str, limit: int) -> bytes:
@@ -257,7 +258,11 @@ def probe_archive_members(archive_path: Path | str, archive_artifact_id: str, me
         payload = _read_probe_bytes(inventory.archive_path, inventory.format, item.member_path, max_bytes_per_member)
         text = payload.decode("utf-8", errors="replace")
         domains = [domain for domain, pattern in _LOG_DOMAIN_PATTERNS if pattern.search(text)]
-        values = {"wall": _WALL_RE.findall(text), "android": _ANDROID_RE.findall(text), "kernel_monotonic": _KERNEL_RE.findall(text)}
+        values = {
+            "wall": _WALL_RE.findall(text),
+            "android": _ANDROID_RE.findall(text),
+            "kernel_monotonic": _KERNEL_RE.findall(text) + _VLOG_UPTIME_RE.findall(text),
+        }
         time_ranges = []
         for domain, found in values.items():
             if found:
@@ -384,6 +389,8 @@ def _kind(path: str) -> str:
     name = path.casefold()
     if is_supported_archive(Path(path)):
         return "archive"
+    if name.endswith(".dbg"):
+        return "aee_db"
     if name.endswith((".log", ".txt", ".csv", ".json", ".xml", ".trace")):
         return "text"
     return "file"

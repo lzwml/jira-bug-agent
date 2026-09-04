@@ -28,7 +28,7 @@
 
 6. **Android 和 Yocto 的 mobile_log_d 是同一套 C 源码**：编译配置不同。Android 版无 VLOG Bridge，无 `syslog.log.*` 输出。
 7. **MTKLogger 是控制 App，不是导出/打包工具**：通过 socket `"mobilelogd"` 向 daemon 发送配置命令。
-8. **APLog 的 `__NN` 推测为 boot round 序号**：递增计数器。精确生成代码行尚未定位，边界条件（复位、清理等）待确认。依据：Android/Yocto 共享同一套 C 源码，Yocto 侧 `logNN` 已源码验证。
+8. **APLog 的 `__NN` 已源码验证为 folder/boot round 序号**：`daemon.c` 通过 `read_folder_index()` 读取持久化索引，用 `APLog_%s__%lu/` 生成目录名，并由 `update_folder_list()` 更新状态；`size_control.c` 实现索引文件读写。该编号可用于确定 round 顺序，但不能单独判断事故位于哪个 round。
 9. **Android 侧日志目录是 bind mount**：`/data/debuglogger` ↔ `/log/debuglogger`，导出时路径可能有 `/log/` 前缀。
 10. **`boot__normal`** 是早期 boot 日志的保留目录，由 `copy_and_dump()` 流程创建。
 

@@ -46,6 +46,7 @@ def test_router_exposes_trusted_skill_catalog_and_activation_tool():
     assert tool_names == ["inspect_case", ACTIVATE_SKILL_TOOL]
     assert "android-black-screen" in activation_tool["parameters"]["properties"]["name"]["enum"]
     assert "android-black-screen [symptom]" in router.catalog_prompt()
+    assert "inspect_case 返回 aee_db" in router.catalog_prompt()
     assert "android-log-triage [base]（已激活）" in router.catalog_prompt()
 
 
@@ -92,6 +93,23 @@ async def test_router_can_stack_platform_skill_with_symptom_skill():
 
     assert json.loads(raw)["success"] is True
     assert router.activated_names == ["android-black-screen", "mtk-ivi-log-analysis"]
+
+
+@pytest.mark.anyio
+async def test_router_can_activate_aee_supplemental_skill_from_dbg_evidence():
+    router = make_router(initial=["android-native-crash", "mtk-ivi-log-analysis"], source="explicit")
+
+    raw = await router.call(ACTIVATE_SKILL_TOOL, {
+        "name": "aee-db-extract",
+        "reason": "inspect_case 返回 kind=aee_db 的 db.00.NE.dbg",
+    })
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert "extract_aee_db" in payload["data"]["instructions"]
+    assert router.activated_names == [
+        "android-native-crash", "mtk-ivi-log-analysis", "aee-db-extract",
+    ]
 
 
 def test_auto_disabled_router_does_not_advertise_activation_tool():

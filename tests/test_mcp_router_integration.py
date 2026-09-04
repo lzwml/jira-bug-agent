@@ -22,7 +22,8 @@ async def test_router_discovers_jira_and_log_tools(tmp_path):
             "test_connection", "get_issue", "collect_issue_context",
             "search_issues", "get_comments", "list_attachments",
             "export_issue_case", "open_case", "inspect_case", "search_evidence",
-            "inspect_archive", "extract_archive_members", "build_index",
+            "inspect_archive", "probe_archive_members",
+            "extract_archive_members", "extract_aee_db", "build_index",
             "prepare_case", "extract_timeline", "parse_diagnostics",
             "get_case_comment",
         }
