@@ -88,6 +88,7 @@ APLog boot round numbering is not a reliable indicator of which round contains t
 Platform details for maintainers are separated by concern:
 
 - Yocto-side vlog/mobile_log_d design (source-verified): `references/yocto-vlog-design.md`
+- Android-side mobile_log_d/MTKLogger design (source-verified): `references/android-mobile-log-design.md`
 - Android artifact conventions: `references/android-vm.md`
 - Linux/TBox and peripheral conventions: `references/linux-vm.md`
 - Clock normalization rules: `references/clock-domains.md`

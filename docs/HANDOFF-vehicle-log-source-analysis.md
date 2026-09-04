@@ -4,47 +4,43 @@
 
 ## 状态：已完成
 
-已阅读 `G:\work\N60\yocto\src\tcl\cluster\logs` 和 `G:\work\N60\yocto\src\devtools\mobile_log_d` 的全部源码，结论已应用到 Skill 文档中。
+已阅读 Yocto 和 Android 两侧的全部源码，结论已应用到 Skill 文档中。
+
+### Yocto 侧（已完成）
+- `G:\work\N60\yocto\src\tcl\cluster\logs` — vlog 客户端库
+- `G:\work\N60\yocto\src\devtools\mobile_log_d` — mobile_log_d daemon（含 VLOG Bridge）
+
+### Android 侧（已完成）
+- `G:\work\N60\b_android\vendor\mediatek\proprietary\external\mobile_log_d` — Android 版 mobile_log_d（同一套 C 源码，无 VLOG Bridge）
+- `G:\work\N60\b_android\vendor\mediatek\proprietary\packages\apps\MTKLogger` — 控制 App
 
 ## 已确认的关键事实
 
-### 1. `logNN` 是可靠的递增 boot 计数器
+### Yocto 侧
 
-**源码证据**：`mobile_log_d/logging.c` → `vlog_bridge_scan_boot_index()` 扫描已有 `logNN` 目录，取 `max_idx + 1`。不依赖时钟。
+1. **`logNN` 是可靠的递增 boot 计数器**：`vlog_bridge_scan_boot_index()` 扫描已有目录，取 `max_idx + 1`。不依赖时钟。
+2. **`syslog.log.*` 是 vlog bridge 的格式化业务日志**：通过 socket `@mobilelogd_vlog` 发送，格式为 `[timestamp(wall)][uptime(monotonic)][level][seq][module][submodule][PID][file:line func]message`。
+3. **文件名中的时间戳 ≠ 日志内容时间**：`vlog_bridge_get_file_timestamp()` 取 `stat().st_mtime`。
+4. **VLOG Bridge 需要显式启动**：`bridge_start` 命令触发。
+5. **MCU 日志路由独立**：`module == "MCU"` → `/log/Mcu_Log/`。
 
-**结论**：`log00` < `log01` < `log02` 是可靠的递增顺序。Agent 可以直接信任。
+### Android 侧
 
-### 2. `syslog.log.*` 是 vlog bridge 的格式化业务日志
-
-**源码证据**：`tcl/cluster/logs/src/vlog.c` → `vlog_output()` 通过 socket 发送到 `mobilelogd_vlog`，`mobile_log_d/logging.c` → `vlog_bridge_write_log()` 接收并格式化落盘。
-
-**结论**：不是 ftrace 或传统 syslog。格式为 `[timestamp(wall)][uptime(monotonic)][level][seq][module][submodule][PID][file:line func]message`。
-
-### 3. 文件名中的时间戳 ≠ 日志内容时间
-
-**源码证据**：`vlog_bridge_get_file_timestamp()` 取的是 `stat().st_mtime`（文件最后修改/压缩时间），不是日志内容时间。
-
-**结论**：设备时钟未同步时，文件名时间戳可能完全错误（如 1970 年）。但同一 boot 内 `uptime` 字段（CLOCK_MONOTONIC）始终可靠。
-
-### 4. VLOG Bridge 需要显式启动
-
-**源码证据**：`mobilelog.c` → `control_handler("bridge_start")` → `maybe_config_msg()` → `try_start_vlog_bridge_receiver()`。
-
-**结论**：Bridge 不是随 `mobile_log_d` 自动启动的。如果从未触发 `bridge_start`，`syslog.log.*` 将不存在。
-
-### 5. MCU 日志路由独立
-
-**源码证据**：`logging.c` → `vlog_bridge_write_log()` 中 `strncmp(msg->module, "MCU", 3) == 0` → `g_mculog_bridge`。
-
-**结论**：MCU 日志不走 `logNN` 目录，直接落在 `/log/Mcu_Log/`。
+6. **Android 和 Yocto 的 mobile_log_d 是同一套 C 源码**：编译配置不同。Android 版无 VLOG Bridge，无 `syslog.log.*` 输出。
+7. **MTKLogger 是控制 App，不是导出/打包工具**：通过 socket `"mobilelogd"` 向 daemon 发送配置命令。
+8. **APLog 的 `__NN` 是 boot round 序号**：类似 `logNN`，递增计数器。具体逻辑在 C 代码中。
+9. **Android 侧日志目录是 bind mount**：`/data/debuglogger` ↔ `/log/debuglogger`，导出时路径可能有 `/log/` 前缀。
+10. **`boot__normal`** 是早期 boot 日志的保留目录，由 `copy_and_dump()` 流程创建。
 
 ## 已更新的 Skill 文档
 
 | 文件 | 更新内容 |
 |------|---------|
 | `references/yocto-vlog-design.md` | **新建** — 完整的 Yocto 侧 vlog/mobile_log_d 设计文档 |
+| `references/android-mobile-log-design.md` | **新建** — Android 侧 mobile_log_d/MTKLogger 设计文档 |
 | `references/sos-archive-selection.md` | 重写 — 源码验证的 `logNN` 可信度、`syslog.log.*` 格式、`mblog_history` 锚点、分层解压策略 |
 | `references/linux-vm.md` | 补全 — `syslog.log.*` 格式说明、`mblog_history` 锚点、`logNN` 可信度说明 |
+| `references/android-vm.md` | 补全 — Android/Yocto 关系说明、源码验证标记 |
 | `references/clock-domains.md` | 补充 — vlog 双时间戳的源码证据（CLOCK_REALTIME vs CLOCK_MONOTONIC） |
 | `references/aplog-archive-selection.md` | 修复 — `unreliable_device_clock` 不再立即全量解压 |
 | `SKILL.md` (mtk-ivi-log-analysis) | 更新 — 引用新 reference，修正 `logNN` 可信度，修正 `unreliable_device_clock` 策略 |
@@ -66,14 +62,9 @@
 
 ## 待完成
 
-### Android 侧源码（未分析）
+### 无。Android 和 Yocto 两侧的核心源码分析均已完成。
 
-`G:\work\N60\b\_android\vendor\mediatek\proprietary\external\mobile_log_d` 和 `G:\work\N60\b\_android\vendor\mediatek\proprietary\packages\apps\MTKLogger` 尚未分析。需要确认：
-
-- APLog 的 `__NN` 编号语义
-- APLog 导出时的组包逻辑
-- `boot__normal` 的保留策略
-- MTKLogger 应用的触发流程
+唯一未覆盖的是：APLog 的 `__NN` 编号逻辑在 C 代码中（不在 MTKLogger Java 代码），需要进一步确认具体递增规则。但已知 `__NN` 是 boot round 序号，类似 `logNN`。
 
 ## 已完成标准
 

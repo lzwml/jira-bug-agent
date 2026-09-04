@@ -1,6 +1,13 @@
 # MTK Android VM Evidence Reference
 
-Use this reference when maintaining Android-side parsing rules or investigating an MTK-specific Android artifact layout. Directory names vary by product and MobileLog version; confirm against `file_tree.txt`, `properties` and `mblog_history`.
+> 源码验证。基于 `b_android/vendor/mediatek/proprietary/external/mobile_log_d` 和 `MTKLogger` 的实际代码。Android 侧完整设计文档见 `references/android-mobile-log-design.md`。
+
+## Android 与 Yocto 的关系
+
+Android 和 Yocto 的 `mobile_log_d` 是**同一套 C 源码**，编译配置不同：
+- Android 版：无 VLOG Bridge，无 `syslog.log.*` 输出
+- Yocto 版：有 VLOG Bridge，产生 `syslog.log.*` 文件
+- 两者通过同一个控制 socket `"mobilelogd"` 通信
 
 ## MobileLog
 
