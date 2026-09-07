@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from .models import ToolEvent
+from .models import HumanCheckpoint, ToolEvent
 
 
 class BugAnalysisTask(BaseModel):
@@ -202,7 +202,9 @@ class ReportValidation(BaseModel):
 
 class BugAnalysisResult(BaseModel):
     task_id: str
-    status: Literal["completed", "insufficient_evidence", "max_steps", "failed"]
+    status: Literal[
+        "completed", "insufficient_evidence", "max_steps", "failed", "waiting_for_human",
+    ]
     report: RCAReport
     steps: int = Field(ge=0)
     structured_output: bool
@@ -213,3 +215,4 @@ class BugAnalysisResult(BaseModel):
     analysis_guide_error: str | None = None
     trace: list[ToolEvent] = Field(default_factory=list)
     error: str | None = None
+    human_checkpoint: HumanCheckpoint | None = None

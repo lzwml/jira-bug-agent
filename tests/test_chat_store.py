@@ -25,7 +25,7 @@ def test_chat_store_creates_session_json_file():
         path = _session_path(sessions_dir, "test-session")
         assert path.is_file()
         data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["schema_version"] == 1
+        assert data["schema_version"] == 2
         assert data["session_id"] == "test-session"
         assert data["status"] == "active"
         assert data["turns"] == []
@@ -48,6 +48,8 @@ def test_chat_store_add_turn_with_tool_events():
         store.add_turn(
             "test-session", 1, "分析 Bug", "根因是 OOM", 2, "completed",
             tool_events=tool_events,
+            human_checkpoint={"checkpoint_id": "cp-1"},
+            human_intervention={"response": "第二次复现"},
         )
 
         session = store.get_session("test-session")
@@ -62,6 +64,8 @@ def test_chat_store_add_turn_with_tool_events():
         assert events[0]["tool_name"] == "open_case"
         assert events[0]["success"] is True
         assert events[1]["tool_name"] == "search_evidence"
+        assert turn["human_checkpoint"]["checkpoint_id"] == "cp-1"
+        assert turn["human_intervention"]["response"] == "第二次复现"
     finally:
         import shutil
         shutil.rmtree(sessions_dir, ignore_errors=True)

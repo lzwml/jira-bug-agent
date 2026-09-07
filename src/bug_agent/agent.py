@@ -26,6 +26,7 @@ from typing import Any, Callable, Protocol
 
 from .config import AgentConfig
 from .models import AgentRunResult, ToolEvent
+from .human_guidance import REQUEST_HUMAN_GUIDANCE_TOOL, checkpoint_from_result
 from .provider import ProviderError
 
 
@@ -244,7 +245,16 @@ class BugAnalysisAgent:
                     arguments = json.loads(function.get("arguments") or "{}")
                     if not isinstance(arguments, dict):
                         raise ValueError("工具参数必须是 JSON 对象")
-                    result = await router.call(name, arguments)
+                    if name == REQUEST_HUMAN_GUIDANCE_TOOL and len(tool_calls) != 1:
+                        result = json.dumps({
+                            "success": False,
+                            "data": None,
+                            "error_code": "HUMAN_GUIDANCE_MUST_BE_SOLE_CALL",
+                            "error_message": "人工检查点必须是独立模型回合中的唯一工具调用",
+                            "retryable": False,
+                        }, ensure_ascii=False)
+                    else:
+                        result = await router.call(name, arguments)
                 except (json.JSONDecodeError, ValueError) as exc:
                     arguments = {}
                     result = json.dumps({
@@ -280,6 +290,17 @@ class BugAnalysisAgent:
                         pass
 
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+                if name == REQUEST_HUMAN_GUIDANCE_TOOL and event.success:
+                    checkpoint = checkpoint_from_result(result)
+                    if checkpoint is not None:
+                        return AgentRunResult(
+                            status="waiting_for_human",
+                            task="",
+                            final_answer=checkpoint.question,
+                            steps=step - starting_step,
+                            tool_events=events,
+                            human_checkpoint=checkpoint,
+                        ), messages
 
     async def run(
         self,
@@ -324,6 +345,7 @@ class BugAnalysisAgent:
             error=result.error,
             error_type=result.error_type,
             retryable=result.retryable,
+            human_checkpoint=result.human_checkpoint,
         )
 
     async def run_with_messages(

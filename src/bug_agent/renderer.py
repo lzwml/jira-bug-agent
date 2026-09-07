@@ -56,6 +56,18 @@ def render_markdown(result: BugAnalysisResult) -> str:
         "",
     ]
 
+    if result.human_checkpoint is not None:
+        checkpoint = result.human_checkpoint
+        lines[1:1] = [
+            "",
+            "## 等待人工提示",
+            "",
+            f"- **问题**：{checkpoint.question}",
+            f"- **阻塞原因**：{checkpoint.blocking_reason}",
+            f"- **需要输入**：{checkpoint.requested_input}",
+            f"- **已尝试工具调用**：{checkpoint.tool_attempts_before}",
+        ]
+
     if result.report_validation is not None:
         validation = result.report_validation
         label = "已通过" if validation.grounded else "未通过"

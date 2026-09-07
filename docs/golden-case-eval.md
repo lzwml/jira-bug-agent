@@ -76,6 +76,24 @@ bug-agent eval-run <candidate-run-bundle.json> <golden-case.json>
 到 `.bug-agent/evals/results/`。文本主张采用规范化后的精确/包含关系匹配，因此结果稳定、
 可解释；未来若增加语义裁判，也必须作为独立的非确定性指标，不能覆盖这些硬门禁。
 
+金标准还可以约束 Agent 控制面：`required_tools`、`forbidden_tools`、
+`required_skills`、`forbidden_skills`、`max_tool_calls` 和 `max_human_checkpoints`。
+默认 `max_human_checkpoints=0`，目标是让已经被人工提示解决过的问题在后续版本中自动
+完成；确实依赖现场信息、无法从 Case 推断的问题可以显式放宽。Eval 不要求完全一致的
+调用顺序，只检查必要调查能力、禁止行为、预算和人工依赖。
+
+## 从人工提示进入 Agent 优化
+
+交互会话消费人工检查点后，会在
+`<case>/.bug-agent/optimization/candidates/<checkpoint_id>.json` 自动生成完整性密封的
+待审核候选。候选保留阻塞原因、人工回复、回复后真实发生的工具调用与 Skill 激活，并
+初步归因到 `tool_selection`、`skill_routing`、`skill_content` 或 `case_context`。
+
+候选不是可直接合入的模型建议，也不会自动改写 Skill。评审者需要确认归因，选择对应的
+工具策略、Skill 或输入契约改动，再用同类黄金 Case 验证：人工检查点减少，必要 Tool/Skill
+仍被调用，Evidence grounding 与事故身份门禁保持通过。原始人工回复会保存在本地候选中，
+应与日志和会话记录采用相同的访问控制与保留周期。
+
 `accepted` 可省略 `expectation`，系统会把已经通过人工确认的结构化 RCA 固化为期望；
 `rejected` 只保留负反馈，不允许晋升。任何被修改或与 Review 不匹配的 Bundle 都会被拒绝。
 `accepted` 还必须已经通过本轮 Evidence grounding 校验。`confirmed` 金标准必须同时

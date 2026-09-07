@@ -19,6 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 from .contracts import BugAnalysisTask
+from .optimization_feedback import write_optimization_candidate
 
 
 def _now() -> str:
@@ -96,12 +97,13 @@ class ChatStore:
                 return False
             # closed → 重新激活
             data["status"] = "active"
+            data["schema_version"] = 2
             data["updated_at"] = timestamp
             self._atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
             return True
 
         data = {
-            "schema_version": 1,
+            "schema_version": 2,
             "session_id": session_id,
             "task": task.model_dump(mode="json"),
             "status": "active",
@@ -121,6 +123,8 @@ class ChatStore:
         steps: int,
         agent_status: str,
         tool_events: list[dict[str, Any]] | None = None,
+        human_checkpoint: dict[str, Any] | None = None,
+        human_intervention: dict[str, Any] | None = None,
     ) -> None:
         """追加一轮对话记录，含完整的工具调用轨迹。"""
         path = _session_path(self._dir, session_id)
@@ -129,7 +133,7 @@ class ChatStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         else:
             data = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "session_id": session_id,
                 "task": None,
                 "status": "active",
@@ -138,6 +142,16 @@ class ChatStore:
                 "turns": [],
             }
 
+        data["schema_version"] = 2
+        optimization_candidate = None
+        if human_intervention is not None:
+            optimization_candidate = write_optimization_candidate(
+                self._dir,
+                session_id=session_id,
+                turn_index=turn_index,
+                task=data.get("task"),
+                intervention_value=human_intervention,
+            )
         data["turns"].append({
             "turn_index": turn_index,
             "user_message": user_message,
@@ -145,6 +159,9 @@ class ChatStore:
             "steps": steps,
             "agent_status": agent_status,
             "tool_events": tool_events or [],
+            "human_checkpoint": human_checkpoint,
+            "human_intervention": human_intervention,
+            "optimization_candidate": str(optimization_candidate) if optimization_candidate else None,
             "created_at": timestamp,
         })
         data["updated_at"] = timestamp

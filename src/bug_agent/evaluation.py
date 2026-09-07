@@ -33,6 +33,12 @@ class GoldenExpectation(BaseModel):
     required_claims: list[str] = Field(default_factory=list)
     forbidden_claims: list[str] = Field(default_factory=list)
     required_missing_evidence: list[str] = Field(default_factory=list)
+    required_tools: list[str] = Field(default_factory=list)
+    forbidden_tools: list[str] = Field(default_factory=list)
+    required_skills: list[str] = Field(default_factory=list)
+    forbidden_skills: list[str] = Field(default_factory=list)
+    max_tool_calls: int | None = Field(default=None, ge=0)
+    max_human_checkpoints: int = Field(default=0, ge=0)
 
 
 class RunReview(BaseModel):
@@ -116,6 +122,12 @@ def _actual_expectation(bundle: dict) -> dict:
         ],
         "forbidden_claims": [],
         "required_missing_evidence": list(report.get("missing_evidence") or []),
+        "required_tools": [],
+        "forbidden_tools": [],
+        "required_skills": [],
+        "forbidden_skills": [],
+        "max_tool_calls": None,
+        "max_human_checkpoints": 0,
     }
 
 
@@ -208,6 +220,7 @@ def promote_review(run_path: Path, review_path: Path) -> Path:
         "task": bundle["task"],
         "input_fingerprint": fingerprint,
         "baseline_provenance": bundle.get("provenance"),
+        "baseline_agent_metrics": bundle.get("derived", {}).get("agent_metrics"),
         "expected": expected,
         "gold_evidence": [
             item for item in registry
@@ -302,6 +315,16 @@ def evaluate_run(run_path: Path, golden_path: Path) -> tuple[dict, Path]:
         and actual_fp.get("complete_content_fingerprint") is True
     ) if content_required else None
     validation = candidate.get("derived", {}).get("claim_snapshot", {}).get("validation")
+    metrics = candidate.get("derived", {}).get("agent_metrics", {})
+    used_tools = set(metrics.get("tools", {}))
+    used_skills = set(metrics.get("activated_skills", [])) | set(
+        candidate.get("result", {}).get("applied_skills", [])
+    )
+    required_tools = set(expected.get("required_tools") or [])
+    forbidden_tools = set(expected.get("forbidden_tools") or [])
+    required_skills = set(expected.get("required_skills") or [])
+    forbidden_skills = set(expected.get("forbidden_skills") or [])
+    max_tool_calls = expected.get("max_tool_calls")
     checks = {
         "input_metadata_match": metadata_match,
         "input_content_match": content_match,
@@ -315,6 +338,18 @@ def evaluate_run(run_path: Path, golden_path: Path) -> tuple[dict, Path]:
         "required_missing_evidence_present": all(
             _claim_present(item, report.get("missing_evidence") or [])
             for item in expected.get("required_missing_evidence", [])
+        ),
+        "required_tools_used": required_tools.issubset(used_tools),
+        "forbidden_tools_avoided": not bool(forbidden_tools & used_tools),
+        "required_skills_activated": required_skills.issubset(used_skills),
+        "forbidden_skills_avoided": not bool(forbidden_skills & used_skills),
+        "tool_call_budget_met": (
+            metrics.get("analysis_tool_calls", 0) <= max_tool_calls
+            if max_tool_calls is not None else None
+        ),
+        "human_checkpoint_budget_met": (
+            metrics.get("human_checkpoint_count", 0)
+            <= expected.get("max_human_checkpoints", 0)
         ),
     }
     required_checks = [value for value in checks.values() if value is not None]
@@ -338,6 +373,11 @@ def evaluate_run(run_path: Path, golden_path: Path) -> tuple[dict, Path]:
             "missing_root_evidence_ids": sorted(expected_evidence - actual_root_evidence),
             "incident_identity_mismatches": identity_mismatches,
             "reproducibility_limited": not content_required,
+            "agent_metrics": metrics,
+            "missing_required_tools": sorted(required_tools - used_tools),
+            "used_forbidden_tools": sorted(forbidden_tools & used_tools),
+            "missing_required_skills": sorted(required_skills - used_skills),
+            "used_forbidden_skills": sorted(forbidden_skills & used_skills),
         },
     }
     seal_record(record)

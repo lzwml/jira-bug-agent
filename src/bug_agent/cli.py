@@ -568,6 +568,8 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     assistant_answer=t["assistant_answer"],
                     steps=t["steps"],
                     agent_status=t["agent_status"],
+                    human_checkpoint=t.get("human_checkpoint"),
+                    human_intervention=t.get("human_intervention"),
                 )
                 for t in existing["turns"]
             ]
@@ -623,6 +625,9 @@ async def _run_chat(args: argparse.Namespace) -> int:
             # 恢复历史轮次到会话中
             session.restore_turns(saved_turns)
             print(f"[系统] 已恢复 {len(saved_turns)} 轮历史对话。")
+            if session.pending_checkpoint is not None:
+                print(f"[等待人工提示] {session.pending_checkpoint.question}")
+                print(f"需要的信息: {session.pending_checkpoint.requested_input}")
             print(f"直接输入追问即可继续，或输入 /quit 退出。\n")
         else:
             # 全新会话：执行初始分析
@@ -644,7 +649,19 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     turn.result.final_answer, turn.result.steps,
                     turn.result.status,
                     tool_events=[e.model_dump() for e in turn.result.tool_events],
+                    human_checkpoint=(
+                        turn.result.human_checkpoint.model_dump(mode="json")
+                        if turn.result.human_checkpoint else None
+                    ),
+                    human_intervention=(
+                        turn.human_intervention.model_dump(mode="json")
+                        if turn.human_intervention else None
+                    ),
                 )
+            if turn.result.human_checkpoint is not None:
+                checkpoint = turn.result.human_checkpoint
+                print(f"\n[需要人工提示] {checkpoint.question}")
+                print(f"需要的信息: {checkpoint.requested_input}")
 
         # 后续轮次：交互式追问
         while session.is_active:
@@ -686,6 +703,10 @@ async def _run_chat(args: argparse.Namespace) -> int:
             print("-" * 40)
             if turn.result.status == "max_steps":
                 print(f"\n[提示] 本轮达到步数上限。")
+            if turn.result.human_checkpoint is not None:
+                checkpoint = turn.result.human_checkpoint
+                print(f"\n[需要人工提示] {checkpoint.question}")
+                print(f"需要的信息: {checkpoint.requested_input}")
 
             # 持久化本轮
             if store is not None:
@@ -694,6 +715,14 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     turn.result.final_answer, turn.result.steps,
                     turn.result.status,
                     tool_events=[e.model_dump() for e in turn.result.tool_events],
+                    human_checkpoint=(
+                        turn.result.human_checkpoint.model_dump(mode="json")
+                        if turn.result.human_checkpoint else None
+                    ),
+                    human_intervention=(
+                        turn.human_intervention.model_dump(mode="json")
+                        if turn.human_intervention else None
+                    ),
                 )
 
     finally:

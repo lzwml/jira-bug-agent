@@ -53,6 +53,7 @@ BugAnalysisResult
 | `insufficient_evidence` | Worker 正常完成，但证据不足 |
 | `max_steps` | 达到 Agent 步骤预算 |
 | `failed` | 配置、MCP、Provider 或运行过程失败 |
+| `waiting_for_human` | Agent 已完成必要的自动调查，但存在工具无法解除的明确阻塞，返回结构化人工检查点 |
 
 `report` 始终存在，即使任务失败也能给上游稳定结构。`structured_output=false`
 表示模型未遵守 RCA JSON Schema，Worker 使用了兼容降级；调用方可据此禁止自动
@@ -70,6 +71,18 @@ build、系统域和身份依据。无法建立的字段必须进入 limitations
 `trace` 是内部诊断信息，不是业务契约的推理依据。生产环境应单独控制保存周期
 和访问权限，因为其中可能包含 Jira 与日志内容。
 
+## 人工检查点属于 Agent Runtime
+
+工具列表中的 `request_human_guidance` 是 Harness 提供的受约束能力。Agent 至少完成
+两次真实工具调查后才可以调用；请求必须声明问题类别、单一问题、阻塞原因和需要的
+具体输入。过早请求会返回 `HUMAN_GUIDANCE_PREMATURE`，Agent 必须继续自动调查。
+
+成功请求后状态变为 `waiting_for_human`，`human_checkpoint` 随结果和 Run Bundle 一起
+保存。在 `chat-local` / `chat-jira` 会话中，工程师下一条消息自动绑定该 checkpoint，
+Agent 沿用同一消息、工具和 Skill 上下文继续运行。人工回复只作为待验证线索注入，
+不能直接成为 confirmed 事实。会话记录同时保存 checkpoint、回复、回复后调用的工具
+以及激活的 Skill，因而可以判断提示究竟补偿了工具选择、Skill 路由还是数据缺口。
+
 ## Run Bundle v2：黄金 Case 的可回放输入
 
 每次执行都会在 `<case>/.bug-agent/runs/` 保留一个 `schema_version=2` 的 JSON
@@ -83,6 +96,7 @@ Run Bundle。原有 `task`、`result`、`trace`、`phase` 等字段继续保留�
 | `derived.evidence_registry` | 仅从成功且可完整解析的 Tool Event 重建本轮真实 Evidence Registry |
 | `derived.claim_snapshot` | 固化症状、失效机制、根因、假设、缺失证据和报告校验结果，供后续规则化评分 |
 | `derived.input_fingerprint` | 记录本轮工具实际看见的 Case、Artifact 元数据清单和归档内容哈希覆盖率；同时保存执行 Trace 哈希 |
+| `derived.agent_metrics` | 记录成功/失败/重复工具调用、工具分布、动态 Skill 激活及人工检查点次数；这是优化 Agent 控制面的主要指标 |
 | `lifecycle` | 记录 running/最终状态、阶段以及开始结束时间，保留中途失败现场 |
 | `integrity` | 对 Bundle 中除自身以外的全部内容计算 SHA-256，用于发现落盘后的意外修改 |
 

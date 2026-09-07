@@ -266,6 +266,50 @@ def build_derived_views(
         ],
         "claim_snapshot": build_claim_snapshot(result),
         "input_fingerprint": build_input_fingerprint(events),
+        "agent_metrics": build_agent_metrics(events, result),
+    }
+
+
+def build_agent_metrics(
+    events: list[ToolEvent],
+    result: BugAnalysisResult,
+) -> dict[str, Any]:
+    """只度量 Agent 控制面，不把模型文风或知识能力混入指标。"""
+
+    analysis_events = [
+        event for event in events if event.tool_name != "request_human_guidance"
+    ]
+    signatures: dict[str, int] = {}
+    tools: dict[str, dict[str, int]] = {}
+    activated_skills: list[str] = []
+    checkpoints: list[dict[str, Any]] = []
+    for event in events:
+        if event.tool_name == "request_human_guidance" and event.success:
+            try:
+                checkpoint = json.loads(event.result)["data"]["human_checkpoint"]
+                checkpoints.append(checkpoint)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+            continue
+        signature = event.tool_name + ":" + sha256_value(event.arguments)
+        signatures[signature] = signatures.get(signature, 0) + 1
+        item = tools.setdefault(event.tool_name, {"calls": 0, "successes": 0, "failures": 0})
+        item["calls"] += 1
+        item["successes" if event.success else "failures"] += 1
+        if event.tool_name == "activate_skill" and event.success:
+            name = event.arguments.get("name")
+            if isinstance(name, str):
+                activated_skills.append(name)
+    return {
+        "analysis_tool_calls": len(analysis_events),
+        "successful_tool_calls": sum(event.success for event in analysis_events),
+        "failed_tool_calls": sum(not event.success for event in analysis_events),
+        "repeated_identical_calls": sum(max(0, count - 1) for count in signatures.values()),
+        "tools": tools,
+        "activated_skills": list(dict.fromkeys(activated_skills)),
+        "human_checkpoint_count": len(checkpoints),
+        "human_checkpoint_categories": [item.get("category") for item in checkpoints],
+        "autonomous_completion": result.status in {"completed", "insufficient_evidence"},
     }
 
 

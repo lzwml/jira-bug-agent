@@ -224,6 +224,16 @@ Run Bundle v2：执行轨迹、证据与主张快照、输入指纹覆盖、模�
 晋升为版本化黄金 Case，评分维度、反馈 JSON 和命令见
 [真实稳定性黄金 Case Eval](docs/golden-case-eval.md)。
 
+交互分析中，Agent 在完成必要工具调查后仍遇到真实阻塞时，会主动生成一个结构化
+人工检查点。工程师直接回复即可在同一会话上下文继续；检查点、回复以及回复后发生的
+Tool/Skill 变化都会本地留存。优化目标是让同类黄金 Case 后续不再需要相同提示，
+而不是把人工回复当成模型结论。
+
+每次人工提示被消费后，系统还会自动在
+`<case>/.bug-agent/optimization/candidates/` 生成一条待审核优化候选，将影响归因到
+工具选择、Skill 路由、Skill 内容或 Case 输入契约。它只提出改动方向，不会自动修改
+Skill；候选必须经人工确认，并通过固定模型下的黄金 Case 回归后才能进入 Agent。
+
 ```powershell
 bug-agent visualize-run <case>/.bug-agent/runs/<run>.json
 bug-agent eval-review <run-bundle.json> <review.json> --promote

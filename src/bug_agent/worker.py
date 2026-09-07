@@ -21,6 +21,7 @@ from .contracts import (
 )
 from .conversation import ConversationSession
 from .models import ToolEvent
+from .human_guidance import HumanGuidanceToolRouter
 from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
 from .prompts import (
@@ -483,11 +484,12 @@ class BugAnalysisWorker:
                         + video_prompt
                         + REPORT_FORMAT_PROMPT
                     )
+                    human_router = HumanGuidanceToolRouter(skill_router)
                     provenance = build_execution_context(
                         model=run_config.llm_model,
                         system_prompt=system_prompt,
                         instruction=instruction,
-                        tool_schema=skill_router.openai_tools(),
+                        tool_schema=human_router.openai_tools(),
                         skill_documents=skill_documents,
                         max_steps=run_config.max_steps,
                         max_tool_calls=run_config.max_tool_calls,
@@ -498,7 +500,7 @@ class BugAnalysisWorker:
                     run = await BugAnalysisAgent(run_config, provider).run(
                         instruction,
                         system_prompt,
-                        skill_router,
+                        human_router,
                         on_tool_event=recorder.on_tool_event if recorder_active else None,
                         goal_mode=task.goal_mode,
                     )
@@ -553,15 +555,29 @@ class BugAnalysisWorker:
             reconcile(task, result, run, self.config)
             return result
 
-        report, structured = _extract_report(run.final_answer)
         report_validation = None
-        if structured:
-            report, report_validation = validate_report(
-                report,
-                run.tool_events,
-                strict=run_config.strict_evidence_validation,
+        if run.status == "waiting_for_human":
+            structured = False
+            report = RCAReport(
+                conclusion_status="insufficient_evidence",
+                summary="Agent 已暂停，正在等待一项能够解除当前调查阻塞的人工输入。",
+                missing_evidence=[
+                    run.human_checkpoint.requested_input
+                    if run.human_checkpoint else "等待人工补充调查线索"
+                ],
+                next_actions=[run.final_answer],
             )
-        if run.status == "failed":
+        else:
+            report, structured = _extract_report(run.final_answer)
+            if structured:
+                report, report_validation = validate_report(
+                    report,
+                    run.tool_events,
+                    strict=run_config.strict_evidence_validation,
+                )
+        if run.status == "waiting_for_human":
+            status = "waiting_for_human"
+        elif run.status == "failed":
             status = "failed"
         elif run.status == "max_steps":
             status = "max_steps"
@@ -580,8 +596,9 @@ class BugAnalysisWorker:
             skill_activations=skill_activations,
             trace=run.tool_events if task.include_trace else [],
             error=run.error,
+            human_checkpoint=run.human_checkpoint,
         )
-        if task.include_analysis_guide and run.status != "failed":
+        if task.include_analysis_guide and run.status not in {"failed", "waiting_for_human"}:
             guide, guide_error = await self._generate_analysis_guide(
                 report, run.tool_events, run_config,
             )
@@ -612,7 +629,8 @@ class BugAnalysisWorker:
                 failure_meta,
                 provenance,
             )
-        reconcile(task, result, run, self.config)
+        if run.status != "waiting_for_human":
+            reconcile(task, result, run, self.config)
         return result
 
     @staticmethod
@@ -818,10 +836,11 @@ class BugAnalysisWorker:
             await provider.close()
             await router.__aexit__(None, None, None)
 
+        human_router = HumanGuidanceToolRouter(skill_router)
         session = ConversationSession(
             agent=agent,
             system_prompt=prompt,
-            router=skill_router,
+            router=human_router,
             max_steps_per_turn=max_steps_per_turn,
             goal_mode=task.goal_mode,
             on_tool_event=on_tool_event,

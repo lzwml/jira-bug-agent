@@ -31,8 +31,9 @@ from typing import Callable
 
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .config import AgentConfig
-from .models import AgentRunResult, ToolEvent
+from .models import AgentRunResult, HumanCheckpoint, HumanIntervention, ToolEvent
 from .prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
+from .human_guidance import infer_attribution
 
 
 @dataclass
@@ -43,6 +44,8 @@ class SavedTurn:
     assistant_answer: str
     steps: int = 0
     agent_status: str = "completed"
+    human_checkpoint: dict | None = None
+    human_intervention: dict | None = None
 
 
 @dataclass
@@ -54,6 +57,9 @@ class ConversationTurn:
 
     result: AgentRunResult
     """Agent 在这一轮的运行结果。"""
+
+    human_intervention: HumanIntervention | None = None
+    """若本轮是对 Agent 检查点的回复，记录提示及其直接产生的行动。"""
 
 
 @dataclass
@@ -70,6 +76,10 @@ class ConversationResult:
     def final_answer(self) -> str:
         """最后一轮的最终回答。"""
         return self.turns[-1].result.final_answer if self.turns else ""
+
+    @property
+    def human_interventions(self) -> list[HumanIntervention]:
+        return [turn.human_intervention for turn in self.turns if turn.human_intervention]
 
 
 class ConversationSession:
@@ -126,6 +136,7 @@ class ConversationSession:
         self._turns: list[ConversationTurn] = []
         self._total_steps: int = 0
         self._active: bool = True
+        self._pending_checkpoint: HumanCheckpoint | None = None
 
     @property
     def turn_count(self) -> int:
@@ -141,6 +152,10 @@ class ConversationSession:
     def messages(self) -> list[dict]:
         """当前的消息历史（只读）。"""
         return list(self._messages)
+
+    @property
+    def pending_checkpoint(self) -> HumanCheckpoint | None:
+        return self._pending_checkpoint
 
     def load_history(self, messages: list[dict[str, str]]) -> None:
         """注入初始消息历史（不含 system prompt）。
@@ -169,8 +184,24 @@ class ConversationSession:
         if not self.is_active:
             raise RuntimeError("会话已结束")
 
-        # 如果是第一轮之后的追问，先追加追问的系统提示
-        if self._turns:
+        checkpoint = self._pending_checkpoint
+        intervention: HumanIntervention | None = None
+        if checkpoint is not None:
+            resolver = getattr(self._router, "resolve", None)
+            if resolver is not None:
+                resolver(checkpoint.checkpoint_id)
+            self._pending_checkpoint = None
+            intervention = HumanIntervention(checkpoint=checkpoint, response=user_message)
+            self._messages.append({
+                "role": "system",
+                "content": (
+                    "下面的用户消息是对人工检查点 " + checkpoint.checkpoint_id
+                    + " 的回复。它是调查线索而不是已确认事实。继续当前调查，优先用工具"
+                    "验证这条提示；不要重新从头分析，也不要因为用户这样说就直接确认根因。"
+                ),
+            })
+        # 普通追问才使用通用 follow-up 指令。
+        elif self._turns:
             self._messages.append({
                 "role": "system",
                 "content": CONVERSATION_FOLLOWUP_SYSTEM_PROMPT,
@@ -190,7 +221,25 @@ class ConversationSession:
         )
 
         self._total_steps += result.steps
-        turn = ConversationTurn(user_message=user_message, result=result)
+        if intervention is not None:
+            intervention = intervention.model_copy(update={
+                "subsequent_tools": [event.tool_name for event in result.tool_events],
+                "subsequent_skill_activations": [
+                    str(event.arguments.get("name")) for event in result.tool_events
+                    if event.tool_name == "activate_skill" and event.success
+                ],
+            })
+            intervention = intervention.model_copy(update={
+                "attribution": infer_attribution(
+                    intervention.checkpoint,
+                    intervention.subsequent_tools,
+                    intervention.subsequent_skill_activations,
+                ),
+            })
+        self._pending_checkpoint = result.human_checkpoint
+        turn = ConversationTurn(
+            user_message=user_message, result=result, human_intervention=intervention,
+        )
         self._turns.append(turn)
 
         return turn
@@ -224,9 +273,25 @@ class ConversationSession:
                     final_answer=turn_data.assistant_answer,
                     steps=turn_data.steps,
                     tool_events=[],
+                    human_checkpoint=(
+                        HumanCheckpoint.model_validate(turn_data.human_checkpoint)
+                        if turn_data.human_checkpoint else None
+                    ),
+                ),
+                human_intervention=(
+                    HumanIntervention.model_validate(turn_data.human_intervention)
+                    if turn_data.human_intervention else None
                 ),
             ))
             self._total_steps += turn_data.steps
+        self._pending_checkpoint = None
+        if saved_turns and saved_turns[-1].human_checkpoint:
+            self._pending_checkpoint = HumanCheckpoint.model_validate(
+                saved_turns[-1].human_checkpoint
+            )
+            restore = getattr(self._router, "restore_pending", None)
+            if restore is not None:
+                restore(self._pending_checkpoint)
 
     async def finalize(self) -> ConversationResult:
         """结束会话，返回最终结果。

@@ -103,6 +103,9 @@ def test_run_bundle_v2_captures_provenance_inputs_evidence_and_claims(tmp_path):
     assert fingerprint["artifact_count"] == 1
     assert fingerprint["complete_content_fingerprint"] is False
     assert record["derived"]["claim_snapshot"]["claims"][0]["kind"] == "observed_symptom"
+    assert record["derived"]["agent_metrics"]["analysis_tool_calls"] == 1
+    assert record["derived"]["agent_metrics"]["human_checkpoint_count"] == 0
+    assert record["derived"]["agent_metrics"]["autonomous_completion"] is True
     assert verify_record(record)
 
 
