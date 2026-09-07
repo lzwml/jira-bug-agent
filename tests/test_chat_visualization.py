@@ -8,6 +8,7 @@ from bug_agent.chat_visualization import (
     build_return_preview,
     load_chat_session,
     render_chat_visualization,
+    render_safe_markdown,
 )
 
 
@@ -81,3 +82,18 @@ def test_return_preview_surfaces_artifact_paths_and_identifiers():
         "details": "archive · 123 bytes",
     }]
     assert preview["facts"] == [{"name": "artifact_count", "value": "1"}]
+
+
+def test_safe_markdown_renders_reports_without_allowing_html_injection():
+    rendered = render_safe_markdown(
+        "## 总结\n\n**根因**：`system_server`\n\n"
+        "| 时间 | 事件 |\n|---|---|\n| 09:32 | crash |\n\n"
+        "```text\nFatal signal\n```\n<script>alert(1)</script>"
+    )
+
+    assert "<h2>总结</h2>" in rendered
+    assert "<strong>根因</strong>" in rendered
+    assert "<table>" in rendered
+    assert '<code class="language-text">Fatal signal</code>' in rendered
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered

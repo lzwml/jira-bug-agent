@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from .runstore import _atomic_write
@@ -38,6 +40,8 @@ def render_chat_visualization(
         "fallback_notice": "当前版本后补：原会话未保存当时的工具契约，可能与运行时版本不同。",
     }
     for turn in session.get("turns", []):
+        turn["_user_html"] = render_safe_markdown(str(turn.get("user_message") or ""))
+        turn["_assistant_html"] = render_safe_markdown(str(turn.get("assistant_answer") or ""))
         for event in turn.get("tool_events", []):
             if isinstance(event, dict):
                 event["_return_preview"] = build_return_preview(str(event.get("result") or ""))
@@ -70,6 +74,118 @@ def render_chat_visualization(
         relative_index = site_dir.name + "/index.html"
         _atomic_write(launcher_path, _REDIRECT_HTML.replace("__TARGET__", relative_index))
     return site_dir / "index.html"
+
+
+def render_safe_markdown(value: str) -> str:
+    """渲染复盘所需的 Markdown 子集；所有原始内容先转义，禁止注入 HTML。"""
+
+    lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("```"):
+            language = re.sub(r"[^A-Za-z0-9_+-]", "", line[3:].strip())
+            code: list[str] = []
+            index += 1
+            while index < len(lines) and not lines[index].startswith("```"):
+                code.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            class_name = f' class="language-{language}"' if language else ""
+            output.append(f"<pre><code{class_name}>{html.escape(chr(10).join(code))}</code></pre>")
+            continue
+        if not line.strip():
+            index += 1
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            level = len(heading.group(1))
+            output.append(f"<h{level}>{_render_inline(heading.group(2))}</h{level}>")
+            index += 1
+            continue
+        if (
+            "|" in line and index + 1 < len(lines)
+            and re.match(r"^\s*\|?\s*:?-{3,}", lines[index + 1])
+        ):
+            headers = _table_cells(line)
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and "|" in lines[index] and lines[index].strip():
+                rows.append(_table_cells(lines[index]))
+                index += 1
+            table = ["<div class=\"table-wrap\"><table><thead><tr>"]
+            table.extend(f"<th>{_render_inline(cell)}</th>" for cell in headers)
+            table.append("</tr></thead><tbody>")
+            for row in rows:
+                table.append("<tr>")
+                table.extend(
+                    f"<td>{_render_inline(row[pos] if pos < len(row) else '')}</td>"
+                    for pos in range(len(headers))
+                )
+                table.append("</tr>")
+            table.append("</tbody></table></div>")
+            output.append("".join(table))
+            continue
+        list_match = re.match(r"^\s*(?:[-*+]\s+|(\d+)[.)]\s+)(.+)$", line)
+        if list_match:
+            ordered = list_match.group(1) is not None
+            tag = "ol" if ordered else "ul"
+            items: list[str] = []
+            while index < len(lines):
+                match = re.match(r"^\s*(?:[-*+]\s+|(\d+)[.)]\s+)(.+)$", lines[index])
+                if not match or (match.group(1) is not None) != ordered:
+                    break
+                items.append(f"<li>{_render_inline(match.group(2))}</li>")
+                index += 1
+            output.append(f"<{tag}>" + "".join(items) + f"</{tag}>")
+            continue
+        if line.lstrip().startswith(">"):
+            quotes: list[str] = []
+            while index < len(lines) and lines[index].lstrip().startswith(">"):
+                quotes.append(lines[index].lstrip()[1:].lstrip())
+                index += 1
+            output.append("<blockquote>" + "<br>".join(_render_inline(x) for x in quotes) + "</blockquote>")
+            continue
+        paragraph = [line]
+        index += 1
+        while index < len(lines) and lines[index].strip() and not _starts_markdown_block(lines, index):
+            paragraph.append(lines[index])
+            index += 1
+        output.append("<p>" + "<br>".join(_render_inline(x) for x in paragraph) + "</p>")
+    return "".join(output)
+
+
+def _starts_markdown_block(lines: list[str], index: int) -> bool:
+    line = lines[index]
+    return bool(
+        line.startswith("```")
+        or re.match(r"^(#{1,6})\s+", line)
+        or re.match(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", line)
+        or line.lstrip().startswith(">")
+        or ("|" in line and index + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-{3,}", lines[index + 1]))
+    )
+
+
+def _render_inline(value: str) -> str:
+    escaped = html.escape(value)
+    code_tokens: list[str] = []
+
+    def protect_code(match: re.Match[str]) -> str:
+        code_tokens.append(f"<code>{match.group(1)}</code>")
+        return f"\x00CODE{len(code_tokens) - 1}\x00"
+
+    escaped = re.sub(r"`([^`]+)`", protect_code, escaped)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"__(.+?)__", r"<strong>\1</strong>", escaped)
+    for pos, token in enumerate(code_tokens):
+        escaped = escaped.replace(f"\x00CODE{pos}\x00", token)
+    return escaped
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
 def build_return_preview(raw_result: str, *, max_locations: int = 50) -> dict[str, Any]:
@@ -166,13 +282,14 @@ _SITE_SHELL = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <script>__PAGE_SCRIPT__</script></body></html>'''
 
 _SITE_CSS = r'''
-:root{--bg:#f5f6f8;--card:#fff;--ink:#182230;--muted:#667085;--line:#e1e6ec;--blue:#155eef;--green:#067647;--red:#b42318;--amber:#b54708}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,"Microsoft YaHei",sans-serif}header{position:sticky;top:0;z-index:5;background:#101828;color:#fff;padding:14px max(22px,calc((100% - 1180px)/2));display:flex;align-items:center;justify-content:space-between;gap:20px}header strong{font-size:18px}header span{margin-left:12px;color:#aebbd0;font-size:13px}nav{display:flex;gap:4px}nav a{color:#d7dfeb;text-decoration:none;padding:7px 13px;border-radius:7px}nav a.active{background:#fff;color:#182230}main{max-width:1180px;margin:auto;padding:24px}.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:20px;margin-bottom:18px;box-shadow:0 1px 3px #1018280d}h1{font-size:25px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}h3{font-size:16px;margin:0}.muted{color:var(--muted)}.metrics,.routes{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metric,.route{background:#f8fafc;border-radius:9px;padding:14px}.metric b{display:block;font-size:24px}.route{text-decoration:none;color:var(--ink);border:1px solid transparent}.route:hover{border-color:#9eb8f5}.route b{display:block;color:var(--blue);margin-bottom:4px}.message{white-space:pre-wrap;word-break:break-word;background:#f8fafc;border-radius:8px;padding:13px;max-height:520px;overflow:auto}.toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:16px}input,select{border:1px solid #cbd3de;border-radius:7px;padding:8px;background:#fff;color:var(--ink)}input[type=search]{width:100%}.turn,.tool-group{padding:0;overflow:hidden}.turn>summary,.tool-group>summary,.tool-card>summary{list-style:none;cursor:pointer;padding:15px 18px;display:grid;grid-template-columns:80px 1fr auto;gap:12px;align-items:center}.turn>summary::-webkit-details-marker,.tool-group>summary::-webkit-details-marker,.tool-card>summary::-webkit-details-marker{display:none}.turn[open]>summary,.tool-group[open]>summary,.tool-card[open]>summary{background:#f8fafc}.body{padding:0 18px 18px}.preview{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tag{display:inline-block;padding:2px 8px;border-radius:999px;background:#eaf0ff;color:#1849a9;font-size:12px;margin-left:5px}.tag.warn{background:#fff0df;color:var(--amber)}.tag.ok{background:#ecfdf3;color:var(--green)}.tag.bad{background:#fff1f0;color:var(--red)}.tool-card{border-top:1px solid var(--line)}.tool-card:first-child{border-top:0}.tool-card>summary{grid-template-columns:160px 1fr auto}.purpose{margin:8px 0;color:#344054}.notice{font-size:12px;color:var(--amber)}table{width:100%;border-collapse:collapse;margin:9px 0;font-size:13px}th,td{text-align:left;vertical-align:top;border:1px solid #e6e9ee;padding:7px;word-break:break-word}th{background:#f8fafc}.mono{font-family:ui-monospace,Consolas,monospace}.result{padding:9px 11px;border-radius:7px;background:#f0fdf4;color:#05603a;margin:8px 0}.result.bad{background:#fff1f0;color:var(--red)}details.raw summary{cursor:pointer;color:var(--blue)}pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;padding:10px;border-radius:7px;max-height:380px;overflow:auto}.review{display:grid;grid-template-columns:auto 170px 170px 1fr;gap:8px;align-items:center}.review input[type=text]{width:100%}button{border:0;border-radius:8px;padding:9px 14px;background:var(--blue);color:#fff;font-weight:650;cursor:pointer}.row{display:flex;justify-content:space-between;gap:12px;align-items:center}.hidden{display:none!important}.empty{text-align:center;color:var(--muted);padding:28px}@media(max-width:780px){header{position:static;display:block}nav{margin-top:10px}.metrics,.routes{grid-template-columns:1fr 1fr}.review,.toolbar{grid-template-columns:1fr}.turn>summary,.tool-group>summary,.tool-card>summary{grid-template-columns:65px 1fr}.turn>summary>span:last-child,.tool-group>summary>span:last-child,.tool-card>summary>span:last-child{grid-column:2}header span{display:block;margin:2px 0}}
+:root{--bg:#f5f6f8;--card:#fff;--ink:#182230;--muted:#667085;--line:#e1e6ec;--blue:#155eef;--green:#067647;--red:#b42318;--amber:#b54708}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,"Microsoft YaHei",sans-serif}header{position:sticky;top:0;z-index:5;background:#101828;color:#fff;padding:14px max(22px,calc((100% - 1180px)/2));display:flex;align-items:center;justify-content:space-between;gap:20px}header strong{font-size:18px}header span{margin-left:12px;color:#aebbd0;font-size:13px}nav{display:flex;gap:4px}nav a{color:#d7dfeb;text-decoration:none;padding:7px 13px;border-radius:7px}nav a.active{background:#fff;color:#182230}main{max-width:1180px;margin:auto;padding:24px}.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:20px;margin-bottom:18px;box-shadow:0 1px 3px #1018280d}h1{font-size:25px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}h3{font-size:16px;margin:0}.muted{color:var(--muted)}.metrics,.routes{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metric,.route{background:#f8fafc;border-radius:9px;padding:14px}.metric b{display:block;font-size:24px}.route{text-decoration:none;color:var(--ink);border:1px solid transparent}.route:hover{border-color:#9eb8f5}.route b{display:block;color:var(--blue);margin-bottom:4px}.message{word-break:break-word;background:#f8fafc;border-radius:8px;padding:13px;max-height:520px;overflow:auto}.message h1,.message h2,.message h3,.message h4{margin:16px 0 8px}.message h1{font-size:22px}.message h2{font-size:19px}.message h3{font-size:16px}.message p{margin:8px 0}.message ul,.message ol{padding-left:24px}.message blockquote{margin:10px 0;padding:7px 12px;border-left:4px solid #9eb8f5;background:#f2f6ff}.message code{font-family:ui-monospace,Consolas,monospace;background:#eaf0f6;padding:1px 4px;border-radius:4px}.message pre{background:#101828;color:#e6edf6}.message pre code{background:transparent;padding:0}.message .table-wrap{overflow:auto}.toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:16px}input,select{border:1px solid #cbd3de;border-radius:7px;padding:8px;background:#fff;color:var(--ink)}input[type=search]{width:100%}.turn,.tool-group{padding:0;overflow:hidden}.turn>summary,.tool-group>summary,.tool-card>summary{list-style:none;cursor:pointer;padding:15px 18px;display:grid;grid-template-columns:80px 1fr auto;gap:12px;align-items:center}.turn>summary::-webkit-details-marker,.tool-group>summary::-webkit-details-marker,.tool-card>summary::-webkit-details-marker{display:none}.turn[open]>summary,.tool-group[open]>summary,.tool-card[open]>summary{background:#f8fafc}.body{padding:0 18px 18px}.preview{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tag{display:inline-block;padding:2px 8px;border-radius:999px;background:#eaf0ff;color:#1849a9;font-size:12px;margin-left:5px}.tag.warn{background:#fff0df;color:var(--amber)}.tag.ok{background:#ecfdf3;color:var(--green)}.tag.bad{background:#fff1f0;color:var(--red)}.tool-card{border-top:1px solid var(--line)}.tool-card:first-child{border-top:0}.tool-card>summary{grid-template-columns:160px 1fr auto}.purpose{margin:8px 0;color:#344054}.notice{font-size:12px;color:var(--amber)}table{width:100%;border-collapse:collapse;margin:9px 0;font-size:13px}th,td{text-align:left;vertical-align:top;border:1px solid #e6e9ee;padding:7px;word-break:break-word}th{background:#f8fafc}.mono{font-family:ui-monospace,Consolas,monospace}.result{padding:9px 11px;border-radius:7px;background:#f0fdf4;color:#05603a;margin:8px 0}.result.bad{background:#fff1f0;color:var(--red)}details.raw summary{cursor:pointer;color:var(--blue)}pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;padding:10px;border-radius:7px;max-height:380px;overflow:auto}.review{display:grid;grid-template-columns:auto 170px 170px 1fr;gap:8px;align-items:center}.review input[type=text]{width:100%}button{border:0;border-radius:8px;padding:9px 14px;background:var(--blue);color:#fff;font-weight:650;cursor:pointer}.row{display:flex;justify-content:space-between;gap:12px;align-items:center}.hidden{display:none!important}.empty{text-align:center;color:var(--muted);padding:28px}@media(max-width:780px){header{position:static;display:block}nav{margin-top:10px}.metrics,.routes{grid-template-columns:1fr 1fr}.review,.toolbar{grid-template-columns:1fr}.turn>summary,.tool-group>summary,.tool-card>summary{grid-template-columns:65px 1fr}.turn>summary>span:last-child,.tool-group>summary>span:last-child,.tool-card>summary>span:last-child{grid-column:2}header span{display:block;margin:2px 0}}
 '''
 
 _SITE_COMMON_JS = r'''
 const session=JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(window.CHAT_SESSION_B64),c=>c.charCodeAt(0))));
 const turns=Array.isArray(session.turns)?session.turns:[],task=session.task||{};
 const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=String(text);return n};
+const markdown=(markup)=>{const n=el('div','message');n.innerHTML=markup||'<p>（空）</p>';return n};
 document.getElementById('case-title').textContent=task.issue_key||session.session_id||'Agent 复盘';document.getElementById('case-subtitle').textContent=task.objective||'';document.querySelector(`nav a[data-page="${document.body.dataset.page}"]`)?.classList.add('active');
 const catalogs=new Map((session.tool_catalogs||[]).map(x=>[x.catalog_id,x.tools||[]])),fallback=session._visualization?.fallback_tool_catalog||[];
 const catalogFor=t=>{const exact=catalogs.get(t.tool_catalog_id);return{tools:exact||fallback,exact:!!exact}},toolDef=(t,name)=>catalogFor(t).tools.find(x=>x.name===name)||{name,description:'没有可用的工具描述。',parameters:{type:'object',properties:{}}};
@@ -184,10 +301,10 @@ function appendToolDetails(root,t,x,withReview=false){const def=toolDef(t,x.tool
 _OVERVIEW_BODY = '''<section class="card"><h1>复盘概览</h1><p class="muted">先判断结果，再选择要深入的页面。</p><div class="metrics" id="metrics"></div></section>
 <section class="card"><h2>当前结论</h2><div class="message" id="latest"></div></section>
 <section class="routes"><a class="route" href="conversation.html"><b>阅读会话</b>只看人工输入和 Agent 回答</a><a class="route" href="tools.html"><b>核对工具</b>检查用途、参数和返回文件</a><a class="route" href="optimization.html"><b>标注优化</b>确认哪些人工参与应进入优化</a></section>'''
-_OVERVIEW_JS = r'''const names=[...new Set(allEvents.map(x=>x.event.tool_name))];[['会话轮次',turns.length],['工具调用',allEvents.length],['工具种类',names.length],['人工参与',Math.max(0,turns.length-1)]].forEach(([k,v])=>{const m=el('div','metric');m.append(el('b','',v),el('span','',k));document.getElementById('metrics').append(m)});document.getElementById('latest').textContent=turns.at(-1)?.assistant_answer||'尚无结论';'''
+_OVERVIEW_JS = r'''const names=[...new Set(allEvents.map(x=>x.event.tool_name))];[['会话轮次',turns.length],['工具调用',allEvents.length],['工具种类',names.length],['人工参与',Math.max(0,turns.length-1)]].forEach(([k,v])=>{const m=el('div','metric');m.append(el('b','',v),el('span','',k));document.getElementById('metrics').append(m)});const latest=turns.at(-1);document.getElementById('latest').replaceWith(markdown(latest?._assistant_html||''));'''
 
 _CONVERSATION_BODY = '''<section><h1>会话过程</h1><p class="muted">这里只阅读人工输入与 Agent 回答；工具细节统一到“工具”页核对。</p><div class="toolbar"><input id="search" type="search" placeholder="搜索会话内容"><span></span></div><div id="turns"></div></section>'''
-_CONVERSATION_JS = r'''const root=document.getElementById('turns');turns.forEach((t,i)=>{const d=el('details','card turn');d.id=`turn-${t.turn_index}`;d.dataset.search=((t.user_message||'')+'\n'+(t.assistant_answer||'')).toLowerCase();d.open=i===turns.length-1;const s=el('summary');s.append(el('strong','',`第 ${t.turn_index} 轮`),el('span','preview',(t.user_message||'').replace(/\s+/g,' ').slice(0,110)),el('span','tag',i===0?'任务设定':'人工引导'));d.append(s);const b=el('div','body');b.append(el('h3','','人工输入'),el('div','message',t.user_message||'（空）'),el('h3','','Agent 回答'),el('div','message',t.assistant_answer||'（空）'));if((t.tool_events||[]).length){const a=el('a','',`本轮有 ${t.tool_events.length} 次工具调用，前往工具页核对 →`);a.href=`tools.html#turn-${t.turn_index}`;b.append(a)}d.append(b);root.append(d)});document.getElementById('search').oninput=e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('.turn').forEach(x=>x.classList.toggle('hidden',q&&!x.dataset.search.includes(q)))};'''
+_CONVERSATION_JS = r'''const root=document.getElementById('turns');turns.forEach((t,i)=>{const d=el('details','card turn');d.id=`turn-${t.turn_index}`;d.dataset.search=((t.user_message||'')+'\n'+(t.assistant_answer||'')).toLowerCase();d.open=i===turns.length-1;const s=el('summary');s.append(el('strong','',`第 ${t.turn_index} 轮`),el('span','preview',(t.user_message||'').replace(/\s+/g,' ').slice(0,110)),el('span','tag',i===0?'任务设定':'人工引导'));d.append(s);const b=el('div','body');b.append(el('h3','','人工输入'),markdown(t._user_html),el('h3','','Agent 回答'),markdown(t._assistant_html));if((t.tool_events||[]).length){const a=el('a','',`本轮有 ${t.tool_events.length} 次工具调用，前往工具页核对 →`);a.href=`tools.html#turn-${t.turn_index}`;b.append(a)}d.append(b);root.append(d)});document.getElementById('search').oninput=e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('.turn').forEach(x=>x.classList.toggle('hidden',q&&!x.dataset.search.includes(q)))};'''
 
 _TOOLS_BODY = '''<section><h1>工具调用</h1><p class="muted">集中核对工具是否选对、参数是否符合契约，以及返回中是否包含所需文件或 Evidence。</p><div class="toolbar"><input id="search" type="search" placeholder="搜索工具名、参数或返回路径"><select id="tool-filter"><option value="">全部工具</option></select></div><div id="groups"></div></section>'''
 _TOOLS_JS = r'''const names=[...new Set(allEvents.map(x=>x.event.tool_name))].sort(),select=document.getElementById('tool-filter');names.forEach(n=>{const o=el('option','',n);o.value=n;select.append(o)});const root=document.getElementById('groups');turns.filter(t=>(t.tool_events||[]).length).forEach(t=>{const group=el('details','card tool-group');group.id=`turn-${t.turn_index}`;const s=el('summary');s.append(el('strong','',`第 ${t.turn_index} 轮`),el('span','preview',(t.user_message||'').replace(/\s+/g,' ').slice(0,100)),el('span','tag',`${t.tool_events.length} 次调用`));group.append(s);const body=el('div','body');t.tool_events.forEach(x=>{const d=el('details','tool-card');d.dataset.name=x.tool_name;d.dataset.search=(x.tool_name+' '+JSON.stringify(x.arguments||{})+' '+JSON.stringify(x._return_preview||{})).toLowerCase();const h=el('summary');h.append(el('strong','',x.tool_name),el('span','preview',toolDef(t,x.tool_name).description),el('span',`tag ${x.success?'ok':'bad'}`,x.success?'成功':'失败'));d.append(h);const content=el('div','body');appendToolDetails(content,t,x,false);d.append(content);body.append(d)});group.append(body);root.append(group)});function apply(){const q=document.getElementById('search').value.toLowerCase(),name=select.value;document.querySelectorAll('.tool-card').forEach(x=>x.classList.toggle('hidden',(q&&!x.dataset.search.includes(q))||(name&&x.dataset.name!==name)));document.querySelectorAll('.tool-group').forEach(g=>g.classList.toggle('hidden',![...g.querySelectorAll('.tool-card')].some(x=>!x.classList.contains('hidden'))))}document.getElementById('search').oninput=apply;select.onchange=apply;if(location.hash)document.querySelector(location.hash)?.setAttribute('open','');'''
