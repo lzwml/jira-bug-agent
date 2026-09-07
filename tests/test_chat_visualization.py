@@ -30,9 +30,13 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
 
     assert output.parent == tmp_path / ".bug-agent" / "visualizations"
     assert "Agent 问题复盘" in html
-    assert "导出已确认纠偏" in html
+    assert "导出复盘结论" in html
     assert "先看结果" in html
     assert "结论为什么发生变化" in html
+    assert "工具调用与参数契约" in html
+    assert "当前版本后补" in html
+    assert "返回是否满足需要" in html
+    assert "tool_reviews" in html
     assert "__CHAT_SESSION_BASE64__" not in html
     assert "检查 </script> 重启" not in html
 

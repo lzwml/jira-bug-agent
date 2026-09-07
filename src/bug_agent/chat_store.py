@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -97,19 +98,21 @@ class ChatStore:
                 return False
             # closed → 重新激活
             data["status"] = "active"
-            data["schema_version"] = 2
+            data["schema_version"] = 3
             data["updated_at"] = timestamp
             self._atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
             return True
 
         data = {
-            "schema_version": 2,
+            "schema_version": 3,
             "session_id": session_id,
             "task": task.model_dump(mode="json"),
             "status": "active",
             "created_at": timestamp,
             "updated_at": timestamp,
             "turns": [],
+            "tool_catalogs": [],
+            "active_tool_catalog_id": None,
         }
         self._atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
         return True
@@ -133,16 +136,18 @@ class ChatStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         else:
             data = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "session_id": session_id,
                 "task": None,
                 "status": "active",
                 "created_at": timestamp,
                 "updated_at": timestamp,
                 "turns": [],
+                "tool_catalogs": [],
+                "active_tool_catalog_id": None,
             }
 
-        data["schema_version"] = 2
+        data["schema_version"] = 3
         optimization_candidate = None
         if human_intervention is not None:
             optimization_candidate = write_optimization_candidate(
@@ -162,11 +167,31 @@ class ChatStore:
             "human_checkpoint": human_checkpoint,
             "human_intervention": human_intervention,
             "optimization_candidate": str(optimization_candidate) if optimization_candidate else None,
+            "tool_catalog_id": data.get("active_tool_catalog_id"),
             "created_at": timestamp,
         })
         data["updated_at"] = timestamp
 
         self._atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
+
+    def register_tool_catalog(self, session_id: str, tools: list[dict[str, Any]]) -> str:
+        """保存运行时真实 Tool Schema；同一内容只保存一次。"""
+        path = _session_path(self._dir, session_id)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        canonical = json.dumps(tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        catalog_id = "tools-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+        catalogs = data.setdefault("tool_catalogs", [])
+        if not any(item.get("catalog_id") == catalog_id for item in catalogs):
+            catalogs.append({
+                "catalog_id": catalog_id,
+                "captured_at": _now(),
+                "tools": tools,
+            })
+        data["schema_version"] = 3
+        data["active_tool_catalog_id"] = catalog_id
+        data["updated_at"] = _now()
+        self._atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
+        return catalog_id
 
     def close_session(self, session_id: str) -> None:
         """标记会话为已关闭。"""

@@ -320,3 +320,13 @@ async def test_messages_property_returns_copy():
     assert len(msgs) == 1
     # 新的副本应包含更多消息
     assert len(session.messages) > 1
+
+
+def test_tool_catalog_exposes_the_exact_model_facing_contract():
+    session, _, _ = make_session([{"content": "回答"}])
+
+    assert session.tool_catalog == [{
+        "name": "search_evidence",
+        "description": "搜索日志证据",
+        "parameters": {"type": "object"},
+    }]

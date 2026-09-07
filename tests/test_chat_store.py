@@ -25,10 +25,11 @@ def test_chat_store_creates_session_json_file():
         path = _session_path(sessions_dir, "test-session")
         assert path.is_file()
         data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["schema_version"] == 2
+        assert data["schema_version"] == 3
         assert data["session_id"] == "test-session"
         assert data["status"] == "active"
         assert data["turns"] == []
+        assert data["tool_catalogs"] == []
     finally:
         import shutil
         shutil.rmtree(sessions_dir, ignore_errors=True)
@@ -83,6 +84,31 @@ def test_chat_store_add_turn_without_tool_events_defaults_to_empty():
         session = store.get_session("test-session")
         turn = session["turns"][0]
         assert turn["tool_events"] == []
+    finally:
+        import shutil
+        shutil.rmtree(sessions_dir, ignore_errors=True)
+
+
+def test_chat_store_versions_runtime_tool_catalog_and_binds_turn():
+    sessions_dir = _temp_dir()
+    try:
+        store = ChatStore(sessions_dir)
+        task = BugAnalysisTask(source="local", case_path=str(sessions_dir))
+        store.create_session("test-session", task)
+        tools = [{
+            "name": "search_evidence",
+            "description": "搜索证据",
+            "parameters": {"type": "object", "required": ["query"]},
+        }]
+
+        catalog_id = store.register_tool_catalog("test-session", tools)
+        assert store.register_tool_catalog("test-session", tools) == catalog_id
+        store.add_turn("test-session", 1, "查找", "完成", 1, "completed")
+
+        session = store.get_session("test-session")
+        assert len(session["tool_catalogs"]) == 1
+        assert session["tool_catalogs"][0]["tools"] == tools
+        assert session["turns"][0]["tool_catalog_id"] == catalog_id
     finally:
         import shutil
         shutil.rmtree(sessions_dir, ignore_errors=True)

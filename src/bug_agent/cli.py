@@ -630,6 +630,9 @@ async def _run_chat(args: argparse.Namespace) -> int:
         print(f"\n会话创建失败: {exc}", file=sys.stderr)
         return 2
 
+    if store is not None:
+        store.register_tool_catalog(session_id, session.tool_catalog)
+
     try:
         if saved_turns:
             # 恢复历史轮次到会话中

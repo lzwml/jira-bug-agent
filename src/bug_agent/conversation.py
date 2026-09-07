@@ -34,6 +34,7 @@ from .config import AgentConfig
 from .models import AgentRunResult, HumanCheckpoint, HumanIntervention, ToolEvent
 from .prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
 from .human_guidance import infer_attribution
+from .tool_catalog import normalize_tool_catalog
 
 
 @dataclass
@@ -156,6 +157,11 @@ class ConversationSession:
     @property
     def pending_checkpoint(self) -> HumanCheckpoint | None:
         return self._pending_checkpoint
+
+    @property
+    def tool_catalog(self) -> list[dict]:
+        """本次会话实际发送给模型的工具描述与参数契约快照。"""
+        return normalize_tool_catalog(self._router.openai_tools())
 
     def load_history(self, messages: list[dict[str, str]]) -> None:
         """注入初始消息历史（不含 system prompt）。
