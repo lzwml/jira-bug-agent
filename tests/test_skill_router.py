@@ -83,6 +83,23 @@ async def test_router_rejects_two_primary_symptom_skills():
 
 
 @pytest.mark.anyio
+async def test_router_allows_one_explicit_secondary_cascade_skill():
+    router = make_router(initial=["android-native-crash"], source="explicit")
+
+    raw = await router.call(ACTIVATE_SKILL_TOOL, {
+        "name": "android-black-screen",
+        "role": "secondary",
+        "reason": "已确认 native service death 后出现黑屏，需要验证下游显示影响",
+    })
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["data"]["role"] == "secondary"
+    assert router.activations[-1].role == "secondary"
+    assert router.activated_names == ["android-native-crash", "android-black-screen"]
+
+
+@pytest.mark.anyio
 async def test_router_can_stack_platform_skill_with_symptom_skill():
     router = make_router(initial=["android-black-screen"], source="explicit")
 

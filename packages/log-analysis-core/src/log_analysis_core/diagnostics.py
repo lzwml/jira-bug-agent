@@ -7,7 +7,10 @@ import re
 from typing import Literal
 
 
-DiagnosticType = Literal["avc", "kernel_stack", "fatal", "anr"]
+DiagnosticType = Literal[
+    "avc", "kernel_stack", "fatal", "anr", "watchdog", "kernel_panic",
+    "hung_task", "lmk_oom", "binder_stall",
+]
 Severity = Literal["warning", "critical"]
 
 
@@ -38,5 +41,27 @@ def classify_diagnostic_line(line: str, wanted: set[str]) -> LineDiagnostic | No
         return LineDiagnostic("anr", "critical", "检测到 ANR")
     if "kernel_stack" in wanted and "call trace:" in lowered:
         return LineDiagnostic("kernel_stack", "critical", "检测到 Kernel Call Trace")
+    if "watchdog" in wanted and any(marker in lowered for marker in (
+        "watchdog killing system process", "watchdog bite", "watchdog bark",
+        "watchdog detected", "watchdog timeout",
+    )):
+        return LineDiagnostic("watchdog", "critical", "检测到 Watchdog 超时或复位信号")
+    if "kernel_panic" in wanted and any(marker in lowered for marker in (
+        "kernel panic - not syncing", "unable to handle kernel", "fatal exception in interrupt",
+    )):
+        return LineDiagnostic("kernel_panic", "critical", "检测到 Kernel Panic/Oops 致命信号")
+    if "hung_task" in wanted and any(marker in lowered for marker in (
+        "blocked for more than", "soft lockup", "hard lockup", "rcu stall",
+    )):
+        return LineDiagnostic("hung_task", "critical", "检测到内核卡死或长时间阻塞信号")
+    if "lmk_oom" in wanted and any(marker in lowered for marker in (
+        "lowmemorykiller", "lmkd", "out of memory: kill process", "oom_reaper",
+        "memory cgroup out of memory",
+    )):
+        return LineDiagnostic("lmk_oom", "critical", "检测到 LMK/OOM 内存压力信号")
+    if "binder_stall" in wanted and any(marker in lowered for marker in (
+        "binder thread pool starved", "binder thread pool starvation",
+        "binder transaction failed", "binder_alloc_buf", "undelivered transaction",
+    )):
+        return LineDiagnostic("binder_stall", "warning", "检测到 Binder 阻塞或事务失败信号")
     return None
-

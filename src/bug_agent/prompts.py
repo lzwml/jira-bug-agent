@@ -55,9 +55,22 @@ REPORT_FORMAT_PROMPT = """
 {
   "conclusion_status": "confirmed | hypothesis_only | insufficient_evidence",
   "summary": "3-5句执行摘要",
+  "incident": {
+    "incident_id": "同一 Case 内稳定的事故/复现标识或 null",
+    "reported_window": {"start": "原始上报时间", "end": "原始上报时间", "clock_domain": "reported", "source": "reported"},
+    "verified_window": {"start": "日志确认起点", "end": "日志确认终点", "clock_domain": "wall | android | kernel_monotonic | unknown", "source": "log | archive | video | unknown"},
+    "boot_identity": "boot id/round/reset identity 或 null",
+    "process_name": "进程名或 null",
+    "pid": "PID 或 null",
+    "build_identity": "build fingerprint/version 或 null",
+    "system_domain": "android/linux/hypervisor/mcu 等或 null",
+    "evidence_ids": ["用于确认事故身份的 evidence_id"],
+    "limitations": ["仍无法确认的事故身份字段"]
+  },
   "observed_symptom": "用户可见现象",
   "failure_mechanism": "已确认的直接故障机制，未确认则为 null",
   "root_cause": "已验证的技术根因；未确认时必须为 null",
+  "root_cause_evidence_ids": ["直接支持技术根因的 evidence_id"],
   "trigger_conditions": ["已知触发或促成条件"],
   "timeline": [{
     "timestamp": "原始时间",
@@ -112,6 +125,9 @@ REPORT_FORMAT_PROMPT = """
 必须区分现象、直接故障机制和根因；根因未验证时 root_cause 必须为 null。
 零匹配只能放入 negative_findings，不能放入 confirmed_facts。
 不得虚构 evidence_id、文件、行号、时间或负责人；没有可靠证据时使用 insufficient_evidence。
+incident 必须区分 reported_window 与 verified_window；不得把上报时间直接写成日志已验证时间。
+所有 evidence 和 evidence_ids 都会由 Worker 对照本次工具轨迹校验；无法校验的引用会被移除。
+confirmed 必须同时具有 root_cause_evidence_ids，以及由已验证证据锚定的 incident 时间/boot/进程/build 身份，否则会被自动降级。
 """
 
 
@@ -177,16 +193,4 @@ ANALYSIS_GUIDE_PROMPT = """你是一位资深工程师，正在向另一位工�
   "reusable_approach": ["可迁移到同类问题的一条排查原则或顺序"],
   "limitations": ["当前讲解和结论仍受限于的证据边界"]
 }
-"""
-
-# Code search workflow prompt — appended by Worker when OpenGrok is enabled.
-CODE_SEARCH_WORKFLOW_PROMPT = """
-Code Search (OpenGrok):
-When the tool list contains opengrok_ prefixed tools, you can search the codebase.
-- Search for definitions (search_type=defs) and references (search_type=refs) of symbols found in logs.
-- Use opengrok_search_code to find functions, classes, macros, and their call sites.
-- Use opengrok_get_file_content with line ranges to read surrounding context.
-- After OpenGrok identifies a concrete project and path, prefer opengrok_read_local_file when available to inspect the corresponding local checkout. Treat OpenGrok and local content as different code versions unless evidence shows otherwise.
-- Use opengrok_get_file_history to check recent commits for suspicious changes.
-- Cross-reference code findings with log evidence — code logic alone is not proof.
 """

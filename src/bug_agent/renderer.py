@@ -50,10 +50,32 @@ def render_markdown(result: BugAnalysisResult) -> str:
         f"- **用户可见现象**：{report.observed_symptom or '未结构化记录'}",
         f"- **直接故障机制**：{report.failure_mechanism or '尚未确认'}",
         f"- **技术根因**：{report.root_cause or '尚未确认'}",
+        f"- **根因证据**：{_ids(report.root_cause_evidence_ids)}",
         "",
         report.summary,
         "",
     ]
+
+    if result.report_validation is not None:
+        validation = result.report_validation
+        label = "已通过" if validation.grounded else "未通过"
+        lines.insert(
+            9,
+            f"- **证据校验**：{label}（已验证 {validation.verified_evidence_count} 条）",
+        )
+
+    if report.incident is not None:
+        incident = report.incident
+        lines.extend([
+            "### 事故身份", "",
+            f"- Incident：{incident.incident_id or '未确定'}",
+            f"- Boot：{incident.boot_identity or '未确定'}",
+            f"- 进程：{incident.process_name or '未确定'}"
+            + (f" (PID {incident.pid})" if incident.pid is not None else ""),
+            f"- Build：{incident.build_identity or '未确定'}",
+            f"- 系统域：{incident.system_domain or '未确定'}",
+            "",
+        ])
 
     if report.trigger_conditions:
         lines.extend(["### 触发或促成条件", ""])

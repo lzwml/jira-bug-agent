@@ -1158,6 +1158,25 @@ class LogAnalyzerService:
                 "fatal": ["FATAL EXCEPTION", "Fatal signal"],
                 "anr": ["ANR in"],
                 "kernel_stack": ["Call Trace:"],
+                "watchdog": [
+                    "WATCHDOG KILLING SYSTEM PROCESS", "watchdog bite", "watchdog bark",
+                    "watchdog detected", "watchdog timeout",
+                ],
+                "kernel_panic": [
+                    "Kernel panic - not syncing", "Unable to handle kernel",
+                    "Fatal exception in interrupt",
+                ],
+                "hung_task": [
+                    "blocked for more than", "soft lockup", "hard lockup", "RCU stall",
+                ],
+                "lmk_oom": [
+                    "lowmemorykiller", "lmkd", "Out of memory: Kill process",
+                    "oom_reaper", "Memory cgroup out of memory",
+                ],
+                "binder_stall": [
+                    "binder thread pool starved", "binder thread pool starvation",
+                    "binder transaction failed", "binder_alloc_buf", "undelivered transaction",
+                ],
             }
             seen_findings: set[tuple[str, int, str]] = set()
             for diagnostic_type in params.diagnostic_types:

@@ -14,6 +14,13 @@ def test_extracts_android_and_kernel_clock_domains():
     assert kernel.relative_seconds == 123.456789
 
 
+def test_android_timestamp_without_year_is_not_silently_normalized():
+    android = extract_timestamp("08-26 10:20:31.123 I SurfaceFlinger: ready")
+    assert android.clock_domain == "android"
+    assert android.raw == "08-26 10:20:31.123"
+    assert android.normalized is None
+
+
 def test_avc_parser_extracts_structured_attributes():
     item = classify_diagnostic_line(
         "avc: denied { read write } scontext=u:r:a:s0 tcontext=u:object_r:b:s0 tclass=file",
@@ -29,7 +36,20 @@ def test_classification_is_filtered_by_requested_types():
     assert classify_diagnostic_line("FATAL EXCEPTION: main", {"fatal"}).severity == "critical"
 
 
+def test_classifies_high_value_android_stability_signals():
+    cases = [
+        ("*** WATCHDOG KILLING SYSTEM PROCESS: Blocked in handler", "watchdog"),
+        ("Kernel panic - not syncing: Fatal exception", "kernel_panic"),
+        ("task system_server blocked for more than 120 seconds", "hung_task"),
+        ("lowmemorykiller: Killing 'surfaceflinger'", "lmk_oom"),
+        ("binder thread pool starved for 9273 ms", "binder_stall"),
+    ]
+    for line, diagnostic_type in cases:
+        item = classify_diagnostic_line(line, {diagnostic_type})
+        assert item is not None
+        assert item.diagnostic_type == diagnostic_type
+
+
 def test_stable_id_is_repeatable_and_namespaced():
     assert stable_id("evidence", "same") == stable_id("evidence", "same")
     assert stable_id("evidence", "same").startswith("evidence_")
-

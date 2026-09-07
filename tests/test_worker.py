@@ -27,6 +27,8 @@ CONFIG = AgentConfig(
     llm_api_key="key",
     llm_model="model",
     max_steps=12,
+    # 大多数 Worker 单测使用无工具 FakeProvider；证据硬校验由独立测试覆盖。
+    strict_evidence_validation=False,
 )
 
 
@@ -204,6 +206,30 @@ async def test_local_worker_returns_stable_structured_contract(tmp_path):
     assert harness.provider.closed is True
     assert harness.router.connections[0][0:2] == ("log", "log_analyzer.server")
     assert "Skill: android-log-triage" in harness.provider.messages[0][0]["content"]
+
+
+@pytest.mark.anyio
+async def test_worker_strict_validation_downgrades_unverified_confirmed_report(tmp_path):
+    harness = Harness(json.dumps({
+        "conclusion_status": "confirmed",
+        "summary": "模型声称已确认。",
+        "root_cause": "没有工具证据的根因",
+        "confirmed_facts": ["没有工具证据的事实"],
+        "evidence": [],
+    }, ensure_ascii=False))
+    worker = BugAnalysisWorker(
+        replace(CONFIG, strict_evidence_validation=True),
+        harness.provider_factory,
+        harness.router_factory,
+    )
+
+    result = await worker.execute(BugAnalysisTask(source="local", case_path=str(tmp_path)))
+
+    assert result.report.conclusion_status == "hypothesis_only"
+    assert result.report.root_cause is None
+    assert result.report.confirmed_facts == []
+    assert result.report_validation is not None
+    assert result.report_validation.grounded is False
 
 
 @pytest.mark.anyio

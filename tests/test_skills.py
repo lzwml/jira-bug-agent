@@ -73,6 +73,7 @@ def test_mtk_ivi_skill_references_are_present():
         "symptom-routing.md",
         "android-mobile-log-design.md",
         "yocto-vlog-design.md",
+        "log-directory-reference.md",
     }
 
     assert {path.name for path in reference_root.glob("*.md")} == expected

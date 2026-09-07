@@ -381,16 +381,22 @@ class ParseDiagnosticsInput(BaseModel):
     """parse_diagnostics 的输入；只允许服务端实现的诊断类型。
 
     【学习要点】diagnostic_types 是白名单：
-    只允许 ["avc", "kernel_stack", "fatal", "anr"] 这四种类型，
+    只允许服务端已实现的 Android 稳定性诊断类型，
     因为这是 log_analysis_core 实现的确定性解析器。
     未来新增诊断类型需要先在 Core 中实现解析逻辑。
     """
 
     case_id: str = Field(min_length=1)
-    diagnostic_types: list[Literal["avc", "kernel_stack", "fatal", "anr"]] = Field(
-        default_factory=lambda: ["avc", "kernel_stack", "fatal", "anr"],
+    diagnostic_types: list[Literal[
+        "avc", "kernel_stack", "fatal", "anr", "watchdog", "kernel_panic",
+        "hung_task", "lmk_oom", "binder_stall",
+    ]] = Field(
+        default_factory=lambda: [
+            "avc", "kernel_stack", "fatal", "anr", "watchdog", "kernel_panic",
+            "hung_task", "lmk_oom", "binder_stall",
+        ],
         min_length=1,
-        max_length=4,
+        max_length=9,
     )
     artifact_ids: list[str] = Field(default_factory=list, max_length=100)
     max_findings: int = Field(default=100, ge=1, le=500)

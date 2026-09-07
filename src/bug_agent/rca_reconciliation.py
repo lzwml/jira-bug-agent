@@ -44,7 +44,7 @@ def claims_from_result(task: BugAnalysisTask, result: BugAnalysisResult) -> list
         claim = _claim(typ, text, task.task_id, status="supported" if text else "candidate", confidence="medium", evidence=[e.evidence_id for e in report.evidence])
         if claim:
             claims.append(claim)
-    root = _claim("root_cause", report.root_cause, task.task_id, status="confirmed" if report.conclusion_status == "confirmed" else "supported", confidence="high" if report.conclusion_status == "confirmed" else "medium_high", evidence=[e.evidence_id for e in report.evidence])
+    root = _claim("root_cause", report.root_cause, task.task_id, status="confirmed" if report.conclusion_status == "confirmed" else "supported", confidence="high" if report.conclusion_status == "confirmed" else "medium_high", evidence=report.root_cause_evidence_ids)
     if root:
         claims.append(root)
     for hypothesis in report.hypotheses:

@@ -11,12 +11,12 @@ BugAnalysisTask
       │
       ▼
 BugAnalysisWorker
-      ├── 配置本次步骤预算
+      ├── 配置步骤、工具调用数与总时长硬预算
       ├── 导出并验证 Jira Case
       ├── 按 source 连接 Log MCP
       ├── 选择 Jira/Local Prompt
       ├── 运行 BugAnalysisAgent
-      └── 校验 RCAReport
+      └── 用工具轨迹校验 RCAReport Evidence
       │
       ▼
 BugAnalysisResult
@@ -34,7 +34,7 @@ BugAnalysisResult
 | `case_path` | Local 模式必填 |
 | `objective` | 本次分析目标，不扩大 Worker 权限 |
 | `continuation_of` | 可选的父任务 ID；声明本次是同一 Case 的续分析，Worker 会把已有 RCA 状态作为待验证上下文 |
-| `max_steps` | 可选的单任务步骤预算 |
+| `max_steps` | 可选的单任务模型轮次预算；工具调用数和总时长仍受服务端硬预算限制 |
 | `skills` | 可选的预激活 Skill；省略时 Worker 默认加载通用 Android 日志分诊 |
 | `auto_select_skills` | 是否允许 Agent 根据 Issue 和证据调用 `activate_skill`，默认 `true` |
 | `include_trace` | 是否在结果中包含内部 Tool Event |
@@ -58,6 +58,15 @@ BugAnalysisResult
 表示模型未遵守 RCA JSON Schema，Worker 使用了兼容降级；调用方可据此禁止自动
 进入修改或提交阶段。
 
+`report_validation` 记录 RCA 的证据落地结果。Worker 从成功工具结果重建 Evidence
+Registry，逐项校验报告中的 Evidence ID、Artifact、相对路径、行号、视频时间点和摘录。
+无法验证的引用会被移除；`confirmed` 缺少已验证根因或工具证据时自动降级为
+`hypothesis_only`。`grounded=false` 的报告不能进入自动关闭 Bug 或代码修改流程。
+
+`report.incident` 显式保存事故身份，包括 reported/verified 两套时间窗、boot、进程、
+build、系统域和身份依据。无法建立的字段必须进入 limitations，避免跨 boot、跨进程或
+跨复现拼接证据。
+
 `trace` 是内部诊断信息，不是业务契约的推理依据。生产环境应单独控制保存周期
 和访问权限，因为其中可能包含 Jira 与日志内容。
 
@@ -70,8 +79,9 @@ Worker 会把成功加载的名称写入 `applied_skills`。不存在、路径�
 不完整或超过预算的 Skill 会让任务在调用模型和 MCP 前失败。
 
 `skill_activations` 记录每个 Skill 的来源（`default`、`explicit` 或 `agent`）及原因。
-自动模式只允许一个 `category=symptom` 的主要症状 Skill，但允许叠加
-`category=platform`；显式预激活的症状路线具有优先权。动态加载由 Worker 本地完成，
+自动模式只允许一个 `primary` 症状 Skill；当证据已经显示级联故障时，可额外激活一个
+`secondary` 症状 Skill，用于验证下游影响和覆盖边界，但不能与 primary 竞争根因所有权。
+同时允许叠加 `category=platform`；显式预激活的症状路线具有优先权。动态加载由 Worker 本地完成，
 不会扩大 MCP 工具或文件路径权限。
 
 ## Jira 评论硬前置条件

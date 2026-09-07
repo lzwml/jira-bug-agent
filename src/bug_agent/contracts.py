@@ -78,6 +78,32 @@ class EvidenceReference(BaseModel):
         return self
 
 
+class IncidentWindow(BaseModel):
+    """一次事故的时间边界；reported 与 verified 必须分别表达。"""
+
+    start: str | None = None
+    end: str | None = None
+    clock_domain: Literal[
+        "wall", "android", "kernel_monotonic", "reported", "unknown"
+    ] = "unknown"
+    source: Literal["reported", "log", "archive", "video", "unknown"] = "unknown"
+
+
+class IncidentIdentity(BaseModel):
+    """防止跨 boot、跨进程或跨复现错误拼接证据的事故身份。"""
+
+    incident_id: str | None = Field(default=None, max_length=200)
+    reported_window: IncidentWindow | None = None
+    verified_window: IncidentWindow | None = None
+    boot_identity: str | None = Field(default=None, max_length=500)
+    process_name: str | None = Field(default=None, max_length=500)
+    pid: int | None = Field(default=None, ge=0)
+    build_identity: str | None = Field(default=None, max_length=1000)
+    system_domain: str | None = Field(default=None, max_length=200)
+    evidence_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 class Hypothesis(BaseModel):
     statement: str
     confidence: float = Field(ge=0.0, le=1.0)
@@ -142,9 +168,11 @@ class AnalysisGuide(BaseModel):
 class RCAReport(BaseModel):
     conclusion_status: Literal["confirmed", "hypothesis_only", "insufficient_evidence"]
     summary: str
+    incident: IncidentIdentity | None = None
     observed_symptom: str | None = None
     failure_mechanism: str | None = None
     root_cause: str | None = None
+    root_cause_evidence_ids: list[str] = Field(default_factory=list)
     trigger_conditions: list[str] = Field(default_factory=list)
     timeline: list[TimelineEntry] = Field(default_factory=list)
     coverage: list[CoverageItem] = Field(default_factory=list)
@@ -161,7 +189,15 @@ class RCAReport(BaseModel):
 class SkillActivation(BaseModel):
     name: str
     source: Literal["default", "explicit", "agent"]
+    role: Literal["primary", "secondary", "supporting"] = "supporting"
     reason: str = Field(max_length=500)
+
+
+class ReportValidation(BaseModel):
+    grounded: bool
+    verified_evidence_count: int = Field(ge=0)
+    rejected_evidence_ids: list[str] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
 
 
 class BugAnalysisResult(BaseModel):
@@ -170,6 +206,7 @@ class BugAnalysisResult(BaseModel):
     report: RCAReport
     steps: int = Field(ge=0)
     structured_output: bool
+    report_validation: ReportValidation | None = None
     applied_skills: list[str] = Field(default_factory=list)
     skill_activations: list[SkillActivation] = Field(default_factory=list)
     analysis_guide: AnalysisGuide | None = None

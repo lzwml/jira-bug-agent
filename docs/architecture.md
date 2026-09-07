@@ -69,15 +69,21 @@ Skill 按职责组合，而不是把整个平台写进一个文件：
 平台约束（按需叠加）           mtk-ivi-log-analysis
 ```
 
-一个分析 Pass 应选择一个主要症状路线。平台 Skill 补充日志拓扑、平台术语和跨时钟
-规则，但不重复症状路线的调查决策。CLI 或上层 Workflow 可以预先指定 Skill；否则
+一个分析 Pass 应选择一个 primary 症状路线。已经观察到级联故障时，可以额外加载一个
+secondary 症状路线验证下游影响和覆盖边界，但它不能与 primary 竞争根因所有权。平台
+Skill 补充日志拓扑、平台术语和跨时钟规则，但不重复症状路线的调查决策。CLI 或上层 Workflow 可以预先指定 Skill；否则
 Worker 默认加载通用分诊，并向 Agent 暴露只读的 `activate_skill` 本地工具和可信目录。
 Agent 可根据 Issue 或首轮诊断证据加载一个主要症状 Skill，并按需叠加平台 Skill。
 激活名称、来源和理由进入稳定结果，工具调用进入完整 Trace，便于审计和 Eval。
 
 `activate_skill` 只返回仓库中已验证的调查指令，不创建外部工具、不扩大 Case 路径，
-也不能改变 Jira 只读策略。运行时约束拒绝第二个主要症状 Skill，避免一个 Pass 同时
-沿多条互相竞争的路线发散。
+也不能改变 Jira 只读策略。运行时约束拒绝第二个 primary 或第二个 secondary 症状
+Skill，避免一个 Pass 同时沿多条互相竞争的路线发散。
+
+最终 RCA 不能只依赖模型自报 `confirmed`。Worker 从本次成功工具结果重建 Evidence
+Registry，验证 Evidence ID、Artifact、路径、行号、视频时间点和摘录。根因确认还必须
+显式提供 `root_cause_evidence_ids`，并由相同的已验证证据锚定 `incident` 的时间、boot、
+进程或 build 身份；失败时自动降级为候选结论。
 
 ## 两条入口流程
 
@@ -123,6 +129,7 @@ Harness 负责模型调用、Tool Call 循环、错误观察、状态和终止�
 - Jira 工具默认只读，唯一文件写入限制在导出根目录；
 - Log MCP 只读取显式允许的 Case 根目录，归档展开和索引仅写入服务端隔离工作区；
 - Jira 描述、评论和日志都视为不可信数据；
-- Tool Result 有字符预算，Agent Loop 有步骤预算；
+- Tool Result 有字符预算；Agent Loop 同时有模型轮次、工具调用数和总运行时长硬预算，
+  `goal_mode` 不能绕过后两者；
 - 当前 Agent 不会回写 Jira，也不会执行附件。
 - Video MCP 不向模型暴露绝对路径；视频大小、时长、关键帧数量和裁剪长度均有服务端上限。

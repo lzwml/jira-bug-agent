@@ -31,13 +31,15 @@ def extract_timestamp(line: str, year_hint: int | None = None) -> ParsedTimestam
     logcat = re.search(r"(?<!\d)(\d{2})-(\d{2})\s+(\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)", line)
     if logcat:
         raw = logcat.group(0)
-        year = year_hint or datetime.now().year
-        try:
-            normalized = datetime.fromisoformat(
-                f"{year}-{logcat.group(1)}-{logcat.group(2)}T{logcat.group(3)}"
-            ).isoformat()
-        except ValueError:
-            normalized = None
+        # 没有可信年份时只保留原始 Android 时间，避免历史 Case 被静默补成当前年。
+        normalized = None
+        if year_hint is not None:
+            try:
+                normalized = datetime.fromisoformat(
+                    f"{year_hint}-{logcat.group(1)}-{logcat.group(2)}T{logcat.group(3)}"
+                ).isoformat()
+            except ValueError:
+                normalized = None
         return ParsedTimestamp(raw=raw, clock_domain="android", normalized=normalized)
 
     kernel = re.search(r"^\s*\[\s*(\d+(?:\.\d+)?)\]", line)
@@ -59,4 +61,3 @@ def infer_component(line: str, anchors: list[str]) -> str | None:
             return anchor
     tag = re.search(r"\s[VDIWEF]\s+([A-Za-z0-9_.:/-]+)\s*:", line)
     return tag.group(1) if tag else None
-

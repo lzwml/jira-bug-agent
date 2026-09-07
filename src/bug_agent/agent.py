@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Callable, Protocol
 
 from .config import AgentConfig
@@ -169,7 +170,19 @@ class BugAnalysisAgent:
         )
         events: list[ToolEvent] = []
         step = starting_step
+        tool_call_count = 0
+        started_at = time.monotonic()
         while True:
+            if time.monotonic() - started_at >= self.config.max_run_seconds:
+                return AgentRunResult(
+                    status="max_steps",
+                    task="",
+                    final_answer="达到 Agent 总运行时间硬上限，尚未形成可靠结论。",
+                    steps=max(0, step - starting_step),
+                    tool_events=events,
+                    error="MAX_RUN_SECONDS_EXCEEDED",
+                    error_type="AgentBudgetExceeded",
+                ), messages
             step += 1
             if not goal_mode and step > effective_max:
                 return AgentRunResult(
@@ -212,6 +225,17 @@ class BugAnalysisAgent:
             })
 
             for call in tool_calls:
+                if tool_call_count >= self.config.max_tool_calls:
+                    return AgentRunResult(
+                        status="max_steps",
+                        task="",
+                        final_answer="达到 Agent 工具调用硬上限，尚未形成可靠结论。",
+                        steps=step - starting_step,
+                        tool_events=events,
+                        error="MAX_TOOL_CALLS_EXCEEDED",
+                        error_type="AgentBudgetExceeded",
+                    ), messages
+                tool_call_count += 1
                 call_id = str(call.get("id") or f"step-{step}-{len(events)}")
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")

@@ -33,8 +33,10 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 - ZIP/TAR/TAR.GZ/TGZ/GZIP 归档清单、选择性安全展开、嵌套深度与解压炸弹预算；
 - 持久化分块索引和超大文本日志检索；
 - 可追溯 Evidence：Artifact、相对路径和行号；
+- RCA Evidence 由 Worker 对照真实工具轨迹校验；无根因引用或事故身份锚点的
+  `confirmed` 会自动降级；
 - 可替换的 OpenAI-compatible 模型服务；
-- 步骤预算、Tool Result 预算和统一错误观察。
+- 模型轮次、工具调用数、总时长、Tool Result 预算和统一错误观察。
 - 稳定的 `BugAnalysisTask → BugAnalysisResult` Worker 契约。
 - 异步 HTTP 任务 API：SQLite 状态、幂等提交、受控并发和重启恢复。
 - Case 级 RCA 迭代：续分析会继承已有证据状态，并保留完整任务链与变更审计。
@@ -142,7 +144,8 @@ Android、Linux、时钟域与安全解压细节拆分在其 `references/` 目�
 
 CLI 或上层 Workflow 显式指定的路线优先；未指定时，Agent 可根据已验证的 Issue 上下文和首轮
 诊断证据自动激活一个主要症状 Skill，并按需叠加平台 Skill。系统不允许同时激活
-两个主要症状 Skill；低置信度场景继续使用 `android-log-triage`。如需完全禁止运行时
+两个主要症状 Skill；已验证的级联故障可以额外激活一个 `secondary` 症状 Skill，专门
+检查下游影响和覆盖边界。低置信度场景继续使用 `android-log-triage`。如需完全禁止运行时
 激活，可添加 `--no-auto-skills`。每条路线遵循相同的触发条件、事件身份、首轮证据、
 决策分支、反证/停止条件和输出契约。
 

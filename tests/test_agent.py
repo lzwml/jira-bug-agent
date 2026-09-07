@@ -179,6 +179,27 @@ async def test_non_goal_mode_still_stops_at_max_steps():
 
 
 @pytest.mark.anyio
+async def test_goal_mode_still_respects_hard_tool_call_budget():
+    tool_message = {
+        "tool_calls": [{
+            "id": "repeat",
+            "type": "function",
+            "function": {"name": "open_case", "arguments": "{}"},
+        }],
+    }
+    provider = FakeProvider([tool_message, tool_message, tool_message])
+    config = replace(CONFIG, max_tool_calls=2)
+
+    result = await BugAnalysisAgent(config, provider).run(
+        "分析", "system", FakeRouter(), goal_mode=True,
+    )
+
+    assert result.status == "max_steps"
+    assert result.error == "MAX_TOOL_CALLS_EXCEEDED"
+    assert len(result.tool_events) == 2
+
+
+@pytest.mark.anyio
 async def test_run_with_messages_continues_from_existing_history():
     """run_with_messages 应从已有消息历史继续执行，并返回更新后的消息列表。"""
     provider = FakeProvider([

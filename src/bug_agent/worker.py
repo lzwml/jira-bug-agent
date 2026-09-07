@@ -11,7 +11,14 @@ from typing import Any, Awaitable, Callable, Literal, Protocol
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .comment_compiler import CompiledJiraContext, compile_jira_context, sources_from_issue
 from .config import AgentConfig, default_export_root
-from .contracts import AnalysisGuide, BugAnalysisResult, BugAnalysisTask, RCAReport, SkillActivation
+from .contracts import (
+    AnalysisGuide,
+    BugAnalysisResult,
+    BugAnalysisTask,
+    RCAReport,
+    ReportValidation,
+    SkillActivation,
+)
 from .conversation import ConversationSession
 from .models import ToolEvent
 from .jira_context import JiraInitialContext, load_jira_initial_context
@@ -26,6 +33,7 @@ from .prompts import (
     VIDEO_ANALYSIS_WORKFLOW_PROMPT,
 )
 from .provider import OpenAICompatibleProvider, ProviderError
+from .report_validation import validate_report
 from .runstore import RunRecorder, write_run_record
 from .rca_reconciliation import reconcile
 from .rca_store import RCAStore, continuation_context
@@ -513,6 +521,13 @@ class BugAnalysisWorker:
             return result
 
         report, structured = _extract_report(run.final_answer)
+        report_validation = None
+        if structured:
+            report, report_validation = validate_report(
+                report,
+                run.tool_events,
+                strict=run_config.strict_evidence_validation,
+            )
         if run.status == "failed":
             status = "failed"
         elif run.status == "max_steps":
@@ -527,6 +542,7 @@ class BugAnalysisWorker:
             report=report,
             steps=run.steps,
             structured_output=structured,
+            report_validation=report_validation,
             applied_skills=applied_skills,
             skill_activations=skill_activations,
             trace=run.tool_events if task.include_trace else [],
@@ -807,7 +823,8 @@ class BugAnalysisWorker:
         self,
         task: BugAnalysisTask,
         turns: list[dict[str, str]],
-    ) -> tuple[RCAReport, bool]:
+        tool_events: list[ToolEvent] | None = None,
+    ) -> tuple[RCAReport, bool, ReportValidation | None]:
         """将交互式对话的轮次合成为正式 RCA 报告。
 
         Args:
@@ -815,7 +832,7 @@ class BugAnalysisWorker:
             turns: 对话轮次列表，每轮包含 user_message 和 assistant_answer。
 
         Returns:
-            (RCAReport, structured): 报告和是否结构化输出的标志。
+            (RCAReport, structured, validation): 报告、结构化标志和证据校验结果。
         """
         run_config = replace(
             self.config,
@@ -849,7 +866,14 @@ class BugAnalysisWorker:
             if not raw:
                 raise ValueError("模型未输出报告内容")
             report, structured = _extract_report(raw)
-            return report, structured
+            validation = None
+            if structured:
+                report, validation = validate_report(
+                    report,
+                    tool_events or [],
+                    strict=run_config.strict_evidence_validation,
+                )
+            return report, structured, validation
         finally:
             if provider is not None:
                 await provider.close()

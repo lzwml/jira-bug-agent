@@ -1,6 +1,13 @@
 """Android Bug Analysis Agent harness."""
 
-from .contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
+from .contracts import (
+    BugAnalysisResult,
+    BugAnalysisTask,
+    IncidentIdentity,
+    IncidentWindow,
+    RCAReport,
+    ReportValidation,
+)
 from .worker import BugAnalysisWorker
 from .rca_state import Claim, RCAEvent, RCAState
 
@@ -11,6 +18,9 @@ __all__ = [
     "BugAnalysisTask",
     "BugAnalysisWorker",
     "RCAReport",
+    "IncidentIdentity",
+    "IncidentWindow",
+    "ReportValidation",
     "Claim",
     "RCAEvent",
     "RCAState",

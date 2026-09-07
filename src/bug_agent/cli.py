@@ -363,7 +363,14 @@ async def _generate_chat_report(
         for t in session._turns
     ]
     try:
-        report, structured = await worker.synthesize_report_from_turns(task, turns_data)
+        tool_events = [
+            event
+            for turn in session._turns
+            for event in turn.result.tool_events
+        ]
+        report, structured, validation = await worker.synthesize_report_from_turns(
+            task, turns_data, tool_events,
+        )
     except Exception as exc:
         print(f"\n[错误] 报告生成失败: {exc}")
         return
@@ -379,6 +386,7 @@ async def _generate_chat_report(
         report=report,
         steps=session._total_steps,
         structured_output=structured,
+        report_validation=validation,
         applied_skills=task.skills or [],
     )
     markdown = render_markdown(result)
