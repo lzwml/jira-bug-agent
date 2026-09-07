@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from bug_agent.chat_visualization import load_chat_session, render_chat_visualization
+from bug_agent.chat_visualization import (
+    build_return_preview,
+    load_chat_session,
+    render_chat_visualization,
+)
 
 
 def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
@@ -37,6 +41,7 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
     assert "当前版本后补" in html
     assert "返回是否满足需要" in html
     assert "tool_reviews" in html
+    assert "可人工核对的文件/证据位置" in html
     assert "__CHAT_SESSION_BASE64__" not in html
     assert "检查 </script> 重启" not in html
 
@@ -47,3 +52,26 @@ def test_chat_visualization_rejects_non_session_json(tmp_path):
 
     with pytest.raises(ValueError, match="缺少 turns"):
         load_chat_session(path)
+
+
+def test_return_preview_surfaces_artifact_paths_and_identifiers():
+    preview = build_return_preview(json.dumps({
+        "success": True,
+        "data": {
+            "artifact_count": 1,
+            "artifacts": [{
+                "artifact_id": "artifact-1",
+                "relative_path": "attachments/android.zip",
+                "kind": "archive",
+                "size_bytes": 123,
+            }],
+        },
+    }))
+
+    assert preview["location_count"] == 1
+    assert preview["locations"] == [{
+        "location": "attachments/android.zip",
+        "identifier": "artifact-1",
+        "details": "archive · 123 bytes",
+    }]
+    assert preview["facts"] == [{"name": "artifact_count", "value": "1"}]
