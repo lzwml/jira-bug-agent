@@ -19,6 +19,7 @@ from log_analyzer.case_registry import CaseRegistry
 from log_analyzer.service import LogAnalyzerService
 
 from .chat_store import ChatStore, resolve_chat_session_id, resolve_chat_sessions_dir
+from .chat_visualization import render_chat_visualization
 from .config import AgentConfig
 from .contracts import BugAnalysisResult, BugAnalysisTask
 from .conversation import ConversationSession, SavedTurn
@@ -93,6 +94,9 @@ def _parser() -> argparse.ArgumentParser:
     visualize = sub.add_parser("visualize-run", help="生成本地可交互的执行复盘页")
     visualize.add_argument("run_bundle", help=".bug-agent/runs/ 下的 Run Bundle v2")
     visualize.add_argument("--output", help="可选的 HTML 输出路径")
+    visualize_chat = sub.add_parser("visualize-chat", help="生成本地可交互的会话复盘页")
+    visualize_chat.add_argument("chat_session", help=".bug-agent/chat-sessions/ 下的会话 JSON")
+    visualize_chat.add_argument("--output", help="可选的 HTML 输出路径")
     eval_run = sub.add_parser("eval-run", help="用黄金 Case 对 Run Bundle 做确定性回归")
     eval_run.add_argument("run_bundle", help="待评估的 Run Bundle v2")
     eval_run.add_argument("golden_case", help="黄金 Case JSON")
@@ -322,6 +326,12 @@ async def _run(args: argparse.Namespace) -> int:
             Path(args.run_bundle), Path(args.output) if args.output else None,
         )
         print(f"执行复盘页已保存: {output}")
+        return 0
+    if args.command == "visualize-chat":
+        output = render_chat_visualization(
+            Path(args.chat_session), Path(args.output) if args.output else None,
+        )
+        print(f"会话复盘页已保存: {output}")
         return 0
     if args.command == "eval-run":
         result, output = evaluate_run(Path(args.run_bundle), Path(args.golden_case))

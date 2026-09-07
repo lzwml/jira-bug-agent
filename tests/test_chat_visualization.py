@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from bug_agent.chat_visualization import load_chat_session, render_chat_visualization
+
+
+def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
+    path = tmp_path / ".bug-agent" / "chat-sessions" / "chat-CASE-1.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "schema_version": 2,
+        "session_id": "chat-CASE-1",
+        "status": "closed",
+        "task": {"issue_key": "CASE-1", "objective": "检查 </script> 重启"},
+        "turns": [{
+            "turn_index": 1,
+            "user_message": "这个判断不对",
+            "assistant_answer": "你说得对，需要纠正",
+            "steps": 1,
+            "agent_status": "completed",
+            "tool_events": [],
+        }],
+    }), encoding="utf-8")
+
+    output = render_chat_visualization(path)
+    html = output.read_text(encoding="utf-8")
+
+    assert output.parent == tmp_path / ".bug-agent" / "visualizations"
+    assert "稳定性 Agent 会话复盘" in html
+    assert "导出复盘标注" in html
+    assert "__CHAT_SESSION_BASE64__" not in html
+    assert "检查 </script> 重启" not in html
+
+
+def test_chat_visualization_rejects_non_session_json(tmp_path):
+    path = tmp_path / "invalid.json"
+    path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="缺少 turns"):
+        load_chat_session(path)

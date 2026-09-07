@@ -236,6 +236,7 @@ Skill；候选必须经人工确认，并通过固定模型下的黄金 Case 回
 
 ```powershell
 bug-agent visualize-run <case>/.bug-agent/runs/<run>.json
+bug-agent visualize-chat <case>/.bug-agent/chat-sessions/<session>.json
 bug-agent eval-review <run-bundle.json> <review.json> --promote
 bug-agent eval-run <candidate-run-bundle.json> <golden-case.json>
 ```
