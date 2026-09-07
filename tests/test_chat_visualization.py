@@ -30,20 +30,26 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
     }), encoding="utf-8")
 
     output = render_chat_visualization(path)
-    html = output.read_text(encoding="utf-8")
+    site_dir = tmp_path / ".bug-agent" / "visualizations" / "chat-CASE-1"
 
-    assert output.parent == tmp_path / ".bug-agent" / "visualizations"
-    assert "Agent 问题复盘" in html
-    assert "导出复盘结论" in html
-    assert "先看结果" in html
-    assert "每轮都是一次“人工输入 → Agent 响应”" in html
-    assert "工具调用与参数契约" in html
-    assert "当前版本后补" in html
-    assert "返回是否满足需要" in html
-    assert "tool_reviews" in html
-    assert "可人工核对的文件/证据位置" in html
-    assert "__CHAT_SESSION_BASE64__" not in html
-    assert "检查 </script> 重启" not in html
+    assert output == site_dir / "index.html"
+    assert (tmp_path / ".bug-agent" / "visualizations" / "chat-CASE-1.html").is_file()
+    assert {item.name for item in site_dir.iterdir()} == {
+        "index.html", "conversation.html", "tools.html", "optimization.html",
+        "session-data.js", "common.js", "site.css",
+    }
+    assert "复盘概览" in (site_dir / "index.html").read_text(encoding="utf-8")
+    assert "会话过程" in (site_dir / "conversation.html").read_text(encoding="utf-8")
+    tools_html = (site_dir / "tools.html").read_text(encoding="utf-8")
+    assert "核对工具" in tools_html
+    optimization_html = (site_dir / "optimization.html").read_text(encoding="utf-8")
+    assert "导出复盘结论" in optimization_html
+    common_js = (site_dir / "common.js").read_text(encoding="utf-8")
+    assert "当前版本后补" in common_js
+    assert "可核对的文件/证据位置" in common_js
+    assert "返回是否满足需要" in common_js
+    data_js = (site_dir / "session-data.js").read_text(encoding="utf-8")
+    assert "检查 </script> 重启" not in data_js
 
 
 def test_chat_visualization_rejects_non_session_json(tmp_path):
