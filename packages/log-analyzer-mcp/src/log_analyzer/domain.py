@@ -197,8 +197,14 @@ class InspectCaseInput(BaseModel):
     然后根据需要深入分析特定附件。
     """
 
-    case_id: str = Field(min_length=1)
-    sample_limit: int = Field(default=50, ge=1, le=200)
+    case_id: str = Field(
+        min_length=1,
+        description="open_case 返回的 Case 标识；必须引用当前会话已注册的 Case，不能填写文件路径。",
+    )
+    sample_limit: int = Field(
+        default=50, ge=1, le=200,
+        description="最多返回多少个附件样本；Case 较大时先用默认值了解材料分布。",
+    )
 
 
 class PrepareCaseInput(BaseModel):
@@ -217,11 +223,14 @@ class PrepareCaseInput(BaseModel):
     但无论如何都不能超过服务端配置的预算上限(如最大解压字节数)。
     """
 
-    case_id: str = Field(min_length=1)
-    artifact_ids: list[str] = Field(default_factory=list, max_length=100)
-    extract_archives: bool = True
-    build_index: bool = True
-    force_rebuild: bool = False
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
+    artifact_ids: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="只处理这些附件 ID；留空表示处理 Case 内所有符合条件的附件。",
+    )
+    extract_archives: bool = Field(default=True, description="是否递归展开受支持的归档。")
+    build_index: bool = Field(default=True, description="是否为可读文本附件建立搜索索引。")
+    force_rebuild: bool = Field(default=False, description="是否忽略已有缓存并重新处理。")
 
 
 class ArchiveTimeRange(BaseModel):
@@ -254,11 +263,23 @@ class InspectArchiveInput(BaseModel):
     可以提供 SHA256 哈希值，Server 会快速判断归档是否变化。
     """
 
-    case_id: str = Field(min_length=1)
-    artifact_id: str = Field(min_length=1)
-    member_offset: int = Field(default=0, ge=0, le=1_000_000)
-    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
-    max_members: int = Field(default=1000, ge=1, le=5000)
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
+    artifact_id: str = Field(
+        min_length=1,
+        description="open_case 或 inspect_case 返回的归档附件 ID，不能填写归档路径。",
+    )
+    member_offset: int = Field(
+        default=0, ge=0, le=1_000_000,
+        description="成员分页起点；继续读取时使用上次返回的下一偏移量。",
+    )
+    source_sha256: str | None = Field(
+        default=None, min_length=64, max_length=64,
+        description="可选的归档 SHA-256，用于确认本次查看的仍是同一份归档。",
+    )
+    max_members: int = Field(
+        default=1000, ge=1, le=5000,
+        description="本页最多返回的归档成员数；不是解压数量。",
+    )
     path_prefix: str | None = Field(
         default=None,
         min_length=1,
@@ -285,25 +306,31 @@ class ExtractArchiveMembersInput(BaseModel):
     防止 Agent 构造恶意路径。
     """
 
-    case_id: str = Field(min_length=1)
-    artifact_id: str = Field(min_length=1)
-    member_ids: list[str] = Field(min_length=1, max_length=200)
-    force_rebuild: bool = False
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
+    artifact_id: str = Field(min_length=1, description="inspect_archive 检查过的归档附件 ID。")
+    member_ids: list[str] = Field(
+        min_length=1, max_length=200,
+        description="inspect_archive 或 probe_archive_members 返回的稳定成员 ID；不能填写成员路径。",
+    )
+    force_rebuild: bool = Field(default=False, description="是否覆盖该成员已有的安全解压缓存。")
 
 
 class ExtractAeeDbInput(BaseModel):
     """Decode one registered MTK AEE DB artifact with the server-controlled extractor."""
 
-    case_id: str = Field(min_length=1)
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
     artifact_id: str = Field(min_length=1, description="inspect_case 返回的 aee_db artifact_id")
 
 
 class ProbeArchiveMembersInput(BaseModel):
     """在不落盘、不展开整个归档的前提下，读取成员的有界内容样本。"""
 
-    case_id: str = Field(min_length=1)
-    artifact_id: str = Field(min_length=1)
-    member_ids: list[str] = Field(min_length=1, max_length=50)
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
+    artifact_id: str = Field(min_length=1, description="inspect_archive 检查过的归档附件 ID。")
+    member_ids: list[str] = Field(
+        min_length=1, max_length=50,
+        description="需要读取前缀样本的稳定成员 ID，来自 inspect_archive。",
+    )
     max_bytes_per_member: int = Field(
         default=64 * 1024, ge=1024, le=256 * 1024,
         description="每个成员最多读取的未压缩字节数；服务端仍会施加总预算。",
@@ -323,9 +350,12 @@ class BuildIndexInput(BaseModel):
     但也不能无限大，防止单次操作超时。
     """
 
-    case_id: str = Field(min_length=1)
-    artifact_ids: list[str] = Field(min_length=1, max_length=500)
-    force_rebuild: bool = False
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
+    artifact_ids: list[str] = Field(
+        min_length=1, max_length=500,
+        description="本轮要加入搜索索引的文本附件 ID；通常来自解压或解码工具返回。",
+    )
+    force_rebuild: bool = Field(default=False, description="是否忽略这些附件已有的索引缓存。")
 
 
 class SearchEvidenceInput(BaseModel):
@@ -347,14 +377,23 @@ class SearchEvidenceInput(BaseModel):
     例如 Agent 可以只在 logcat 中搜索 "Fatal"，而不搜索 kernel log。
     """
 
-    case_id: str = Field(min_length=1)
-    query: str = Field(min_length=1, max_length=256)
-    artifact_ids: list[str] = Field(default_factory=list, max_length=100)
-    artifact_kinds: list[ArtifactKind] = Field(default_factory=list, max_length=20)
-    case_sensitive: bool = False
-    context_before: int = Field(default=3, ge=0, le=20)
-    context_after: int = Field(default=3, ge=0, le=20)
-    max_results: int = Field(default=50, ge=1, le=200)
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
+    query: str = Field(
+        min_length=1, max_length=256,
+        description="要在日志中查找的字面量文本，不支持正则表达式。",
+    )
+    artifact_ids: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="只在这些附件 ID 中搜索；留空表示搜索当前已索引范围。",
+    )
+    artifact_kinds: list[ArtifactKind] = Field(
+        default_factory=list, max_length=20,
+        description="按日志类型进一步限制搜索范围；留空表示不按类型过滤。",
+    )
+    case_sensitive: bool = Field(default=False, description="是否区分查询文本的大小写。")
+    context_before: int = Field(default=3, ge=0, le=20, description="每个命中前附带的上下文行数。")
+    context_after: int = Field(default=3, ge=0, le=20, description="每个命中后附带的上下文行数。")
+    max_results: int = Field(default=50, ge=1, le=200, description="本次最多返回的 Evidence 数量。")
 
 
 class ExtractTimelineInput(BaseModel):
@@ -369,12 +408,21 @@ class ExtractTimelineInput(BaseModel):
     某些日志格式只有 "08-28 12:34:56" 没有年份，year_hint 帮助解析器补全。
     """
 
-    case_id: str = Field(min_length=1)
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
     # 领域锚点由 Skill 提供；MCP 不再内置"黑屏/启动"等调查策略。
-    anchors: list[str] = Field(min_length=1, max_length=30)
-    artifact_ids: list[str] = Field(default_factory=list, max_length=100)
-    year_hint: int | None = Field(default=None, ge=2000, le=2100)
-    max_events: int = Field(default=200, ge=1, le=1000)
+    anchors: list[str] = Field(
+        min_length=1, max_length=30,
+        description="由当前 Skill 或假设给出的关键事件字面量，例如 watchdog、bootanimation。",
+    )
+    artifact_ids: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="只从这些附件中提取事件；留空表示使用当前已索引范围。",
+    )
+    year_hint: int | None = Field(
+        default=None, ge=2000, le=2100,
+        description="日志时间戳缺少年份时使用的年份提示；不能用于跨时钟域推断。",
+    )
+    max_events: int = Field(default=200, ge=1, le=1000, description="本次最多返回的时间线事件数。")
 
 
 class ParseDiagnosticsInput(BaseModel):
@@ -386,7 +434,7 @@ class ParseDiagnosticsInput(BaseModel):
     未来新增诊断类型需要先在 Core 中实现解析逻辑。
     """
 
-    case_id: str = Field(min_length=1)
+    case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
     diagnostic_types: list[Literal[
         "avc", "kernel_stack", "fatal", "anr", "watchdog", "kernel_panic",
         "hung_task", "lmk_oom", "binder_stall",
@@ -397,9 +445,13 @@ class ParseDiagnosticsInput(BaseModel):
         ],
         min_length=1,
         max_length=9,
+        description="要运行的确定性诊断类型白名单；应结合症状选择，避免无目的全扫。",
     )
-    artifact_ids: list[str] = Field(default_factory=list, max_length=100)
-    max_findings: int = Field(default=100, ge=1, le=500)
+    artifact_ids: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="只诊断这些附件 ID；留空表示检查当前适用的已索引附件。",
+    )
+    max_findings: int = Field(default=100, ge=1, le=500, description="本次最多返回的结构化诊断发现数。")
 
 
 # ========== Jira Case Comments 领域模型 ==========
