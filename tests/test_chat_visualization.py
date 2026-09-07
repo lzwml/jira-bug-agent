@@ -32,7 +32,8 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
     assert "Agent 问题复盘" in html
     assert "导出复盘结论" in html
     assert "先看结果" in html
-    assert "结论为什么发生变化" in html
+    assert "人工如何影响 Agent" in html
+    assert "每一轮用户输入都是一次人工参与" in html
     assert "工具调用与参数契约" in html
     assert "当前版本后补" in html
     assert "返回是否满足需要" in html
