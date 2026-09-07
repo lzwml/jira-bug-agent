@@ -40,6 +40,13 @@ from uuid import uuid4
 
 from .contracts import BugAnalysisResult, BugAnalysisTask
 from .models import AgentRunResult, ToolEvent
+from .run_bundle import (
+    SCHEMA_VERSION,
+    build_budget_usage,
+    build_derived_views,
+    enrich_provenance,
+    seal_record,
+)
 
 logger = logging.getLogger(__name__)
 SAFE_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
@@ -78,6 +85,7 @@ def build_run_record(
     result: BugAnalysisResult,
     context_metadata: dict | None = None,
     failure_metadata: dict | None = None,
+    provenance: dict | None = None,
 ) -> dict:
     """组装要落盘的完整 run 记录。
 
@@ -88,9 +96,13 @@ def build_run_record(
 
     复盘器据此可以还原"给定输入 → 模型如何一步步决策 → 产出了什么结果"。
     """
-    return {
-        "schema_version": 1,
+    events = run.tool_events if run else []
+    final_provenance = enrich_provenance(provenance, events)
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "bundle_kind": "agent_run",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "lifecycle": {"status": result.status, "phase": None},
         "task": task.model_dump(),
         "result": result.model_dump(exclude={"trace"}),  # trace 单独从 run 取，避免重复/丢失
         "trace": [event.model_dump() for event in (run.tool_events if run else [])],
@@ -99,7 +111,11 @@ def build_run_record(
         # 只保存完整性/编译元数据和压缩摘要，不复制 issue.json 中的评论原文。
         "jira_context": context_metadata,
         "failure": failure_metadata,
+        "provenance": final_provenance,
+        "budget": build_budget_usage(run, final_provenance),
+        "derived": build_derived_views(run, result),
     }
+    return seal_record(record)
 
 
 def write_run_record(
@@ -108,6 +124,7 @@ def write_run_record(
     result: BugAnalysisResult,
     context_metadata: dict | None = None,
     failure_metadata: dict | None = None,
+    provenance: dict | None = None,
 ) -> Path | None:
     """把 run 记录写入 .bug-agent/runs/<task_id>.json，返回路径。
 
@@ -124,7 +141,9 @@ def write_run_record(
         if SAFE_TASK_ID.fullmatch(task.task_id) is None:
             logger.warning("task_id 不能安全用作文件名，跳过记录")
             return None
-        record = build_run_record(task, run, result, context_metadata, failure_metadata)
+        record = build_run_record(
+            task, run, result, context_metadata, failure_metadata, provenance,
+        )
         resolved_run_dir = run_dir.resolve()
         out_path = (resolved_run_dir / f"{task.task_id}.json").resolve(strict=False)
         try:
@@ -209,6 +228,7 @@ class RunRecorder:
         self._started_at: str = ""
         self._context_metadata: dict | None = None
         self._failure_metadata: dict | None = None
+        self._provenance: dict | None = None
 
     @property
     def file_path(self) -> Path | None:
@@ -265,6 +285,10 @@ class RunRecorder:
         """设置失败元数据（在 finish 前调用）。"""
         self._failure_metadata = failure_metadata
 
+    def set_provenance(self, provenance: dict | None) -> None:
+        """保存可复现身份；调用方必须确保其中不含凭据和 Prompt 原文。"""
+        self._provenance = provenance
+
     def finish(
         self,
         run: AgentRunResult | None,
@@ -281,6 +305,7 @@ class RunRecorder:
                 self._task, run, result,
                 self._context_metadata,
                 self._failure_metadata,
+                self._provenance,
             )
             # 用实时收集的 trace 覆盖 build_run_record 中的 trace，
             # 确保 finish 时 trace 是最完整的（与逐步刷新的一致）。
@@ -289,6 +314,19 @@ class RunRecorder:
             record["phase"] = self._phase
             record["started_at"] = self._started_at
             record["finished_at"] = datetime.now(timezone.utc).isoformat()
+            record["budget"]["actual"]["duration_ms"] = max(0, round(
+                (
+                    datetime.fromisoformat(record["finished_at"])
+                    - datetime.fromisoformat(self._started_at)
+                ).total_seconds() * 1000
+            ))
+            record["lifecycle"] = {
+                "status": result.status,
+                "phase": self._phase,
+                "started_at": self._started_at,
+                "finished_at": record["finished_at"],
+            }
+            seal_record(record)
             _atomic_write(self._file_path, json.dumps(record, ensure_ascii=False, indent=2, default=str))
             return self._file_path
         except OSError as exc:
@@ -301,11 +339,17 @@ class RunRecorder:
             return
         try:
             snapshot = {
-                "schema_version": 1,
+                "schema_version": SCHEMA_VERSION,
+                "bundle_kind": "agent_run",
                 "status": "running",
                 "phase": self._phase,
                 "started_at": self._started_at,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                "lifecycle": {
+                    "status": "running",
+                    "phase": self._phase,
+                    "started_at": self._started_at,
+                },
                 "task": self._task.model_dump(),
                 "trace": list(self._events),
                 "steps": len(self._events),
@@ -314,7 +358,9 @@ class RunRecorder:
                 "agent_error": None,
                 "jira_context": self._context_metadata,
                 "failure": self._failure_metadata,
+                "provenance": self._provenance,
             }
+            seal_record(snapshot)
             _atomic_write(self._file_path, json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))
         except OSError as exc:
             logger.warning("run 实时记录刷新失败 (task_id=%s): %s", self._task.task_id, exc)

@@ -214,6 +214,12 @@ if result.status == "completed":
 Tool Event 默认不返回；只有 `include_trace=true` 时才进入结果，避免上游系统
 依赖模型消息细节。完整 Schema 见 [Worker Contract](docs/worker-contract.md)。
 
+无论 `include_trace` 是否开启，Worker 都会在 Case 的 `.bug-agent/runs/` 保存
+Run Bundle v2：执行轨迹、证据与主张快照、输入指纹覆盖、模型/Prompt/Skill/工具
+版本哈希、预算使用和完整性摘要放在同一份记录中。它既是执行可视化的数据源，
+也是后续真实稳定性黄金 Case Eval 的可审计输入；字段说明见
+[Worker Contract](docs/worker-contract.md#run-bundle-v2黄金-case-的可回放输入)。
+
 ## 分析 Jira Issue
 
 先可以只验证 Jira 接入并收集信息。该命令不需要配置大模型：

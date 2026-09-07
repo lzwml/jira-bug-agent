@@ -34,6 +34,7 @@ from .prompts import (
 )
 from .provider import OpenAICompatibleProvider, ProviderError
 from .report_validation import validate_report
+from .run_bundle import build_execution_context
 from .runstore import RunRecorder, write_run_record
 from .rca_reconciliation import reconcile
 from .rca_store import RCAStore, continuation_context
@@ -272,6 +273,18 @@ class BugAnalysisWorker:
         run = None
         recorder = RunRecorder(task)
         recorder_active = recorder.start()
+        provenance = build_execution_context(
+            model=run_config.llm_model,
+            system_prompt=None,
+            instruction=None,
+            tool_schema=[],
+            skill_documents=[],
+            max_steps=run_config.max_steps,
+            max_tool_calls=run_config.max_tool_calls,
+            max_run_seconds=run_config.max_run_seconds,
+            max_tool_result_chars=run_config.max_tool_result_chars,
+        )
+        recorder.set_provenance(provenance)
         # 不在此处调用 recorder.on_phase("skills")——recorder 首次 _flush() 会
         # 创建 .bug-agent/runs/ 目录，如果 case_path 尚未校验，可能意外创建目录。
         try:
@@ -282,6 +295,10 @@ class BugAnalysisWorker:
             builtin_skills_root = Path(__file__).resolve().parents[2] / "skills"
             report_registry = SkillRegistry(builtin_skills_root)
             report_prompt, _ = report_registry.render(["stability-rca-report"])
+            skill_documents = [
+                self.skill_registry.load(name) for name in dict.fromkeys(requested_skills)
+            ]
+            skill_documents.append(report_registry.load("stability-rca-report"))
             skill_prompt += "\n\n" + report_prompt
             applied_skills = list(dict.fromkeys([
                 *applied_skills,
@@ -458,14 +475,29 @@ class BugAnalysisWorker:
                         VIDEO_ANALYSIS_WORKFLOW_PROMPT
                         if self.config.enable_video_analysis else ""
                     )
-                    run = await BugAnalysisAgent(run_config, provider).run(
-                        instruction,
+                    system_prompt = (
                         prompt
                         + "\n\n" + skill_prompt
                         + ("\n\n" + catalog_prompt if catalog_prompt else "")
                         + code_search_prompt
                         + video_prompt
-                        + REPORT_FORMAT_PROMPT,
+                        + REPORT_FORMAT_PROMPT
+                    )
+                    provenance = build_execution_context(
+                        model=run_config.llm_model,
+                        system_prompt=system_prompt,
+                        instruction=instruction,
+                        tool_schema=skill_router.openai_tools(),
+                        skill_documents=skill_documents,
+                        max_steps=run_config.max_steps,
+                        max_tool_calls=run_config.max_tool_calls,
+                        max_run_seconds=run_config.max_run_seconds,
+                        max_tool_result_chars=run_config.max_tool_result_chars,
+                    )
+                    recorder.set_provenance(provenance)
+                    run = await BugAnalysisAgent(run_config, provider).run(
+                        instruction,
+                        system_prompt,
                         skill_router,
                         on_tool_event=recorder.on_tool_event if recorder_active else None,
                         goal_mode=task.goal_mode,
@@ -516,6 +548,7 @@ class BugAnalysisWorker:
                     task, run, result,
                     context_meta,
                     failure_metadata,
+                    provenance,
                 )
             reconcile(task, result, run, self.config)
             return result
@@ -577,6 +610,7 @@ class BugAnalysisWorker:
                 task, run, result,
                 context_meta,
                 failure_meta,
+                provenance,
             )
         reconcile(task, result, run, self.config)
         return result

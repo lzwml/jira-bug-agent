@@ -70,6 +70,31 @@ build、系统域和身份依据。无法建立的字段必须进入 limitations
 `trace` 是内部诊断信息，不是业务契约的推理依据。生产环境应单独控制保存周期
 和访问权限，因为其中可能包含 Jira 与日志内容。
 
+## Run Bundle v2：黄金 Case 的可回放输入
+
+每次执行都会在 `<case>/.bug-agent/runs/` 保留一个 `schema_version=2` 的 JSON
+Run Bundle。原有 `task`、`result`、`trace`、`phase` 等字段继续保留；新增字段用于
+把一次真实运行转换成可以审核和进入 Eval 的事实记录：
+
+| 字段 | 用途 |
+|---|---|
+| `provenance` | 记录 Agent 包版本、构建 revision、模型名，以及完整 System Prompt、用户指令、工具 Schema 和每个 Skill 的 SHA-256；不保存 Provider URL、API Key 或 Prompt 原文；仅 CI/发布系统注入的 revision 标记为 authoritative |
+| `budget` | 同时记录配置的步骤/工具调用/总时长/单次结果预算与实际步骤、工具调用数、结果字符数、耗时和结束原因；Provider 未返回 token usage 时明确为 `null` |
+| `derived.evidence_registry` | 仅从成功且可完整解析的 Tool Event 重建本轮真实 Evidence Registry |
+| `derived.claim_snapshot` | 固化症状、失效机制、根因、假设、缺失证据和报告校验结果，供后续规则化评分 |
+| `derived.input_fingerprint` | 记录本轮工具实际看见的 Case、Artifact 元数据清单和归档内容哈希覆盖率；同时保存执行 Trace 哈希 |
+| `lifecycle` | 记录 running/最终状态、阶段以及开始结束时间，保留中途失败现场 |
+| `integrity` | 对 Bundle 中除自身以外的全部内容计算 SHA-256，用于发现落盘后的意外修改 |
+
+`input_fingerprint.complete_content_fingerprint=false` 不是错误，而是明确的覆盖声明：
+普通 Artifact 当前只提供路径、大小、修改时间等元数据；只有 MCP 已经计算并返回
+`source_fingerprint.sha256` 的输入才算内容级指纹。Eval 导入时应把该字段作为可复现
+等级的一部分，不能把元数据相同误认为文件内容必然相同。
+
+CI 或发布系统应通过 `BUG_AGENT_BUILD_REVISION` 注入实际 commit SHA；本地未设置时
+Worker 会尝试读取当前 Git HEAD。Bundle 是事实源，执行可视化和黄金 Case 标注都应
+从它生成，不应另建一套不可追溯的数据。
+
 当 `include_analysis_guide=true` 时，结果还会包含可选的 `analysis_guide`。它使用已
 结构化的 RCA 与实际工具轨迹解释调查如何推进，且只保留报告中已存在的 `evidence_id`。
 它不是 RCA 的字段，也不会被正式 RCA Markdown 渲染器写入；若附加生成失败，RCA 仍按

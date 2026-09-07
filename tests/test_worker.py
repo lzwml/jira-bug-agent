@@ -592,7 +592,9 @@ async def test_run_record_is_written_with_full_trace(tmp_path):
     run_file = _find_run_file(tmp_path / ".bug-agent" / "runs", "run-persist-1")
     assert run_file.is_file()
     record = json.loads(run_file.read_text(encoding="utf-8"))
-    assert record["schema_version"] == 1
+    assert record["schema_version"] == 2
+    assert record["bundle_kind"] == "agent_run"
+    assert record["lifecycle"]["status"] == "completed"
     assert record["task"]["task_id"] == "run-persist-1"
     assert record["task"]["source"] == "local"
     assert record["result"]["status"] == "completed"
@@ -600,6 +602,12 @@ async def test_run_record_is_written_with_full_trace(tmp_path):
     assert result.trace == []
     assert isinstance(record["trace"], list)
     assert record["agent_status"] == "completed"
+    assert record["provenance"]["model"] == "model"
+    assert record["provenance"]["prompts"]["ready"] is True
+    assert record["budget"]["actual"]["tool_calls"] == len(record["trace"])
+    assert record["budget"]["actual"]["duration_ms"] >= 0
+    assert "evidence_registry" in record["derived"]
+    assert record["integrity"]["algorithm"] == "sha256"
     assert list(run_file.parent.glob("*.tmp")) == []
 
 
@@ -669,7 +677,7 @@ async def test_run_recorder_writes_running_state_on_start(tmp_path):
     record = json.loads(run_file.read_text(encoding="utf-8"))
     # 最终状态应该是 completed
     assert record["result"]["status"] == "completed"
-    assert record["schema_version"] == 1
+    assert record["schema_version"] == 2
 
 
 @pytest.mark.anyio
