@@ -39,7 +39,11 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
         "index.html", "conversation.html", "tools.html", "optimization.html",
         "session-data.js", "common.js", "site.css",
     }
-    assert "复盘概览" in (site_dir / "index.html").read_text(encoding="utf-8")
+    workspace_html = (site_dir / "index.html").read_text(encoding="utf-8")
+    assert "Agent 三栏复盘" in workspace_html
+    assert "调查轮次" in workspace_html
+    assert "工具与返回" in workspace_html
+    assert "优化标注" in workspace_html
     assert "会话过程" in (site_dir / "conversation.html").read_text(encoding="utf-8")
     tools_html = (site_dir / "tools.html").read_text(encoding="utf-8")
     assert "核对工具" in tools_html

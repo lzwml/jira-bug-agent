@@ -241,9 +241,10 @@ bug-agent eval-review <run-bundle.json> <review.json> --promote
 bug-agent eval-run <candidate-run-bundle.json> <golden-case.json>
 ```
 
-`visualize-chat` 默认生成一个完全本地的四页复盘站点：概览、会话、工具和优化。
-原来的 `<session>.html` 保留为跳转入口，因此旧书签刷新后仍可使用；工具用途、参数契约、
-返回文件/Evidence 位置及人工判断集中在工具页，不再打断会话阅读。
+`visualize-chat` 默认生成一个完全本地的三栏复盘工作台：左侧选择调查轮次，中间阅读
+该轮人工输入与 Agent 回答，右侧同步核对工具用途、参数契约、返回文件/Evidence 位置，
+并记录优化标注。原来的 `<session>.html` 保留为跳转入口，因此旧书签刷新后仍可使用；
+会话、工具和优化的独立页面也继续保留，作为辅助查看入口。
 
 ## 分析 Jira Issue
 
