@@ -22,9 +22,11 @@ from .chat_store import ChatStore, resolve_chat_session_id, resolve_chat_session
 from .config import AgentConfig
 from .contracts import BugAnalysisResult, BugAnalysisTask
 from .conversation import ConversationSession, SavedTurn
+from .evaluation import evaluate_run, load_review_file, promote_review, save_review
 from .models import ToolEvent
 from .renderer import render_analysis_guide, render_markdown
 from .runstore import resolve_run_dir, write_analysis_guide
+from .run_visualization import render_run_visualization
 from .worker import BugAnalysisWorker
 
 
@@ -82,6 +84,18 @@ def _parser() -> argparse.ArgumentParser:
         "--work-dir",
         help="索引/内部状态目录；归档始终解压到其旁边的 <归档名>.unpacked，默认状态目录为 Case/.bug-agent",
     )
+    eval_review = sub.add_parser("eval-review", help="保存 Run Bundle 的人工反馈")
+    eval_review.add_argument("run_bundle", help=".bug-agent/runs/ 下的 Run Bundle v2")
+    eval_review.add_argument("review_json", help="符合 RunReview Schema 的反馈 JSON")
+    eval_review.add_argument(
+        "--promote", action="store_true", help="accepted/corrected 反馈同时晋升为黄金 Case",
+    )
+    visualize = sub.add_parser("visualize-run", help="生成本地可交互的执行复盘页")
+    visualize.add_argument("run_bundle", help=".bug-agent/runs/ 下的 Run Bundle v2")
+    visualize.add_argument("--output", help="可选的 HTML 输出路径")
+    eval_run = sub.add_parser("eval-run", help="用黄金 Case 对 Run Bundle 做确定性回归")
+    eval_run.add_argument("run_bundle", help="待评估的 Run Bundle v2")
+    eval_run.add_argument("golden_case", help="黄金 Case JSON")
     # ---- 连续问答模式 ----
     chat_local = sub.add_parser("chat-local", help="交互式连续问答，分析本地 Bug Case")
     chat_local.add_argument("case_path")
@@ -294,6 +308,25 @@ async def _run(args: argparse.Namespace) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         prepare_result = payload.get("prepare", {})
         return 0 if isinstance(prepare_result, dict) and prepare_result.get("success") else 1
+    if args.command == "eval-review":
+        run_path = Path(args.run_bundle).expanduser().resolve()
+        review = load_review_file(Path(args.review_json))
+        review_path = save_review(run_path, review)
+        payload = {"review_path": str(review_path), "golden_case_path": None}
+        if args.promote:
+            payload["golden_case_path"] = str(promote_review(run_path, review_path))
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "visualize-run":
+        output = render_run_visualization(
+            Path(args.run_bundle), Path(args.output) if args.output else None,
+        )
+        print(f"执行复盘页已保存: {output}")
+        return 0
+    if args.command == "eval-run":
+        result, output = evaluate_run(Path(args.run_bundle), Path(args.golden_case))
+        print(json.dumps({**result, "result_path": str(output)}, ensure_ascii=False, indent=2))
+        return 0 if result["passed"] else 1
     if args.command in ("chat-local", "chat-jira"):
         return await _run_chat(args)
     config = AgentConfig.from_environment()

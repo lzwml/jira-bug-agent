@@ -220,6 +220,16 @@ Run Bundle v2：执行轨迹、证据与主张快照、输入指纹覆盖、模�
 也是后续真实稳定性黄金 Case Eval 的可审计输入；字段说明见
 [Worker Contract](docs/worker-contract.md#run-bundle-v2黄金-case-的可回放输入)。
 
+人工复核以旁路 Review 保存，不会回写或污染原始运行记录；确认或纠正后的运行可以
+晋升为版本化黄金 Case，评分维度、反馈 JSON 和命令见
+[真实稳定性黄金 Case Eval](docs/golden-case-eval.md)。
+
+```powershell
+bug-agent visualize-run <case>/.bug-agent/runs/<run>.json
+bug-agent eval-review <run-bundle.json> <review.json> --promote
+bug-agent eval-run <candidate-run-bundle.json> <golden-case.json>
+```
+
 ## 分析 Jira Issue
 
 先可以只验证 Jira 接入并收集信息。该命令不需要配置大模型：
