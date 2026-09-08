@@ -274,7 +274,10 @@ class InspectArchiveInput(BaseModel):
     )
     source_sha256: str | None = Field(
         default=None, min_length=64, max_length=64,
-        description="可选的归档 SHA-256，用于确认本次查看的仍是同一份归档。",
+        description=(
+            "第一页可省略；member_offset>0 翻页时必须传上一页返回的 "
+            "source_fingerprint.sha256，用于确认仍是同一份归档。"
+        ),
     )
     max_members: int = Field(
         default=1000, ge=1, le=5000,
@@ -322,7 +325,13 @@ class ExtractAeeDbInput(BaseModel):
     """Decode one registered MTK AEE DB artifact with the server-controlled extractor."""
 
     case_id: str = Field(min_length=1, description="open_case 返回的当前 Case 标识。")
-    artifact_id: str = Field(min_length=1, description="inspect_case 返回的 aee_db artifact_id")
+    artifact_id: str = Field(
+        min_length=1,
+        description=(
+            "已注册的 aee_db Artifact ID。归档内 .dbg 必须先调用 extract_archive_members，"
+            "再使用其返回 members[].artifact_id；不能填写 member_id。"
+        ),
+    )
 
 
 class ProbeArchiveMembersInput(BaseModel):

@@ -112,7 +112,7 @@ class SkillAwareToolRouter:
                         "role": {
                             "type": "string",
                             "enum": ["primary", "secondary"],
-                            "description": "Symptom Skill role. Omit for the primary route; use secondary only for a verified cascade/downstream effect.",
+                            "description": "仅症状 Skill 使用：省略表示 primary；已验证的级联故障才填 secondary。平台、基础和补充 Skill 请省略，误传时系统会规范为 supporting。",
                         },
                     },
                     "required": ["name", "reason"],
@@ -138,16 +138,21 @@ class SkillAwareToolRouter:
             return self._error("INVALID_SKILL_REASON", "reason 必须是 1..500 字符的非空文本")
         document = self.documents[skill_name]
         requested_role = arguments.get("role")
+        role_adjusted_from = None
         if requested_role is None:
             requested_role = "primary" if document.category == "symptom" else "supporting"
         if requested_role not in {"primary", "secondary", "supporting"}:
             return self._error("INVALID_SKILL_ROLE", "role 必须是 primary 或 secondary")
         if document.category != "symptom" and requested_role != "supporting":
-            return self._error("INVALID_SKILL_ROLE", "只有症状 Skill 可以声明 primary/secondary")
+            role_adjusted_from = requested_role
+            requested_role = "supporting"
         if skill_name in self._active:
             document = self._active[skill_name]
             activation = next(item for item in self.activations if item.name == skill_name)
-            return self._success(document, already_active=True, role=activation.role)
+            return self._success(
+                document, already_active=True, role=activation.role,
+                role_adjusted_from=role_adjusted_from,
+            )
         if len(self._active) >= MAX_SKILLS_PER_TASK:
             return self._error(
                 "SKILL_LIMIT_REACHED", f"单任务最多加载 {MAX_SKILLS_PER_TASK} 个 Skills",
@@ -178,7 +183,10 @@ class SkillAwareToolRouter:
         self.activations.append(SkillActivation(
             name=skill_name, source="agent", role=requested_role, reason=reason.strip(),
         ))
-        return self._success(document, already_active=False, role=requested_role)
+        return self._success(
+            document, already_active=False, role=requested_role,
+            role_adjusted_from=role_adjusted_from,
+        )
 
     @staticmethod
     def _success(
@@ -186,6 +194,7 @@ class SkillAwareToolRouter:
         *,
         already_active: bool,
         role: Literal["primary", "secondary", "supporting"],
+        role_adjusted_from: str | None = None,
     ) -> str:
         return json.dumps({
             "success": True,
@@ -195,6 +204,7 @@ class SkillAwareToolRouter:
                 "description": document.description,
                 "already_active": already_active,
                 "role": role,
+                "role_adjusted_from": role_adjusted_from,
                 "instructions": document.instructions,
             },
             "error_code": None,

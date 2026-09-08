@@ -235,7 +235,12 @@ class LogAnalyzerService:
         case_root, info = entry
         artifact = next((item for item in info.artifacts if item.artifact_id == params.artifact_id), None)
         if artifact is None:
-            return make_error("ARTIFACT_NOT_FOUND", "指定 Artifact 不存在")
+            return make_error(
+                "AEE_ARTIFACT_NOT_REGISTERED",
+                "AEE Artifact 不存在。若当前值来自 inspect_archive 的 member_id，请先调用 "
+                "extract_archive_members，再把返回的 members[].artifact_id 传给 extract_aee_db；"
+                "不要用相同 ID 重试。",
+            )
         if artifact.kind != "aee_db":
             return make_error("ARTIFACT_NOT_AEE_DB", "指定 Artifact 不是 MTK AEE DB")
         source_path = self.registry.get_artifact_path(params.case_id, artifact.artifact_id)

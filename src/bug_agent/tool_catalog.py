@@ -27,7 +27,7 @@ _LOG_TOOLS = {
     "inspect_archive": ("只读查看归档成员、时间和日志域，不解压内容。", InspectArchiveInput),
     "probe_archive_members": ("读取指定归档成员的少量样本，并将调查目标时间窗与实际内容时间范围同时返回，供人工核对 round、boot 和诊断锚点。", ProbeArchiveMembersInput),
     "extract_archive_members": ("按稳定 member_id 选择性解压所需归档成员。", ExtractArchiveMembersInput),
-    "extract_aee_db": ("解码 AEE DB，并注册可继续索引的文本产物。", ExtractAeeDbInput),
+    "extract_aee_db": ("解码已注册的 AEE DB；归档成员必须先选择性解压，并使用解压返回的 artifact_id，不能直接传 member_id。", ExtractAeeDbInput),
     "build_index": ("把指定附件增量加入 Case 文本索引，供后续检索。", BuildIndexInput),
     "search_evidence": ("在已注册 Case 文本中做字面量搜索，返回可引用 Evidence。", SearchEvidenceInput),
     "extract_timeline": ("从多种时钟域日志中提取锚点事件并形成时间线。", ExtractTimelineInput),

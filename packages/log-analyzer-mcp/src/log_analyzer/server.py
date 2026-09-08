@@ -100,7 +100,7 @@ TOOL_DEFINITIONS = {
         InspectArchiveInput,
     ),
     "probe_archive_members": (
-        "不落盘、不展开整个归档，只读取指定成员的前缀内容样本。调用时应传入已知的 incident_time_range；返回调查目标时间窗，以及每个成员独立观测到的内容时间范围、boot 身份、诊断锚点和覆盖置信度，便于人工确认所选 boot round 是否真的覆盖事故。",
+        "不落盘、不展开整个归档（包括 7z），只读取指定成员的前缀内容样本。调用时应传入已知的 incident_time_range；返回调查目标时间窗，以及每个成员独立观测到的内容时间范围、boot 身份、诊断锚点和覆盖置信度，便于人工确认所选 boot round 是否真的覆盖事故。",
         ProbeArchiveMembersInput,
     ),
     "extract_archive_members": (
@@ -108,7 +108,7 @@ TOOL_DEFINITIONS = {
         ExtractArchiveMembersInput,
     ),
     "extract_aee_db": (
-        "使用服务端受控的 aee_extract.exe 解码 inspect_case 返回的 aee_db Artifact，注册 .DEC 文本产物并返回可传给 build_index 的 artifact_id。",
+        "使用服务端受控的 aee_extract.exe 解码已注册的 aee_db Artifact。如 .dbg 位于归档内，必须先用 extract_archive_members 解压，再传入其返回的 members[].artifact_id；不能直接传 member_id。",
         ExtractAeeDbInput,
     ),
     "build_index": (

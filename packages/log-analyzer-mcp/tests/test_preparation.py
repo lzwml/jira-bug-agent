@@ -919,6 +919,74 @@ def test_prepare_extracts_7z_archive(tmp_path):
     assert (dest / "main.log").read_text() == "main crash\n"
 
 
+def test_selective_extraction_reads_multiple_7z_members_in_one_pass(tmp_path):
+    import py7zr
+
+    case_dir, _, service = _service(tmp_path)
+    with py7zr.SevenZipFile(str(case_dir / "logs.7z"), "w") as archive:
+        archive.writestr(b"kernel panic\n", "logs/kernel.log")
+        archive.writestr(b"09-05 09:32:12.599 E Demo: crash\n", "logs/main.log")
+
+    case_id = _open(service, case_dir)
+    archive_id = service.inspect_case(case_id=case_id).data["artifacts"][0]["artifact_id"]
+    inventory = service.inspect_archive(case_id=case_id, artifact_id=archive_id)
+    member_ids = [item["member_id"] for item in inventory.data["members"]]
+
+    result = service.extract_archive_members(
+        case_id=case_id,
+        artifact_id=archive_id,
+        member_ids=member_ids,
+    )
+
+    assert result.success
+    assert result.data["member_count"] == 2
+    assert all(item["artifact_id"] for item in result.data["members"])
+    extracted = {item["member_path"]: item for item in result.data["members"]}
+    assert (case_dir / "logs" / "logs" / "kernel.log").read_text() == "kernel panic\n"
+    assert "logs/main.log" in extracted
+
+
+def test_probe_reads_7z_members_without_extracting_to_case(tmp_path):
+    import py7zr
+
+    case_dir, _, service = _service(tmp_path)
+    with py7zr.SevenZipFile(str(case_dir / "logs.7z"), "w") as archive:
+        archive.writestr(
+            b"09-05 09:32:12.599  1411  1913 F system_server: watchdog crash\n",
+            "APLog/main_log.txt",
+        )
+        archive.writestr(b"[ 123.456] kernel panic - not syncing\n", "kernel.log")
+
+    case_id = _open(service, case_dir)
+    archive_id = service.inspect_case(case_id=case_id).data["artifacts"][0]["artifact_id"]
+    inventory = service.inspect_archive(case_id=case_id, artifact_id=archive_id)
+
+    result = service.probe_archive_members(
+        case_id=case_id,
+        artifact_id=archive_id,
+        member_ids=[item["member_id"] for item in inventory.data["members"]],
+    )
+
+    assert result.success
+    assert len(result.data["profiles"]) == 2
+    assert any(profile["content_time_ranges"] for profile in result.data["profiles"])
+    assert not (case_dir / "logs").exists()
+
+
+def test_extract_aee_db_explains_member_id_to_artifact_id_handoff(tmp_path):
+    case_dir, _, service = _service(tmp_path)
+    (case_dir / "main.log").write_text("case input\n", encoding="utf-8")
+    case_id = _open(service, case_dir)
+
+    result = service.extract_aee_db(case_id=case_id, artifact_id="member-id-from-inventory")
+
+    assert not result.success
+    assert result.error_code == "AEE_ARTIFACT_NOT_REGISTERED"
+    assert "extract_archive_members" in result.error_message
+    assert "members[].artifact_id" in result.error_message
+    assert "不要用相同 ID 重试" in result.error_message
+
+
 def test_7z_volume_extension_is_supported(tmp_path):
     """以 .7z.001 结尾的文件被 is_supported_archive 识别。"""
     from log_analyzer.archive_manager import is_supported_archive

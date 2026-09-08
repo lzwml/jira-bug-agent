@@ -113,6 +113,23 @@ async def test_router_can_stack_platform_skill_with_symptom_skill():
 
 
 @pytest.mark.anyio
+async def test_router_normalizes_symptom_role_for_platform_skill():
+    router = make_router(initial=["android-black-screen"], source="explicit")
+
+    raw = await router.call(ACTIVATE_SKILL_TOOL, {
+        "name": "mtk-ivi-log-analysis",
+        "role": "primary",
+        "reason": "Case 含 MTK IVI、Linux VM 和 SCP 日志",
+    })
+    payload = json.loads(raw)
+
+    assert payload["success"] is True
+    assert payload["data"]["role"] == "supporting"
+    assert payload["data"]["role_adjusted_from"] == "primary"
+    assert router.activations[-1].role == "supporting"
+
+
+@pytest.mark.anyio
 async def test_router_can_activate_aee_supplemental_skill_from_dbg_evidence():
     router = make_router(initial=["android-native-crash", "mtk-ivi-log-analysis"], source="explicit")
 

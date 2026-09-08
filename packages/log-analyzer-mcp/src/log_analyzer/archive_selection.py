@@ -11,6 +11,7 @@ from datetime import datetime
 import gzip
 import hashlib
 import json
+import lzma
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -38,6 +39,7 @@ from .archive_manager import (
 )
 
 import py7zr
+from py7zr.io import BytesIOFactory
 
 
 SELECTION_MANIFEST_VERSION = 2
@@ -252,10 +254,41 @@ def probe_archive_members(archive_path: Path | str, archive_artifact_id: str, me
         raise ArchiveRejected("ARCHIVE_MEMBER_ID_INVALID", "成员 ID 不存在、归档已变化或不允许读取")
     if len(requested) * max_bytes_per_member > max_total_bytes:
         raise ArchiveRejected("PROBE_BUDGET_LIMIT", "成员探测总读取量超过服务端预算")
+    seven_zip_payloads: dict[str, bytes] = {}
+    if inventory.format == "7z":
+        budget = ExtractionBudget(limits)
+        archive, merged = _open_7z_archive(inventory.archive_path, budget)
+        try:
+            if archive.needs_password():
+                raise ArchiveRejected("ARCHIVE_ENCRYPTED", "不支持加密 7z 归档")
+            paths = [safe[member_id].member_path for member_id in requested]
+            factory = BytesIOFactory(max_bytes_per_member)
+            archive.extract(targets=paths, factory=factory)
+            for path in paths:
+                product = factory.get(path)
+                product.seek(0)
+                seven_zip_payloads[path] = product.read(max_bytes_per_member)
+        except (py7zr.exceptions.ArchiveError, lzma.LZMAError) as exc:
+            raise ArchiveRejected(
+                "ARCHIVE_INTEGRITY_ERROR",
+                f"7z 成员读取失败（{type(exc).__name__}）；请改用其他完整归档或重新获取附件，"
+                "不要用相同成员重复调用。",
+            ) from exc
+        finally:
+            archive.close()
+            if merged is not None:
+                merged.unlink(missing_ok=True)
     results: list[dict[str, object]] = []
     for member_id in requested:
         item = safe[member_id]
-        payload = _read_probe_bytes(inventory.archive_path, inventory.format, item.member_path, max_bytes_per_member)
+        payload = (
+            seven_zip_payloads[item.member_path]
+            if inventory.format == "7z"
+            else _read_probe_bytes(
+                inventory.archive_path, inventory.format, item.member_path,
+                max_bytes_per_member,
+            )
+        )
         text = payload.decode("utf-8", errors="replace")
         domains = [domain for domain, pattern in _LOG_DOMAIN_PATTERNS if pattern.search(text)]
         values = {
@@ -842,9 +875,8 @@ def extract_archive_members(
             try:
                 if archive.needs_password():
                     raise ArchiveRejected("ARCHIVE_ENCRYPTED", "不支持加密 7z 归档")
-                for member_path, item in pending_by_path.items():
-                    budget.check_runtime()
-                    archive.extract(staging, targets=[member_path])
+                budget.check_runtime()
+                archive.extract(staging, targets=list(pending_by_path))
                 for member_path, item in pending_by_path.items():
                     target = _target_path(staging, member_path)
                     if not target.is_file():
@@ -852,6 +884,12 @@ def extract_archive_members(
                     actual = target.stat().st_size
                     if actual != int(item.size_bytes):
                         raise ArchiveRejected("ARCHIVE_MEMBER_SIZE_MISMATCH", f"7z 成员大小与元数据不一致: {member_path}")
+            except (py7zr.exceptions.ArchiveError, lzma.LZMAError) as exc:
+                raise ArchiveRejected(
+                    "ARCHIVE_INTEGRITY_ERROR",
+                    f"7z 成员解压失败（{type(exc).__name__}）；请改用其他完整归档或重新获取附件，"
+                    "不要用相同成员重复调用。",
+                ) from exc
             finally:
                 archive.close()
                 if merged is not None:
