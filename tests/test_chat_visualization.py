@@ -6,6 +6,7 @@ import pytest
 
 from bug_agent.chat_visualization import (
     build_return_preview,
+    enrich_member_references,
     load_chat_session,
     render_chat_visualization,
     render_safe_markdown,
@@ -54,6 +55,8 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
     assert "可核对的文件/证据位置" in common_js
     assert "返回是否满足需要" in common_js
     assert "未传（可选）" in common_js
+    assert "所属归档" in common_js
+    assert "路径未在本会话" in common_js
     data_js = (site_dir / "session-data.js").read_text(encoding="utf-8")
     assert "检查 </script> 重启" not in data_js
 
@@ -87,6 +90,47 @@ def test_return_preview_surfaces_artifact_paths_and_identifiers():
         "details": "archive · 123 bytes",
     }]
     assert preview["facts"] == [{"name": "artifact_count", "value": "1"}]
+
+
+def test_member_ids_are_resolved_to_paths_from_prior_tool_results():
+    member_id = "member-1"
+    session = {"turns": [{
+        "turn_index": 1,
+        "tool_events": [{
+            "step": 1,
+            "tool_name": "inspect_archive",
+            "arguments": {"artifact_id": "archive-1"},
+            "result": json.dumps({
+                "success": True,
+                "data": {
+                    "relative_path": "attachments/android.zip!/APLog__24.tar.gz",
+                    "members": [{
+                        "member_id": member_id,
+                        "member_path": "APLog__24/kernel_log.curf",
+                    }],
+                },
+            }),
+        }, {
+            "step": 2,
+            "tool_name": "extract_archive_members",
+            "arguments": {"artifact_id": "archive-1", "member_ids": [member_id]},
+            "result": json.dumps({"success": True, "data": {"members": []}}),
+        }],
+    }]}
+
+    enrich_member_references(session)
+
+    reference = session["turns"][0]["tool_events"][1]["_member_references"][0]
+    assert reference == {
+        "member_id": member_id,
+        "member_path": "APLog__24/kernel_log.curf",
+        "archive_relative_path": "attachments/android.zip!/APLog__24.tar.gz",
+        "resolved": True,
+        "resolution_source": "prior_tool_result",
+        "source_tool": "inspect_archive",
+        "source_turn": 1,
+        "source_step": 1,
+    }
 
 
 def test_safe_markdown_renders_reports_without_allowing_html_injection():

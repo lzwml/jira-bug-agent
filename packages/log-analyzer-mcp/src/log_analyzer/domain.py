@@ -310,7 +310,10 @@ class ExtractArchiveMembersInput(BaseModel):
     artifact_id: str = Field(min_length=1, description="inspect_archive 检查过的归档附件 ID。")
     member_ids: list[str] = Field(
         min_length=1, max_length=200,
-        description="inspect_archive 或 probe_archive_members 返回的稳定成员 ID；不能填写成员路径。",
+        description=(
+            "inspect_archive 或 probe_archive_members 返回的稳定成员 ID。服务端用 ID 反查已登记"
+            "成员，拒绝模型猜测、过期或越界路径；复盘页应同时展示其对应 member_path 供人工核对。"
+        ),
     )
     force_rebuild: bool = Field(default=False, description="是否覆盖该成员已有的安全解压缓存。")
 
@@ -329,7 +332,10 @@ class ProbeArchiveMembersInput(BaseModel):
     artifact_id: str = Field(min_length=1, description="inspect_archive 检查过的归档附件 ID。")
     member_ids: list[str] = Field(
         min_length=1, max_length=50,
-        description="需要读取前缀样本的稳定成员 ID，来自 inspect_archive。",
+        description=(
+            "来自 inspect_archive 的稳定成员 ID。服务端用 ID 反查已登记成员，拒绝模型猜测、"
+            "过期或越界路径；复盘页应同时展示其对应 member_path 供人工核对。"
+        ),
     )
     incident_time_range: ArchiveTimeRange | None = Field(
         default=None,

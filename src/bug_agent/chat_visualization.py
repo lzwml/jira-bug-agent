@@ -39,6 +39,7 @@ def render_chat_visualization(
         "fallback_tool_catalog": current_fallback_catalog(used_tool_names),
         "fallback_notice": "当前版本后补：原会话未保存当时的工具契约，可能与运行时版本不同。",
     }
+    enrich_member_references(session)
     for turn in session.get("turns", []):
         turn["_user_html"] = render_safe_markdown(str(turn.get("user_message") or ""))
         turn["_assistant_html"] = render_safe_markdown(str(turn.get("assistant_answer") or ""))
@@ -269,6 +270,109 @@ def build_return_preview(raw_result: str, *, max_locations: int = 50) -> dict[st
     }
 
 
+def enrich_member_references(session: dict[str, Any]) -> None:
+    """把机器使用的 member_id 补充为可供人工核对的归档成员路径。"""
+
+    known: dict[str, dict[str, Any]] = {}
+    for turn in session.get("turns", []):
+        if not isinstance(turn, dict):
+            continue
+        turn_index = turn.get("turn_index")
+        for event in turn.get("tool_events", []):
+            if not isinstance(event, dict):
+                continue
+            arguments = event.get("arguments")
+            member_ids = arguments.get("member_ids") if isinstance(arguments, dict) else None
+            known_before_call = set(known)
+
+            discovered = _member_references_from_result(
+                str(event.get("result") or ""),
+                tool_name=str(event.get("tool_name") or ""),
+                turn_index=turn_index,
+                step=event.get("step"),
+            )
+            for member_id, reference in discovered.items():
+                known.setdefault(member_id, reference)
+            if isinstance(member_ids, list):
+                event["_member_references"] = [
+                    _member_reference(
+                        member_id,
+                        known,
+                        (
+                            "prior_tool_result"
+                            if member_id in known_before_call
+                            else "current_tool_result"
+                        ),
+                    )
+                    for member_id in member_ids
+                    if isinstance(member_id, str)
+                ]
+
+
+def _member_reference(
+    member_id: str, known: dict[str, dict[str, Any]], resolution_source: str,
+) -> dict[str, Any]:
+    item = known.get(member_id)
+    if item is None:
+        return {
+            "member_id": member_id,
+            "member_path": None,
+            "archive_relative_path": None,
+            "resolved": False,
+            "resolution_source": "unresolved",
+        }
+    return {
+        "member_id": member_id,
+        "member_path": item["member_path"],
+        "archive_relative_path": item.get("archive_relative_path"),
+        "resolved": True,
+        "resolution_source": resolution_source,
+        "source_tool": item.get("source_tool"),
+        "source_turn": item.get("source_turn"),
+        "source_step": item.get("source_step"),
+    }
+
+
+def _member_references_from_result(
+    raw_result: str, *, tool_name: str, turn_index: Any, step: Any,
+) -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return {}
+    archive_path = data.get("archive_relative_path")
+    if not isinstance(archive_path, str):
+        archive_path = data.get("relative_path") if isinstance(data.get("relative_path"), str) else None
+    found: dict[str, dict[str, Any]] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for child in value:
+                walk(child)
+            return
+        if not isinstance(value, dict):
+            return
+        member_id = value.get("member_id")
+        member_path = value.get("member_path")
+        if isinstance(member_id, str) and isinstance(member_path, str):
+            found[member_id] = {
+                "member_path": member_path,
+                "archive_relative_path": archive_path,
+                "source_tool": tool_name,
+                "source_turn": turn_index,
+                "source_step": step,
+            }
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                walk(child)
+
+    walk(data)
+    return found
+
+
 _REDIRECT_HTML = '''<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="0;url=__TARGET__"><title>打开 Agent 复盘</title></head>
 <body><a href="__TARGET__">打开新版 Agent 复盘</a></body></html>'''
@@ -283,6 +387,7 @@ _SITE_SHELL = '''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 
 _SITE_CSS = r'''
 :root{--bg:#f5f6f8;--card:#fff;--ink:#182230;--muted:#667085;--line:#e1e6ec;--blue:#155eef;--green:#067647;--red:#b42318;--amber:#b54708}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,"Microsoft YaHei",sans-serif}header{position:sticky;top:0;z-index:5;background:#101828;color:#fff;padding:14px max(22px,calc((100% - 1180px)/2));display:flex;align-items:center;justify-content:space-between;gap:20px}header strong{font-size:18px}header span{margin-left:12px;color:#aebbd0;font-size:13px}nav{display:flex;gap:4px}nav a{color:#d7dfeb;text-decoration:none;padding:7px 13px;border-radius:7px}nav a.active{background:#fff;color:#182230}main{max-width:1180px;margin:auto;padding:24px}.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:20px;margin-bottom:18px;box-shadow:0 1px 3px #1018280d}h1{font-size:25px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}h3{font-size:16px;margin:0}.muted{color:var(--muted)}.metrics,.routes{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metric,.route{background:#f8fafc;border-radius:9px;padding:14px}.metric b{display:block;font-size:24px}.route{text-decoration:none;color:var(--ink);border:1px solid transparent}.route:hover{border-color:#9eb8f5}.route b{display:block;color:var(--blue);margin-bottom:4px}.message{word-break:break-word;background:#f8fafc;border-radius:8px;padding:13px;max-height:520px;overflow:auto}.message h1,.message h2,.message h3,.message h4{margin:16px 0 8px}.message h1{font-size:22px}.message h2{font-size:19px}.message h3{font-size:16px}.message p{margin:8px 0}.message ul,.message ol{padding-left:24px}.message blockquote{margin:10px 0;padding:7px 12px;border-left:4px solid #9eb8f5;background:#f2f6ff}.message code{font-family:ui-monospace,Consolas,monospace;background:#eaf0f6;padding:1px 4px;border-radius:4px}.message pre{background:#101828;color:#e6edf6}.message pre code{background:transparent;padding:0}.message .table-wrap{overflow:auto}.toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;margin-bottom:16px}input,select{border:1px solid #cbd3de;border-radius:7px;padding:8px;background:#fff;color:var(--ink)}input[type=search]{width:100%}.turn,.tool-group{padding:0;overflow:hidden}.turn>summary,.tool-group>summary,.tool-card>summary{list-style:none;cursor:pointer;padding:15px 18px;display:grid;grid-template-columns:80px 1fr auto;gap:12px;align-items:center}.turn>summary::-webkit-details-marker,.tool-group>summary::-webkit-details-marker,.tool-card>summary::-webkit-details-marker{display:none}.turn[open]>summary,.tool-group[open]>summary,.tool-card[open]>summary{background:#f8fafc}.body{padding:0 18px 18px}.preview{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tag{display:inline-block;padding:2px 8px;border-radius:999px;background:#eaf0ff;color:#1849a9;font-size:12px;margin-left:5px}.tag.warn{background:#fff0df;color:var(--amber)}.tag.ok{background:#ecfdf3;color:var(--green)}.tag.bad{background:#fff1f0;color:var(--red)}.tool-card{border-top:1px solid var(--line)}.tool-card:first-child{border-top:0}.tool-card>summary{grid-template-columns:160px 1fr auto}.purpose{margin:8px 0;color:#344054}.notice{font-size:12px;color:var(--amber)}table{width:100%;border-collapse:collapse;margin:9px 0;font-size:13px}th,td{text-align:left;vertical-align:top;border:1px solid #e6e9ee;padding:7px;word-break:break-word}th{background:#f8fafc}.mono{font-family:ui-monospace,Consolas,monospace}.result{padding:9px 11px;border-radius:7px;background:#f0fdf4;color:#05603a;margin:8px 0}.result.bad{background:#fff1f0;color:var(--red)}details.raw summary{cursor:pointer;color:var(--blue)}pre{white-space:pre-wrap;word-break:break-word;background:#f8fafc;padding:10px;border-radius:7px;max-height:380px;overflow:auto}.review{display:grid;grid-template-columns:auto 170px 170px 1fr;gap:8px;align-items:center}.review input[type=text]{width:100%}button{border:0;border-radius:8px;padding:9px 14px;background:var(--blue);color:#fff;font-weight:650;cursor:pointer}.row{display:flex;justify-content:space-between;gap:12px;align-items:center}.hidden{display:none!important}.empty{text-align:center;color:var(--muted);padding:28px}@media(max-width:780px){header{position:static;display:block}nav{margin-top:10px}.metrics,.routes{grid-template-columns:1fr 1fr}.review,.toolbar{grid-template-columns:1fr}.turn>summary,.tool-group>summary,.tool-card>summary{grid-template-columns:65px 1fr}.turn>summary>span:last-child,.tool-group>summary>span:last-child,.tool-card>summary>span:last-child{grid-column:2}header span{display:block;margin:2px 0}}
+.member-ref{padding:7px 0;border-bottom:1px solid var(--line)}.member-ref:first-child{padding-top:0}.member-ref:last-child{padding-bottom:0;border-bottom:0}.member-path{font-weight:650;color:#1849a9}.member-id,.member-archive,.member-source{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.member-unresolved{color:var(--amber);font-weight:650}
 body[data-page=workspace]{height:100vh;overflow:hidden}body[data-page=workspace] header{padding:10px 18px;height:58px}body[data-page=workspace] nav{display:none}body[data-page=workspace] main{max-width:none;height:calc(100vh - 58px);padding:0}.workspace{height:100%;display:grid;grid-template-columns:minmax(240px,290px) minmax(390px,1fr) minmax(410px,520px);background:var(--line);gap:1px}.pane{min-width:0;background:var(--card);display:flex;flex-direction:column;overflow:hidden}.pane-head{flex:0 0 auto;padding:14px 16px;border-bottom:1px solid var(--line);background:#fff}.pane-head h2{margin:0;font-size:17px}.pane-head p{margin:3px 0 0;font-size:12px;color:var(--muted)}.pane-scroll{min-height:0;overflow:auto;padding:14px}.round-search{margin-top:10px}.round-list{padding:7px}.round-item{display:block;width:100%;text-align:left;background:transparent;color:var(--ink);font-weight:400;padding:11px;border:1px solid transparent;border-radius:9px;margin:2px 0}.round-item:hover{background:#f8fafc}.round-item.active{background:#eef4ff;border-color:#b2ccff}.round-item-top{display:flex;justify-content:space-between;gap:8px;align-items:center}.round-item strong{font-size:14px}.round-item .round-preview{display:block;color:#475467;font-size:12px;line-height:1.45;margin-top:5px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}.round-meta{font-size:11px;color:var(--muted)}.conversation-section{margin-bottom:20px}.conversation-section h3{margin-bottom:7px}.human-title{color:var(--amber)}.agent-title{color:var(--blue)}.workspace .message{max-height:none;overflow:visible}.right-tabs{display:flex;gap:4px;margin-top:10px}.right-tab{background:#f2f4f7;color:#344054;padding:6px 12px;font-size:13px}.right-tab.active{background:#155eef;color:#fff}.right-panel{display:none}.right-panel.active{display:block}.right-tool{border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}.right-tool>summary{grid-template-columns:minmax(110px,150px) 1fr auto;padding:12px}.right-tool .body{padding:0 12px 14px}.right-tool .review{grid-template-columns:1fr}.workspace-review{display:grid;gap:12px}.workspace-review label{font-weight:650}.workspace-review select,.workspace-review input[type=text]{width:100%}.workspace-review .check{padding:10px;background:#fff8eb;border-radius:8px}.workspace-review .field-help{font-size:12px;color:var(--muted);margin-top:3px}.workspace-actions{margin-left:auto;display:flex;gap:8px}.workspace-actions a{color:#d7dfeb;text-decoration:none;font-size:12px}.workspace-actions a:hover{text-decoration:underline}.workspace-actions button{padding:7px 12px}.turn-counter{font-size:12px;color:var(--muted);margin-left:8px}@media(max-width:1050px){body[data-page=workspace]{overflow:auto}body[data-page=workspace] main{height:auto}.workspace{min-width:1050px;height:calc(100vh - 58px)}}
 '''
 
@@ -296,7 +401,8 @@ const catalogs=new Map((session.tool_catalogs||[]).map(x=>[x.catalog_id,x.tools|
 const catalogFor=t=>{const exact=catalogs.get(t.tool_catalog_id);return{tools:exact||fallback,exact:!!exact}},toolDef=(t,name)=>catalogFor(t).tools.find(x=>x.name===name)||{name,description:'没有可用的工具描述。',parameters:{type:'object',properties:{}}};
 const allEvents=turns.flatMap(t=>(t.tool_events||[]).map(x=>({turn:t,event:x}))),short=v=>{const s=typeof v==='string'?v:JSON.stringify(v);return s.length>280?s.slice(0,280)+'…':s};
 function resultSummary(raw){try{const p=JSON.parse(raw);if(p.success===false)return{ok:false,text:`返回失败：${p.error_code||'UNKNOWN'} · ${p.error_message||'未提供原因'}`};const d=p.data;if(Array.isArray(d))return{ok:true,text:`返回成功：${d.length} 项数据`};if(d&&typeof d==='object')return{ok:true,text:`返回成功；主要内容：${Object.keys(d).slice(0,8).join('、')||'无字段'}`};return{ok:true,text:'返回成功'}}catch{return{ok:false,text:'返回不是标准 JSON，需要查看原始内容'}}}
-function appendToolDetails(root,t,x,withReview=false){const def=toolDef(t,x.tool_name),schema=def.parameters||{},props=schema.properties||{},required=schema.required||[],args=x.arguments||{},missing=required.filter(k=>!(k in args)),exact=catalogFor(t).exact;root.append(el('div','purpose',def.description||'未提供工具用途说明'));const badges=el('div');badges.append(el('span','tag',exact?'运行时契约快照':'当前版本后补描述'),el('span',`tag ${missing.length?'bad':'ok'}`,missing.length?`缺少：${missing.join('、')}`:'必填参数齐全'));root.append(badges);if(!exact)root.append(el('div','notice',session._visualization?.fallback_notice||''));const table=el('table'),head=el('tr');['参数','本次传值','契约说明'].forEach(v=>head.append(el('th','',v)));table.append(head);[...new Set([...Object.keys(props),...Object.keys(args),...missing])].forEach(k=>{const row=el('tr'),provided=k in args;row.append(el('td','mono',k+(required.includes(k)?' *':'')),el('td',provided?'':required.includes(k)?'bad':'muted',provided?short(args[k]):required.includes(k)?'未传（必填）':'未传（可选）'),el('td','',props[k]?.description||`类型：${props[k]?.type||'未说明'}`));table.append(row)});root.append(table);const rs=resultSummary(x.result||'');root.append(el('div',`result ${rs.ok?'':'bad'}`,rs.text));const p=x._return_preview||{},loc=p.locations||[];if(loc.length){root.append(el('h3','',`可核对的文件/证据位置（${p.location_count} 项）`));const rt=el('table'),rh=el('tr');['位置','稳定标识','类型、大小、行号或摘录'].forEach(v=>rh.append(el('th','',v)));rt.append(rh);loc.forEach(v=>{const row=el('tr');row.append(el('td','mono',v.location),el('td','mono',v.identifier||'-'),el('td','',v.details||'-'));rt.append(row)});root.append(rt)}else root.append(el('div','notice','返回没有携带可定位的文件路径或 Evidence 位置。'));if(withReview){const review=el('div','review'),select=document.createElement('select'),note=document.createElement('input');select.className='tool-verdict';[['','返回是否满足需要'],['sufficient','满足'],['partial','部分满足'],['insufficient','不满足'],['wrong_arguments','参数不正确'],['wrong_tool','工具选择错误']].forEach(([v,n])=>{const o=el('option','',n);o.value=v;select.append(o)});note.type='text';note.className='tool-note';note.placeholder='说明缺失内容或正确调用方式';review.append(el('span','',x.tool_name),select,note);review.dataset.turn=t.turn_index;review.dataset.step=x.step||'';review.dataset.call=x.tool_call_id||'';root.append(review)}const raw=el('details','raw'),sum=el('summary','','查看完整原始参数与返回'),pre=el('pre','mono',`参数\n${JSON.stringify(args,null,2)}\n\n返回\n${x.result||''}`);raw.append(sum,pre);root.append(raw)}
+function memberReferenceValue(refs){const list=el('div','member-refs');refs.forEach(ref=>{const item=el('div','member-ref');if(ref.resolved){item.append(el('div','member-path',ref.member_path),el('div','member-archive',`所属归档：${ref.archive_relative_path||'归档位置未记录'}`),el('div','member-id',`成员 ID：${ref.member_id}`));const source=ref.resolution_source==='prior_tool_result'?`由前序 ${ref.source_tool||'工具'} 返回确认`:'由本次工具返回补全';item.append(el('div','member-source',source))}else item.append(el('div','member-unresolved','路径未在本会话的工具返回中留存'),el('div','member-id',`成员 ID：${ref.member_id}`));list.append(item)});return list}
+function appendToolDetails(root,t,x,withReview=false){const def=toolDef(t,x.tool_name),schema=def.parameters||{},props=schema.properties||{},required=schema.required||[],args=x.arguments||{},missing=required.filter(k=>!(k in args)),exact=catalogFor(t).exact;root.append(el('div','purpose',def.description||'未提供工具用途说明'));const badges=el('div');badges.append(el('span','tag',exact?'运行时契约快照':'当前版本后补描述'),el('span',`tag ${missing.length?'bad':'ok'}`,missing.length?`缺少：${missing.join('、')}`:'必填参数齐全'));root.append(badges);if(!exact)root.append(el('div','notice',session._visualization?.fallback_notice||''));const table=el('table'),head=el('tr');['参数','本次传值','契约说明'].forEach(v=>head.append(el('th','',v)));table.append(head);[...new Set([...Object.keys(props),...Object.keys(args),...missing])].forEach(k=>{const row=el('tr'),provided=k in args,valueCell=el('td',provided?'':required.includes(k)?'bad':'muted');if(provided&&k==='member_ids'&&Array.isArray(x._member_references))valueCell.append(memberReferenceValue(x._member_references));else valueCell.textContent=provided?short(args[k]):required.includes(k)?'未传（必填）':'未传（可选）';row.append(el('td','mono',k+(required.includes(k)?' *':'')),valueCell,el('td','',props[k]?.description||`类型：${props[k]?.type||'未说明'}`));table.append(row)});root.append(table);const rs=resultSummary(x.result||'');root.append(el('div',`result ${rs.ok?'':'bad'}`,rs.text));const p=x._return_preview||{},loc=p.locations||[];if(loc.length){root.append(el('h3','',`可核对的文件/证据位置（${p.location_count} 项）`));const rt=el('table'),rh=el('tr');['位置','稳定标识','类型、大小、行号或摘录'].forEach(v=>rh.append(el('th','',v)));rt.append(rh);loc.forEach(v=>{const row=el('tr');row.append(el('td','mono',v.location),el('td','mono',v.identifier||'-'),el('td','',v.details||'-'));rt.append(row)});root.append(rt)}else root.append(el('div','notice','返回没有携带可定位的文件路径或 Evidence 位置。'));if(withReview){const review=el('div','review'),select=document.createElement('select'),note=document.createElement('input');select.className='tool-verdict';[['','返回是否满足需要'],['sufficient','满足'],['partial','部分满足'],['insufficient','不满足'],['wrong_arguments','参数不正确'],['wrong_tool','工具选择错误']].forEach(([v,n])=>{const o=el('option','',n);o.value=v;select.append(o)});note.type='text';note.className='tool-note';note.placeholder='说明缺失内容或正确调用方式';review.append(el('span','',x.tool_name),select,note);review.dataset.turn=t.turn_index;review.dataset.step=x.step||'';review.dataset.call=x.tool_call_id||'';root.append(review)}const raw=el('details','raw'),sum=el('summary','','查看完整原始参数与返回'),pre=el('pre','mono',`参数\n${JSON.stringify(args,null,2)}\n\n返回\n${x.result||''}`);raw.append(sum,pre);root.append(raw)}
 '''
 
 _WORKSPACE_BODY = '''<div class="workspace">
