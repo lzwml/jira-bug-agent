@@ -25,7 +25,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from .config import AgentConfig
-from .models import AgentRunResult, ToolEvent
+from .models import AgentRunResult, CompletionTokenUsage, TokenUsage, ToolEvent
 from .human_guidance import REQUEST_HUMAN_GUIDANCE_TOOL, checkpoint_from_result
 from .provider import ProviderError
 
@@ -57,6 +57,40 @@ class ToolRouter(Protocol):
 
     def openai_tools(self) -> list[dict[str, Any]]: ...
     async def call(self, name: str, arguments: dict[str, Any]) -> str: ...
+
+
+class _TokenUsageAccumulator:
+    """累计 Agent Loop 内成功完成的模型调用，并保留 usage 覆盖率。"""
+
+    def __init__(self) -> None:
+        self.model_calls = 0
+        self.samples: list[CompletionTokenUsage] = []
+
+    def add(self, message: dict[str, Any]) -> None:
+        self.model_calls += 1
+        usage = getattr(message, "token_usage", None)
+        if isinstance(usage, CompletionTokenUsage):
+            self.samples.append(usage)
+
+    def summary(self) -> TokenUsage | None:
+        if not self.samples:
+            return None
+
+        def optional_sum(field: str) -> int | None:
+            values = [getattr(item, field) for item in self.samples]
+            known = [value for value in values if value is not None]
+            return sum(known) if known else None
+
+        return TokenUsage(
+            prompt_tokens=sum(item.prompt_tokens for item in self.samples),
+            completion_tokens=sum(item.completion_tokens for item in self.samples),
+            total_tokens=sum(item.total_tokens for item in self.samples),
+            cached_prompt_tokens=optional_sum("cached_prompt_tokens"),
+            reasoning_tokens=optional_sum("reasoning_tokens"),
+            model_calls=self.model_calls,
+            reported_calls=len(self.samples),
+            complete=len(self.samples) == self.model_calls,
+        )
 
 
 def _result_success(raw: str) -> bool:
@@ -170,6 +204,7 @@ class BugAnalysisAgent:
             max_steps_override if max_steps_override is not None else self.config.max_steps
         )
         events: list[ToolEvent] = []
+        token_usage = _TokenUsageAccumulator()
         step = starting_step
         tool_call_count = 0
         started_at = time.monotonic()
@@ -183,6 +218,7 @@ class BugAnalysisAgent:
                     tool_events=events,
                     error="MAX_RUN_SECONDS_EXCEEDED",
                     error_type="AgentBudgetExceeded",
+                    token_usage=token_usage.summary(),
                 ), messages
             step += 1
             if not goal_mode and step > effective_max:
@@ -192,6 +228,7 @@ class BugAnalysisAgent:
                     final_answer="达到最大步骤数，尚未形成可靠结论。",
                     steps=effective_max - starting_step,
                     tool_events=events,
+                    token_usage=token_usage.summary(),
                 ), messages
             try:
                 message = await self._complete(messages, tools)
@@ -200,7 +237,10 @@ class BugAnalysisAgent:
                     status="failed", task="", final_answer="", steps=step - 1 - starting_step,
                     tool_events=events, error=str(exc),
                     error_type=type(exc).__name__, retryable=exc.retryable,
+                    token_usage=token_usage.summary(),
                 ), messages
+
+            token_usage.add(message)
 
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
@@ -213,10 +253,12 @@ class BugAnalysisAgent:
                     return AgentRunResult(
                         status="completed", task="", final_answer=content,
                         steps=step - starting_step, tool_events=events,
+                        token_usage=token_usage.summary(),
                     ), messages
                 return AgentRunResult(
                     status="failed", task="", final_answer="", steps=step - starting_step,
                     tool_events=events, error="模型既未输出答案，也未调用工具",
+                    token_usage=token_usage.summary(),
                 ), messages
 
             messages.append({
@@ -235,6 +277,7 @@ class BugAnalysisAgent:
                         tool_events=events,
                         error="MAX_TOOL_CALLS_EXCEEDED",
                         error_type="AgentBudgetExceeded",
+                        token_usage=token_usage.summary(),
                     ), messages
                 tool_call_count += 1
                 call_id = str(call.get("id") or f"step-{step}-{len(events)}")
@@ -300,6 +343,7 @@ class BugAnalysisAgent:
                             steps=step - starting_step,
                             tool_events=events,
                             human_checkpoint=checkpoint,
+                            token_usage=token_usage.summary(),
                         ), messages
 
     async def run(
@@ -346,6 +390,7 @@ class BugAnalysisAgent:
             error_type=result.error_type,
             retryable=result.retryable,
             human_checkpoint=result.human_checkpoint,
+            token_usage=result.token_usage,
         )
 
     async def run_with_messages(

@@ -15,6 +15,68 @@ from typing import Any
 import httpx
 
 from .config import AgentConfig
+from .models import CompletionTokenUsage
+
+
+class ProviderMessage(dict[str, Any]):
+    """保持 message 字典兼容性，并在带外携带本次 token usage。"""
+
+    def __init__(
+        self,
+        message: dict[str, Any],
+        token_usage: CompletionTokenUsage | None = None,
+    ):
+        super().__init__(message)
+        self.token_usage = token_usage
+
+
+def _non_negative_int(value: Any) -> int | None:
+    """只接受 Provider 返回的非负整数，避免把布尔值或小数当 token。"""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _parse_token_usage(raw: Any) -> CompletionTokenUsage | None:
+    """规范化 Chat Completions 及兼容网关常见的 usage 字段。"""
+
+    if not isinstance(raw, dict):
+        return None
+    prompt = _non_negative_int(raw.get("prompt_tokens"))
+    if prompt is None:
+        prompt = _non_negative_int(raw.get("input_tokens"))
+    completion = _non_negative_int(raw.get("completion_tokens"))
+    if completion is None:
+        completion = _non_negative_int(raw.get("output_tokens"))
+    total = _non_negative_int(raw.get("total_tokens"))
+    if prompt is None and completion is None and total is None:
+        return None
+
+    # 兼容只返回 total 或只返回 input/output 的网关；未知分项明确以 0 计，
+    # total 缺失时才由两个已知分项相加。
+    prompt = prompt or 0
+    completion = completion or 0
+    total = total if total is not None else prompt + completion
+    prompt_details = raw.get("prompt_tokens_details") or raw.get("input_tokens_details")
+    completion_details = (
+        raw.get("completion_tokens_details") or raw.get("output_tokens_details")
+    )
+    cached = (
+        _non_negative_int(prompt_details.get("cached_tokens"))
+        if isinstance(prompt_details, dict) else None
+    )
+    reasoning = (
+        _non_negative_int(completion_details.get("reasoning_tokens"))
+        if isinstance(completion_details, dict) else None
+    )
+    return CompletionTokenUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        cached_prompt_tokens=cached,
+        reasoning_tokens=reasoning,
+    )
 
 
 class ProviderError(RuntimeError):
@@ -113,10 +175,13 @@ class OpenAICompatibleProvider:
 
         try:
             payload = response.json()
-            # 只取第一个 choice 的 message；多 choice 场景 Agent 用不上。
-            return payload["choices"][0]["message"]
+            # 只取第一个 choice 的 message；usage 属于整个响应，用字典
+            # 子类带外传递，不把私有字段追加到后续 messages 中。
+            message = payload["choices"][0]["message"]
+            if not isinstance(message, dict):
+                raise TypeError("message must be an object")
+            return ProviderMessage(message, _parse_token_usage(payload.get("usage")))
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             # 响应 JSON 结构不符合预期：可能是网关或代理篡改了响应，
             # 标记为可重试(也许下次正常)，但同样也可能是持续性故障。
             raise ProviderError("模型服务返回了无效响应", True) from exc
-

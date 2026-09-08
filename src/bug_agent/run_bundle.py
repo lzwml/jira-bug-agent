@@ -369,7 +369,7 @@ def build_budget_usage(
                 max((len(event.result) for event in run.tool_events), default=0) if run else 0
             ),
             "duration_ms": None,
-            "token_usage": None,
+            "token_usage": run.token_usage.model_dump() if run and run.token_usage else None,
             "termination": run.status if run else "preparation_failed",
             "budget_error": run.error if run and run.error_type == "AgentBudgetExceeded" else None,
         },

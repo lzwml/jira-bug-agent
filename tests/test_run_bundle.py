@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
-from bug_agent.models import AgentRunResult, ToolEvent
+from bug_agent.models import AgentRunResult, TokenUsage, ToolEvent
 from bug_agent.run_bundle import build_execution_context, verify_record
 from bug_agent.runstore import build_run_record
 
@@ -117,6 +117,30 @@ def test_run_bundle_integrity_detects_tampering(tmp_path):
     )
     record["result"]["status"] = "failed"
     assert verify_record(record) is False
+
+
+def test_run_bundle_persists_agent_token_usage(tmp_path):
+    run = AgentRunResult(
+        status="completed", task="analyze", final_answer="{}", steps=1,
+        token_usage=TokenUsage(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            cached_prompt_tokens=50,
+            reasoning_tokens=8,
+            model_calls=1,
+            reported_calls=1,
+            complete=True,
+        ),
+    )
+    record = build_run_record(
+        BugAnalysisTask(task_id="run-usage", source="local", case_path=str(tmp_path)),
+        run,
+        _result(),
+    )
+
+    assert record["budget"]["actual"]["token_usage"] == run.token_usage.model_dump()
+    assert verify_record(record)
 
 
 def test_execution_context_never_persists_provider_secrets():

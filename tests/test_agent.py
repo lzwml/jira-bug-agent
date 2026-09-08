@@ -7,7 +7,8 @@ import pytest
 
 from bug_agent.agent import BugAnalysisAgent
 from bug_agent.config import AgentConfig
-from bug_agent.provider import ProviderError
+from bug_agent.models import CompletionTokenUsage
+from bug_agent.provider import ProviderError, ProviderMessage
 
 
 CONFIG = AgentConfig(
@@ -67,6 +68,67 @@ async def test_agent_executes_tool_then_returns_final_answer():
     assert router.calls == [("open_case", {"case_path": "C:/case"})]
     assert result.tool_events[0].success is True
     assert provider.messages_seen[1][-1]["role"] == "tool"
+
+
+@pytest.mark.anyio
+async def test_agent_accumulates_provider_token_usage_across_steps():
+    provider = FakeProvider([
+        ProviderMessage({
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "open_case", "arguments": "{}"},
+            }],
+        }, CompletionTokenUsage(
+            prompt_tokens=100, completion_tokens=10, total_tokens=110,
+            cached_prompt_tokens=40, reasoning_tokens=4,
+        )),
+        ProviderMessage({"content": "完成"}, CompletionTokenUsage(
+            prompt_tokens=180, completion_tokens=20, total_tokens=200,
+            cached_prompt_tokens=80, reasoning_tokens=6,
+        )),
+    ])
+
+    result = await BugAnalysisAgent(CONFIG, provider).run(
+        "分析", "system", FakeRouter(),
+    )
+
+    assert result.token_usage is not None
+    assert result.token_usage.model_dump() == {
+        "prompt_tokens": 280,
+        "completion_tokens": 30,
+        "total_tokens": 310,
+        "cached_prompt_tokens": 120,
+        "reasoning_tokens": 10,
+        "model_calls": 2,
+        "reported_calls": 2,
+        "complete": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_agent_marks_partially_reported_usage_incomplete():
+    provider = FakeProvider([
+        ProviderMessage({
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "open_case", "arguments": "{}"},
+            }],
+        }, CompletionTokenUsage(
+            prompt_tokens=10, completion_tokens=2, total_tokens=12,
+        )),
+        {"content": "完成"},
+    ])
+
+    result = await BugAnalysisAgent(CONFIG, provider).run(
+        "分析", "system", FakeRouter(),
+    )
+
+    assert result.token_usage is not None
+    assert result.token_usage.model_calls == 2
+    assert result.token_usage.reported_calls == 1
+    assert result.token_usage.complete is False
 
 
 @pytest.mark.anyio

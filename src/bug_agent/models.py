@@ -17,6 +17,29 @@ class ToolEvent(BaseModel):
     success: bool
 
 
+class CompletionTokenUsage(BaseModel):
+    """一次成功模型响应中由 Provider 报告的 token 用量。"""
+
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    cached_prompt_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+
+
+class TokenUsage(BaseModel):
+    """一次 Agent Loop 内多个模型响应的累计 token 用量。"""
+
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+    cached_prompt_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    model_calls: int = Field(ge=1)
+    reported_calls: int = Field(ge=1)
+    complete: bool
+
+
 class HumanCheckpoint(BaseModel):
     checkpoint_id: str
     category: Literal[
@@ -60,3 +83,4 @@ class AgentRunResult(BaseModel):
     error_type: str | None = None
     retryable: bool = False
     human_checkpoint: HumanCheckpoint | None = None
+    token_usage: TokenUsage | None = None
