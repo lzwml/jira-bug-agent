@@ -16,6 +16,8 @@ Call `open_case` and `inspect_case`. Separate previous-boot evidence from the ne
 
 Use `parse_diagnostics` for kernel stacks, Fatal, ANR, and watchdog signals. Build a timeline around the last healthy operation, watchdog bite/bark, panic/oops, reset request, shutdown, MCU or hypervisor reset, and the next boot start.
 
+Before proposing a cause, write an evidence-coverage ledger for the reported incident window. For an Android or `system_server` failure, it must cover the Android round immediately before the reset and the next observed boot, and explicitly account for the relevant `main`, `system`, `events`, `crash`, kernel, AEE/ANR/tombstone streams. Mark a stream `checked`, `not present`, or `not yet inspected`; Linux/SOS evidence cannot substitute for missing Android coverage. When probing archived members and the reported local time is known, pass it as `incident_time_range` and compare the echoed target with each `content_time_ranges` result before extraction.
+
 ## Branch on reset ownership
 
 - **Kernel panic/oops:** follow the first fault and call trace; later shutdown noise is not the initiating cause.
@@ -23,6 +25,14 @@ Use `parse_diagnostics` for kernel stacks, Fatal, ANR, and watchdog signals. Bui
 - **Hardware/MCU/hypervisor reset:** correlate reset reason and cross-domain markers; require a clock anchor before ordering guest and host events.
 - **Power loss or brownout:** look for abrupt log termination and power-controller evidence; absence of a software panic does not prove hardware failure.
 - **Boot loop without confirmed reset cause:** analyze the repeated failing boot stage while keeping the original reset cause unresolved.
+
+## Verify identity before causality
+
+Keep the initiating failure, diagnostic collection, abort/dump failure, process death, reset, and subsequent boot as separate transitions until evidence connects them. A nearby event, a shared numeric PID/TID, a thread display name, or a zero-match keyword search is not that connection.
+
+For `crash_dump`/ART abort paths, verify the target process, target TID, thread-group ownership and clock/boot identity from process-scoped evidence before deciding whether an Android thread, userspace process, or kernel task was involved. Do not infer ownership from `comm` alone. If two sources appear to assign different identities to the same number, preserve the conflict and seek `/proc`, process list, tombstone header, debuggerd target metadata, or equivalent identity evidence.
+
+Treat every proposed cause as a falsifiable hypothesis until the triggering condition, direct failure mechanism, and reboot consequence are each anchored. Normal GC, lock contention, AEE collection, an application crash, dma-buf warnings, or hypervisor activity may be concurrent or downstream; do not promote any of them from temporal proximity alone.
 
 ## Evidence and stopping
 

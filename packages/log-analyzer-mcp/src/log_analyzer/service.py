@@ -655,6 +655,18 @@ class LogAnalyzerService:
             "case_id": params.case_id,
             "artifact_id": archive.artifact_id,
             "relative_path": archive.relative_path,
+            "incident_time_range": (
+                {
+                    "start": params.incident_time_range.start.isoformat(),
+                    "end": params.incident_time_range.end.isoformat(),
+                    "clock_domain": "reported_local_time",
+                    "interpretation": (
+                        "调查目标时间窗；必须与 profiles.content_time_ranges 分开核对，"
+                        "不能据此声称日志已经覆盖事故。"
+                    ),
+                }
+                if params.incident_time_range is not None else None
+            ),
             "member_count": len(profiles),
             "profiles": profiles,
         })

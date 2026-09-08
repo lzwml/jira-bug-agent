@@ -6,7 +6,7 @@ Use this shared workflow for MTK APLog and SOS/TBox archives. Read the matching 
 
 1. Use `inspect_case` to identify candidate archive artifacts. For each plausible artifact, call `inspect_archive` without `time_range` to obtain its member catalog, stable `member_id` values, path groups, and path-time reliability.
 2. Identify boot-round candidates from archive names and member paths. Do not assume the newest or highest-numbered round contains the incident; a failure can trigger the following boot.
-3. Select one representative member per candidate round and call `probe_archive_members`. Probing reads a bounded prefix without writing member content. Use its `content_time_ranges`, `boot_identity`, `anchors`, and `coverage_confidence` to compare rounds.
+3. Select one representative member per candidate round and call `probe_archive_members`. If the reported local incident window is known, pass it as `incident_time_range` so the intended target remains visible in the tool record and result. Probing reads a bounded prefix without writing member content. Compare the echoed target with `content_time_ranges`, `boot_identity`, `anchors`, and `coverage_confidence`; the target itself is not proof of content coverage.
 4. Select the smallest set of rounds and streams that can cover the symptom and required layer boundaries. Extract them with `extract_archive_members`, then pass the returned readable artifact IDs to `build_index`.
 5. Expand incrementally only when the first set cannot test the active hypotheses.
 

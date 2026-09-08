@@ -53,6 +53,7 @@ def test_chat_visualization_embeds_session_and_feedback_controls(tmp_path):
     assert "当前版本后补" in common_js
     assert "可核对的文件/证据位置" in common_js
     assert "返回是否满足需要" in common_js
+    assert "未传（可选）" in common_js
     data_js = (site_dir / "session-data.js").read_text(encoding="utf-8")
     assert "检查 </script> 重启" not in data_js
 

@@ -58,6 +58,18 @@ def test_mtk_ivi_skill_keeps_route_selection_in_the_runtime_entrypoint():
     assert "extract_archive_members" in item.instructions
     assert "prepare_case" in item.instructions
     assert "source-verified round counters" in item.instructions
+    assert "incident_time_range" in item.instructions
+    assert "Android evidence pass" in item.instructions
+
+
+def test_reboot_skill_requires_android_coverage_and_identity_proof():
+    item = SkillRegistry(SKILLS_ROOT).load("system-reboot-watchdog")
+
+    assert "evidence-coverage ledger" in item.instructions
+    assert "incident_time_range" in item.instructions
+    assert "thread-group ownership" in item.instructions
+    assert "Do not infer ownership from `comm` alone" in item.instructions
+    assert "temporal proximity alone" in item.instructions
 
 
 def test_mtk_ivi_skill_references_are_present():

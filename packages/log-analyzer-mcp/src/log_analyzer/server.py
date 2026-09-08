@@ -100,7 +100,7 @@ TOOL_DEFINITIONS = {
         InspectArchiveInput,
     ),
     "probe_archive_members": (
-        "不落盘、不展开整个归档，只读取指定成员的前缀内容样本。返回每个成员的日志域、内容时间范围、boot 身份、诊断锚点和覆盖置信度。用于在解压前快速判断哪些 boot round 的日志覆盖事故时间窗口。",
+        "不落盘、不展开整个归档，只读取指定成员的前缀内容样本。调用时应传入已知的 incident_time_range；返回调查目标时间窗，以及每个成员独立观测到的内容时间范围、boot 身份、诊断锚点和覆盖置信度，便于人工确认所选 boot round 是否真的覆盖事故。",
         ProbeArchiveMembersInput,
     ),
     "extract_archive_members": (

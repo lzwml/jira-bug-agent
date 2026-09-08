@@ -331,6 +331,13 @@ class ProbeArchiveMembersInput(BaseModel):
         min_length=1, max_length=50,
         description="需要读取前缀样本的稳定成员 ID，来自 inspect_archive。",
     )
+    incident_time_range: ArchiveTimeRange | None = Field(
+        default=None,
+        description=(
+            "本次探测要验证的已上报事故时间窗；工具会在返回中原样保留，供模型和人工"
+            "核对所选成员是否覆盖目标时段。它不会替代 content_time_ranges 的实际日志覆盖。"
+        ),
+    )
     max_bytes_per_member: int = Field(
         default=64 * 1024, ge=1024, le=256 * 1024,
         description="每个成员最多读取的未压缩字节数；服务端仍会施加总预算。",

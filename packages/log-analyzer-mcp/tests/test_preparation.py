@@ -41,6 +41,40 @@ def _open(service: LogAnalyzerService, case_dir: Path) -> str:
     return opened.data["case"]["case_id"]
 
 
+def test_probe_echoes_reported_incident_window_for_coverage_review(tmp_path):
+    case_dir, _, service = _service(tmp_path)
+    with zipfile.ZipFile(case_dir / "android.zip", "w") as archive:
+        archive.writestr(
+            "APLog__24/main_log.txt",
+            "09-05 09:32:12.599086  1411  1913 F system_server: Failed to abort\n",
+        )
+    case_id = _open(service, case_dir)
+    archive_id = service.inspect_case(case_id=case_id).data["artifacts"][0]["artifact_id"]
+    inventory = service.inspect_archive(case_id=case_id, artifact_id=archive_id)
+
+    result = service.probe_archive_members(
+        case_id=case_id,
+        artifact_id=archive_id,
+        member_ids=[inventory.data["members"][0]["member_id"]],
+        incident_time_range={
+            "start": "2026-09-05T09:31:00",
+            "end": "2026-09-05T09:33:00",
+        },
+    )
+
+    assert result.success
+    assert result.data["incident_time_range"] == {
+        "start": "2026-09-05T09:31:00",
+        "end": "2026-09-05T09:33:00",
+        "clock_domain": "reported_local_time",
+        "interpretation": (
+            "调查目标时间窗；必须与 profiles.content_time_ranges 分开核对，"
+            "不能据此声称日志已经覆盖事故。"
+        ),
+    }
+    assert result.data["profiles"][0]["content_time_ranges"]
+
+
 def test_prepare_extracts_nested_archives_and_searches_index(tmp_path):
     case_dir, _, service = _service(tmp_path)
     inner_content = b"first line\n08-27 10:00:00.000 E Demo: nested failure marker\n"

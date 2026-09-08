@@ -9,7 +9,10 @@ import pytest
 from bug_agent.agent import BugAnalysisAgent
 from bug_agent.config import AgentConfig
 from bug_agent.conversation import ConversationSession
-from bug_agent.prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
+from bug_agent.prompts import (
+    CHAT_REPORT_SYNTHESIS_PROMPT,
+    CONVERSATION_FOLLOWUP_SYSTEM_PROMPT,
+)
 
 
 CONFIG = AgentConfig(
@@ -104,6 +107,16 @@ async def test_second_turn_injects_followup_prompt():
     second_messages = provider.messages_seen[1]
     system_contents = [m["content"] for m in second_messages if m["role"] == "system"]
     assert CONVERSATION_FOLLOWUP_SYSTEM_PROMPT in system_contents
+    assert "必须调用合适工具" in CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
+    assert "不要未经验证就回答“你说得对”" in CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
+    assert "PID/TID" in CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
+
+
+def test_chat_synthesis_drops_retracted_guesses_and_preserves_identity_conflicts():
+    assert "都不是天然真值" in CHAT_REPORT_SYNTHESIS_PROMPT
+    assert "旧因果结论视为已失效" in CHAT_REPORT_SYNTHESIS_PROMPT
+    assert "PID/TID" in CHAT_REPORT_SYNTHESIS_PROMPT
+    assert "降低结论等级" in CHAT_REPORT_SYNTHESIS_PROMPT
 
 
 @pytest.mark.anyio

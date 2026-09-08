@@ -24,7 +24,7 @@ When evidence is archived, read [the shared archive-selection contract](referenc
 
 Do not duplicate those selection rules in a symptom Skill.
 
-The runtime-safe archive sequence is `inspect_archive` → `probe_archive_members` → `extract_archive_members` → `build_index`. Select the smallest incident round and stream set supported by content coverage. Use `prepare_case` only when bounded probing cannot establish usable coverage or the incident genuinely requires broad extraction.
+The runtime-safe archive sequence is `inspect_archive` → `probe_archive_members` → `extract_archive_members` → `build_index`. When the Issue gives a local incident window, pass it in every relevant probe as `incident_time_range`; compare that visible target with the returned `content_time_ranges` instead of silently selecting a round. Select the smallest incident round and stream set supported by content coverage. Use `prepare_case` only when bounded probing cannot establish usable coverage or the incident genuinely requires broad extraction.
 
 Treat SOS `logNN` and APLog `__NN` as source-verified round counters for boot ordering. Do not equate the highest counter with the incident round; a failure can be in the predecessor round and trigger the next boot.
 
@@ -55,6 +55,8 @@ At every Android/Linux, guest/host, application/kernel, or MCU/CAN boundary, rec
 5. the cheapest next observation that could falsify the hypothesis.
 
 Prefer two independent artifacts for cross-domain claims. A nearby warning, repeated error, AVC, temperature sample, or component name does not establish causality.
+
+For Android reboot investigations, finish the Android evidence pass for the incident round before shifting primary attention to SOS/Linux merely because those logs are easier to extract. Maintain an explicit domain/stream coverage ledger. Cross-domain warnings are candidates only after Android evidence establishes the boundary that needs explanation.
 
 ## Evidence and stopping
 
