@@ -22,10 +22,12 @@ from .contracts import (
 from .conversation import ConversationSession
 from .models import ToolEvent
 from .human_guidance import HumanGuidanceToolRouter
+from .investigation_state import InvestigationStateToolRouter
 from .jira_context import JiraInitialContext, load_jira_initial_context
 from .mcp_router import McpToolRouter
 from .prompts import (
     ANALYSIS_GUIDE_PROMPT,
+    ADAPTIVE_INVESTIGATION_PROMPT,
     CHAT_REPORT_SYNTHESIS_PROMPT,
     CODE_SEARCH_WORKFLOW_PROMPT,
     JIRA_WORKFLOW_PROMPT,
@@ -272,6 +274,7 @@ class BugAnalysisWorker:
         # run 初始化为 None：若在 Agent 运行前（Skill 加载/准备阶段）就失败，
         # 落盘时仍能记录 task 与失败结果，只是没有 trace。
         run = None
+        investigation_router: InvestigationStateToolRouter | None = None
         recorder = RunRecorder(task)
         recorder_active = recorder.start()
         provenance = build_execution_context(
@@ -484,7 +487,12 @@ class BugAnalysisWorker:
                         + video_prompt
                         + REPORT_FORMAT_PROMPT
                     )
-                    human_router = HumanGuidanceToolRouter(skill_router)
+                    if run_config.adaptive_investigation_mode != "false":
+                        system_prompt += ADAPTIVE_INVESTIGATION_PROMPT
+                    investigation_router = InvestigationStateToolRouter(
+                        skill_router, mode=run_config.adaptive_investigation_mode,
+                    )
+                    human_router = HumanGuidanceToolRouter(investigation_router)
                     provenance = build_execution_context(
                         model=run_config.llm_model,
                         system_prompt=system_prompt,
@@ -544,6 +552,9 @@ class BugAnalysisWorker:
             if recorder_active:
                 recorder.set_context(context_meta)
                 recorder.set_failure(failure_metadata)
+                recorder.set_investigation_state(
+                    investigation_router.state if investigation_router else None,
+                )
                 recorder.finish(run, result)
             else:
                 write_run_record(
@@ -551,6 +562,7 @@ class BugAnalysisWorker:
                     context_meta,
                     failure_metadata,
                     provenance,
+                    investigation_router.state if investigation_router else None,
                 )
             reconcile(task, result, run, self.config)
             return result
@@ -621,6 +633,9 @@ class BugAnalysisWorker:
         if recorder_active:
             recorder.set_context(context_meta)
             recorder.set_failure(failure_meta)
+            recorder.set_investigation_state(
+                investigation_router.state if investigation_router else None,
+            )
             recorder.finish(run, result)
         else:
             write_run_record(
@@ -628,6 +643,7 @@ class BugAnalysisWorker:
                 context_meta,
                 failure_meta,
                 provenance,
+                investigation_router.state if investigation_router else None,
             )
         if run.status != "waiting_for_human":
             reconcile(task, result, run, self.config)
@@ -836,7 +852,10 @@ class BugAnalysisWorker:
             await provider.close()
             await router.__aexit__(None, None, None)
 
-        human_router = HumanGuidanceToolRouter(skill_router)
+        investigation_router = InvestigationStateToolRouter(
+            skill_router, mode=run_config.adaptive_investigation_mode,
+        )
+        human_router = HumanGuidanceToolRouter(investigation_router)
         session = ConversationSession(
             agent=agent,
             system_prompt=prompt,

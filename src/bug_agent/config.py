@@ -33,6 +33,9 @@ class AgentConfig:
     max_run_seconds: float = 900.0
     # 生产默认对 RCA 引用做工具轨迹反向校验；仅兼容旧测试/迁移时关闭。
     strict_evidence_validation: bool = True
+    # 调查控制面：false 保持旧行为；shadow 记录状态和违规但不阻断；
+    # enforce 预留给通过专项 Eval 后的路线。
+    adaptive_investigation_mode: str = "shadow"
     # Jira 原文读取硬上限；较小上下文直接注入，较大上下文才分块编译。
     jira_initial_context_max_chars: int = 1_000_000
     jira_direct_context_max_chars: int = 60_000
@@ -86,6 +89,9 @@ class AgentConfig:
         max_retries = int(os.getenv("BUG_AGENT_LLM_MAX_RETRIES", "2"))
         if not 0 <= max_retries <= 10:
             raise ValueError("BUG_AGENT_LLM_MAX_RETRIES 必须在 0..10 之间")
+        adaptive_mode = os.getenv("BUG_AGENT_ADAPTIVE_INVESTIGATION", "shadow").strip().lower()
+        if adaptive_mode not in {"false", "shadow", "enforce"}:
+            raise ValueError("BUG_AGENT_ADAPTIVE_INVESTIGATION 必须是 false、shadow 或 enforce")
         retry_base_seconds = float(os.getenv("BUG_AGENT_LLM_RETRY_BASE_SECONDS", "1"))
         if not 0 <= retry_base_seconds <= 60:
             raise ValueError("BUG_AGENT_LLM_RETRY_BASE_SECONDS 必须在 0..60 之间")
@@ -141,6 +147,7 @@ class AgentConfig:
                 os.getenv("BUG_AGENT_STRICT_EVIDENCE_VALIDATION", "true").strip().lower()
                 != "false"
             ),
+            adaptive_investigation_mode=adaptive_mode,
             jira_initial_context_max_chars=jira_context_max_chars,
             jira_direct_context_max_chars=jira_direct_chars,
             jira_context_chunk_chars=jira_chunk_chars,

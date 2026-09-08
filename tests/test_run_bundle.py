@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
+from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, IncidentProfile, InvestigationState, RCAReport
 from bug_agent.models import AgentRunResult, TokenUsage, ToolEvent
 from bug_agent.run_bundle import build_execution_context, verify_record
 from bug_agent.runstore import build_run_record
@@ -106,6 +106,20 @@ def test_run_bundle_v2_captures_provenance_inputs_evidence_and_claims(tmp_path):
     assert record["derived"]["agent_metrics"]["analysis_tool_calls"] == 1
     assert record["derived"]["agent_metrics"]["human_checkpoint_count"] == 0
     assert record["derived"]["agent_metrics"]["autonomous_completion"] is True
+    assert record["investigation_state"] is None
+    assert verify_record(record)
+
+
+def test_run_bundle_persists_investigation_state(tmp_path):
+    record = build_run_record(
+        BugAnalysisTask(task_id="run-state", source="local", case_path=str(tmp_path)),
+        None, _result(),
+        investigation_state=InvestigationState(
+            mode="shadow", incident_profile=IncidentProfile(symptom_family="audio"),
+        ),
+    )
+    assert record["investigation_state"]["mode"] == "shadow"
+    assert record["investigation_state"]["incident_profile"]["symptom_family"] == "audio"
     assert verify_record(record)
 
 

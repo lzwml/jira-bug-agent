@@ -89,6 +89,71 @@ class IncidentWindow(BaseModel):
     source: Literal["reported", "log", "archive", "video", "unknown"] = "unknown"
 
 
+# Investigation state is deliberately separate from RCAReport.  The former is the
+# auditable control-plane record used while investigating; the latter remains the
+# stable engineer-facing report schema.
+class IncidentProfile(BaseModel):
+    symptom_family: Literal[
+        "reboot", "native_crash", "anr_freeze", "display", "audio", "network",
+        "ota", "can_mcu", "virtualization", "unknown",
+    ] = "unknown"
+    reported_window: IncidentWindow | None = None
+    target_components: list[str] = Field(default_factory=list)
+    target_processes: list[str] = Field(default_factory=list)
+    reboot_suspected: bool = False
+    user_visible_symptom: str = ""
+    trigger_context: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+
+
+class InvestigationHypothesis(BaseModel):
+    hypothesis_id: str = Field(pattern=r"^hyp-[A-Za-z0-9._-]+$")
+    claim: str = Field(min_length=1, max_length=4000)
+    role: Literal["primary", "competing", "downstream"] = "competing"
+    status: Literal["open", "supported", "contradicted", "confirmed", "blocked"] = "open"
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    contradicting_evidence_ids: list[str] = Field(default_factory=list)
+    required_observations: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    next_falsification: str = ""
+
+
+class InvestigationCoverage(BaseModel):
+    coverage_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    domain: Literal["android", "linux", "hypervisor", "mcu", "can", "video", "code"]
+    stream: str = Field(min_length=1, max_length=200)
+    boot_identity: str | None = Field(default=None, max_length=500)
+    target_window: IncidentWindow | None = None
+    status: Literal["planned", "checked", "missing", "unavailable", "not_applicable"] = "planned"
+    artifact_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class InvestigationCandidate(BaseModel):
+    candidate_id: str = Field(pattern=r"^cand-[A-Za-z0-9._-]+$")
+    artifact_ids: list[str] = Field(default_factory=list)
+    query_or_action: str = Field(min_length=1, max_length=4000)
+    tests_hypothesis_ids: list[str] = Field(default_factory=list)
+    fills_coverage_ids: list[str] = Field(default_factory=list)
+    selection_reasons: dict[str, str] = Field(default_factory=dict)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class InvestigationState(BaseModel):
+    """Structured, evidence-bound planning state persisted in the Run Bundle."""
+
+    mode: Literal["false", "shadow", "enforce"] = "shadow"
+    incident_profile: IncidentProfile | None = None
+    hypotheses: list[InvestigationHypothesis] = Field(default_factory=list)
+    coverage: list[InvestigationCoverage] = Field(default_factory=list)
+    candidates: list[InvestigationCandidate] = Field(default_factory=list)
+    known_evidence_ids: list[str] = Field(default_factory=list)
+    known_artifact_ids: list[str] = Field(default_factory=list)
+    violations: list[str] = Field(default_factory=list)
+
+
 class IncidentIdentity(BaseModel):
     """防止跨 boot、跨进程或跨复现错误拼接证据的事故身份。"""
 

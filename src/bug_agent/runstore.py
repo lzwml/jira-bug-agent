@@ -38,7 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .contracts import BugAnalysisResult, BugAnalysisTask
+from .contracts import BugAnalysisResult, BugAnalysisTask, InvestigationState
 from .models import AgentRunResult, ToolEvent
 from .run_bundle import (
     SCHEMA_VERSION,
@@ -86,6 +86,7 @@ def build_run_record(
     context_metadata: dict | None = None,
     failure_metadata: dict | None = None,
     provenance: dict | None = None,
+    investigation_state: InvestigationState | None = None,
 ) -> dict:
     """组装要落盘的完整 run 记录。
 
@@ -114,6 +115,7 @@ def build_run_record(
         "provenance": final_provenance,
         "budget": build_budget_usage(run, final_provenance),
         "derived": build_derived_views(run, result),
+        "investigation_state": investigation_state.model_dump() if investigation_state else None,
     }
     return seal_record(record)
 
@@ -125,6 +127,7 @@ def write_run_record(
     context_metadata: dict | None = None,
     failure_metadata: dict | None = None,
     provenance: dict | None = None,
+    investigation_state: InvestigationState | None = None,
 ) -> Path | None:
     """把 run 记录写入 .bug-agent/runs/<task_id>.json，返回路径。
 
@@ -142,7 +145,7 @@ def write_run_record(
             logger.warning("task_id 不能安全用作文件名，跳过记录")
             return None
         record = build_run_record(
-            task, run, result, context_metadata, failure_metadata, provenance,
+            task, run, result, context_metadata, failure_metadata, provenance, investigation_state,
         )
         resolved_run_dir = run_dir.resolve()
         out_path = (resolved_run_dir / f"{task.task_id}.json").resolve(strict=False)
@@ -229,6 +232,7 @@ class RunRecorder:
         self._context_metadata: dict | None = None
         self._failure_metadata: dict | None = None
         self._provenance: dict | None = None
+        self._investigation_state: InvestigationState | None = None
 
     @property
     def file_path(self) -> Path | None:
@@ -289,6 +293,10 @@ class RunRecorder:
         """保存可复现身份；调用方必须确保其中不含凭据和 Prompt 原文。"""
         self._provenance = provenance
 
+    def set_investigation_state(self, state: InvestigationState | None) -> None:
+        """Persist a copy of the local planning state with the final bundle."""
+        self._investigation_state = state
+
     def finish(
         self,
         run: AgentRunResult | None,
@@ -306,6 +314,7 @@ class RunRecorder:
                 self._context_metadata,
                 self._failure_metadata,
                 self._provenance,
+                self._investigation_state,
             )
             # 用实时收集的 trace 覆盖 build_run_record 中的 trace，
             # 确保 finish 时 trace 是最完整的（与逐步刷新的一致）。

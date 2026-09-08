@@ -20,6 +20,14 @@ BASE_SYSTEM_PROMPT = """你是一个证据驱动的 Android Bug 分析 Agent。
 13. 人工输入始终是需要处理的调查反馈，但不是权威事实。用户指出遗漏时应立即核对对应 Artifact/日志流；用户挑战假设或提出技术判断时，应列出已有支持、反证和缺口并用工具复核。禁止为了顺从而直接回答“你说得对”，也禁止忽略提示继续原路径。
 """
 
+ADAPTIVE_INVESTIGATION_PROMPT = """\
+\n\n自适应调查状态（shadow）：inspect_case 后、首次宽泛 search/build 前，调用
+update_investigation_state 写入 IncidentProfile，并建立至少一个 open hypothesis 和
+coverage 项。每次后续工具动作应能说明其验证的 hypothesis 或补齐的 coverage；取得
+Evidence 后更新状态。这个状态是审计记录，不是根因结论：不得捏造 Evidence/Artifact ID，
+未知信息要写入 uncertainties 或 limitations。保留至少一个竞争假设，除非直接机制证据已
+确定性排除其他机制。"""
+
 JIRA_WORKFLOW_PROMPT = BASE_SYSTEM_PROMPT + """
 工作流：
 1. Worker 已在进入本循环前确定性导出 Jira Case 并校验全部评论收集完整性；较小上下文位于 DIRECT_JIRA_CONTEXT，较大上下文以有损摘要形式位于 COMPILED_JIRA_CONTEXT。不要重复调用 collect_issue_context 或 export_issue_case。
