@@ -34,7 +34,7 @@ from .prompts import (
     VIDEO_ANALYSIS_WORKFLOW_PROMPT,
 )
 from .provider import OpenAICompatibleProvider, ProviderError
-from .report_validation import validate_report
+from .report_validation import build_evidence_registry, validate_report
 from .run_bundle import build_execution_context
 from .runstore import RunRecorder, write_run_record
 from .rca_reconciliation import reconcile
@@ -904,13 +904,38 @@ class BugAnalysisWorker:
                 )
             transcript = "\n".join(transcript_parts)
             case_label = task.issue_key or task.case_path or task.task_id
+            registry = build_evidence_registry(tool_events or [])
+            mentioned_ids = set(re.findall(
+                r"(?:evidence|event)_[A-Za-z0-9_-]+|ev-[A-Za-z0-9_-]+",
+                transcript,
+            ))
+            selected_ids = [item for item in registry if item in mentioned_ids]
+            evidence_context = [
+                {
+                    "evidence_id": registry[item].evidence_id,
+                    "artifact_id": registry[item].artifact_id,
+                    "relative_path": registry[item].relative_path,
+                    "line_start": registry[item].line_start,
+                    "line_end": registry[item].line_end,
+                    "timestamp_ms": registry[item].timestamp_ms,
+                    "frame_path": registry[item].frame_path,
+                    "excerpt": (registry[item].excerpt or "")[:800],
+                }
+                for item in selected_ids[:100]
+            ]
 
             message = await provider.complete(
                 [
-                    {"role": "system", "content": CHAT_REPORT_SYNTHESIS_PROMPT},
+                    {
+                        "role": "system",
+                        "content": CHAT_REPORT_SYNTHESIS_PROMPT + REPORT_FORMAT_PROMPT,
+                    },
                     {"role": "user", "content": (
                         f"请将以下关于 Bug {case_label} 的交互式调查对话总结为正式 RCA 报告。\n\n"
-                        f"{transcript}"
+                        f"{transcript}\n\n"
+                        "以下是本次工具轨迹中、且被对话实际引用的可信 Evidence Registry。"
+                        "只能使用其中存在的 evidence_id；未列出的人工 ID 必须作为缺失证据。\n"
+                        f"{json.dumps(evidence_context, ensure_ascii=False, indent=2)}"
                     )},
                 ],
                 [],

@@ -9,6 +9,7 @@ import pytest
 
 from bug_agent.config import AgentConfig
 from bug_agent.contracts import BugAnalysisTask
+from bug_agent.models import ToolEvent
 from bug_agent.provider import ProviderError
 from bug_agent.skills import SkillRegistry
 from bug_agent.worker import BugAnalysisWorker
@@ -184,6 +185,41 @@ class SequentialHarness(Harness):
         provider = FakeProvider(config, self.responses.pop(0))
         self.providers.append(provider)
         return provider
+
+
+@pytest.mark.anyio
+async def test_chat_report_synthesis_receives_schema_and_verified_evidence_registry(tmp_path):
+    harness = Harness(report_json("hypothesis_only"))
+    worker = BugAnalysisWorker(CONFIG, harness.provider_factory, harness.router_factory)
+    event = ToolEvent(
+        step=1,
+        tool_call_id="call-1",
+        tool_name="search_evidence",
+        arguments={"query": "FATAL"},
+        success=True,
+        result=json.dumps({
+            "success": True,
+            "data": {"items": [{
+                "evidence_id": "ev-real",
+                "artifact_id": "artifact-1",
+                "relative_path": "logcat.txt",
+                "line_start": 42,
+                "line_end": 42,
+                "content": "FATAL EXCEPTION: main",
+            }]},
+        }),
+    )
+
+    await worker.synthesize_report_from_turns(
+        BugAnalysisTask(task_id="chat-report", source="local", case_path=str(tmp_path)),
+        [{"user_message": "结论？", "assistant_answer": "由 ev-real 支持；evidence_fake 未验证。"}],
+        [event],
+    )
+
+    messages = harness.provider.messages[0]
+    assert '"root_cause": "已验证的技术根因' in messages[0]["content"]
+    assert '"evidence_id": "ev-real"' in messages[1]["content"]
+    assert '"relative_path": "logcat.txt"' in messages[1]["content"]
 
 
 @pytest.mark.anyio
