@@ -200,9 +200,15 @@ async def handle_call_tool(ctx, params: types.CallToolRequestParams) -> types.Ca
     # 【学习要点】序列化为 JSON 字符串：
     # - model_dump(): Pydantic 模型转字典；
     # - ensure_ascii=False: 保留中文等非 ASCII 字符(不转义成 \\uXXXX)；
-    # - indent=2: 格式化输出，便于调试和日志查看；
+    # - compact separators: 工具结果面向 Agent；避免仅因缩进超过 Harness
+    #   字符上限而把高价值摘要截成不可查询的前缀；
     # - default=str: 处理无法序列化的类型(如 datetime、Path)。
-    text = json.dumps(result.model_dump(), ensure_ascii=False, indent=2, default=str)
+    text = json.dumps(
+        result.model_dump(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
 
     # 【学习要点】MCP 响应格式：
     # content 是一个列表，可以包含多种类型的内容(文本、图像、资源等)。

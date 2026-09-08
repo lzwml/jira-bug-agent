@@ -14,7 +14,8 @@ from collections import Counter, deque
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import sqlite3
 import subprocess
 from typing import Callable
@@ -68,6 +69,59 @@ from .models import ToolResult
 
 MAX_SCAN_BYTES_PER_FILE = 128 * 1024 * 1024
 MAX_SCAN_BYTES_PER_CALL = 512 * 1024 * 1024
+INSPECT_CASE_ARCHIVE_SUMMARY_LIMIT = 20
+
+_ACTIVE_APLOG_STREAM_RE = re.compile(
+    r"^(?P<stream>.+?)_\d{4}_\d{4}_\d{6}\.curf$",
+    re.IGNORECASE,
+)
+_ROTATED_APLOG_STREAM_RE = re.compile(
+    r"^(?P<stream>.+?)_(?P<sequence>\d+)__\d{4}_\d{4}_\d{6}$",
+    re.IGNORECASE,
+)
+
+
+def _aplog_stream_groups(member_payloads: list[dict]) -> list[dict]:
+    """Pair an active ``.curf`` stream with its immediate rotated predecessor."""
+
+    grouped: dict[tuple[str, str], dict[str, list[tuple[int, dict]] | list[dict]]] = {}
+    for item in member_payloads:
+        member_path = str(item["member_path"])
+        pure = PurePosixPath(member_path)
+        active_match = _ACTIVE_APLOG_STREAM_RE.fullmatch(pure.name)
+        rotated_match = _ROTATED_APLOG_STREAM_RE.fullmatch(pure.name)
+        if active_match:
+            key = (pure.parent.as_posix(), active_match.group("stream").casefold())
+            group = grouped.setdefault(key, {"active": [], "rotated": []})
+            group["active"].append(item)
+        elif rotated_match:
+            key = (pure.parent.as_posix(), rotated_match.group("stream").casefold())
+            group = grouped.setdefault(key, {"active": [], "rotated": []})
+            group["rotated"].append((int(rotated_match.group("sequence")), item))
+
+    results = []
+    for (parent, stream), group in sorted(grouped.items()):
+        active_items = sorted(group["active"], key=lambda item: item["member_path"])
+        if not active_items:
+            continue
+        rotated_items = sorted(group["rotated"], key=lambda pair: (pair[0], pair[1]["member_path"]))
+        predecessor = rotated_items[-1][1] if rotated_items else None
+        recommended = [item for item in (predecessor, *active_items) if item is not None]
+        results.append({
+            "path_prefix": parent,
+            "stream": stream,
+            "active_members": [item["member_path"] for item in active_items],
+            "predecessor_member": predecessor["member_path"] if predecessor else None,
+            "recommended_member_ids": [item["member_id"] for item in recommended],
+            "recommended_artifact_ids": [
+                item["artifact_id"] for item in recommended if item.get("artifact_id")
+            ],
+            "coverage_rule": (
+                "Treat the immediate rotated predecessor and active .curf as one continuous "
+                "log stream; verify the content start/end before declaring a gap."
+            ),
+        })
+    return results
 
 
 class LogAnalyzerService:
@@ -133,17 +187,32 @@ class LogAnalyzerService:
         index = self._get_index(info.case_id)
         indexed_ids = index.indexed_artifact_ids() if index else set()
 
-        # 按类型分组排序：archive 在最前，然后按大小降序，确保模型优先看到大文件。
-        sorted_artifacts = sorted(info.artifacts, key=lambda a: (
+        selected_artifacts = list(info.artifacts)
+        if params.artifact_kinds:
+            selected_artifacts = [
+                item for item in selected_artifacts if item.kind in params.artifact_kinds
+            ]
+        if params.path_contains:
+            needle = params.path_contains.casefold()
+            selected_artifacts = [
+                item for item in selected_artifacts if needle in item.relative_path.casefold()
+            ]
+
+        # 按类型分组排序：archive 在前，然后按大小降序。高信号证据另有紧凑摘要，
+        # 不再依赖这个样本列表是否落在 Harness 的字符截断范围内。
+        sorted_artifacts = sorted(selected_artifacts, key=lambda a: (
             {"archive": 0, "aee_db": 1, "text": 2, "anr": 3, "tombstone": 4,
              "trace": 5, "kernel": 6, "logcat": 7, "sos": 8, "binary": 9}.get(a.kind, 10),
             -a.size_bytes,
         ))
-        sample = [a.model_dump() for a in sorted_artifacts[: params.sample_limit]]
-        truncated = info.artifact_count > params.sample_limit
+        sample_end = min(params.artifact_offset + params.sample_limit, len(sorted_artifacts))
+        sample = [
+            a.model_dump() for a in sorted_artifacts[params.artifact_offset:sample_end]
+        ]
+        truncated = sample_end < len(sorted_artifacts)
 
         # 摘要：高亮所有归档（模型首选目标），并列出大文件。
-        archive_summary = [
+        all_archive_summary = [
             {
                 "artifact_id": a.artifact_id,
                 "name": a.name,
@@ -153,6 +222,7 @@ class LogAnalyzerService:
             }
             for a in sorted_artifacts if a.kind == "archive"
         ]
+        archive_summary = all_archive_summary[:INSPECT_CASE_ARCHIVE_SUMMARY_LIMIT]
 
         def aee_is_decoded(item) -> bool:
             source = self.registry.get_artifact_path(params.case_id, item.artifact_id)
@@ -198,11 +268,8 @@ class LogAnalyzerService:
             "text_size_bytes": text_bytes,
             "kinds": dict(sorted(kind_counts.items())),
             "summary": {
-                "archives": archive_summary,
-                "aee_databases": aee_db_summary,
-                "large_text_files": large_text,
-                "total_archives": len(archive_summary),
-                "total_aee_databases": len(aee_db_summary),
+                # Keep compact capability and inventory metadata ahead of bounded samples.
+                # Evidence relevance is decided by the investigation strategy, not here.
                 "required_skill_activations": (
                     [{
                         "name": "aee-db-extract",
@@ -211,8 +278,22 @@ class LogAnalyzerService:
                     if any(not item["decoded"] for item in aee_db_summary)
                     else []
                 ),
+                "aee_databases": aee_db_summary,
+                "total_aee_databases": kind_counts.get("aee_db", 0),
+                "archives": archive_summary,
+                "archives_truncated": len(all_archive_summary) > len(archive_summary),
+                "archive_summary_count": len(archive_summary),
+                "total_archives": kind_counts.get("archive", 0),
+                "large_text_files": large_text,
                 "total_artifacts": info.artifact_count,
                 "artifacts_truncated": truncated,
+            },
+            "selection": {
+                "artifact_kinds": params.artifact_kinds,
+                "path_contains": params.path_contains,
+                "matched_artifact_count": len(sorted_artifacts),
+                "artifact_offset": params.artifact_offset,
+                "next_artifact_offset": sample_end if truncated else None,
             },
             "artifacts": sample,
             "artifacts_truncated": truncated,
@@ -520,6 +601,7 @@ class LogAnalyzerService:
                 "path_timestamp_clock_domain": parsed_time.clock_domain if parsed_time else None,
                 "path_time_relation": time_relations.get(item.member_id),
             })
+        stream_groups = _aplog_stream_groups(member_payloads)
         has_more = page_end < len(members)
         time_groups = summarize_member_times(inventory.members)
         returned_time_groups = time_groups[:500]
@@ -543,6 +625,8 @@ class LogAnalyzerService:
                 "extracted_member_count": len(reusable),
             },
             "selection": selection_payload,
+            "stream_groups": stream_groups,
+            "stream_group_count": len(stream_groups),
             "time_groups": returned_time_groups,
             "time_group_count": len(time_groups),
             "time_groups_truncated": len(time_groups) > len(returned_time_groups),

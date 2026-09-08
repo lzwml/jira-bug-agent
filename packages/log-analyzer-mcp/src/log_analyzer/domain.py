@@ -202,8 +202,20 @@ class InspectCaseInput(BaseModel):
         description="open_case 返回的 Case 标识；必须引用当前会话已注册的 Case，不能填写文件路径。",
     )
     sample_limit: int = Field(
-        default=50, ge=1, le=200,
+        default=20, ge=1, le=200,
         description="最多返回多少个附件样本；Case 较大时先用默认值了解材料分布。",
+    )
+    artifact_offset: int = Field(
+        default=0, ge=0, le=1_000_000,
+        description="附件样本分页起点；继续读取筛选结果时使用上次返回的 next_artifact_offset。",
+    )
+    artifact_kinds: list[ArtifactKind] = Field(
+        default_factory=list, max_length=20,
+        description="只返回这些类型的附件样本和摘要，例如 aee_db、kernel、platform。",
+    )
+    path_contains: str | None = Field(
+        default=None, min_length=1, max_length=256,
+        description="按相对路径进行不区分大小写的字面量过滤，例如 db.fatal.00.KE 或 last_kmsg。",
     )
 
 

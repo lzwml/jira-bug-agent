@@ -102,6 +102,34 @@ class LogAnalyzerServiceV2Test(unittest.TestCase):
         self.assertTrue(searched.success)
         self.assertEqual(searched.data["match_count"], 1)
 
+    def test_inspect_case_bounds_archives_and_supports_targeted_artifact_discovery(self):
+        import zipfile
+
+        for index in range(60):
+            with zipfile.ZipFile(self.case_dir / f"archive-{index:03d}.zip", "w") as archive:
+                archive.writestr("marker.txt", "data")
+        (self.case_dir / "db.fatal.00.KE.dbg").write_bytes(b"aee")
+        (self.case_dir / "SYSTEM_LAST_KMSG.txt").write_text("panic", encoding="utf-8")
+
+        opened = self.service.open_case(case_path=str(self.case_dir))
+        self.assertTrue(opened.success)
+        inspected = self.service.inspect_case(case_id=self.case_id)
+
+        self.assertTrue(inspected.success)
+        summary = inspected.data["summary"]
+        self.assertEqual(len(summary["archives"]), 20)
+        self.assertTrue(summary["archives_truncated"])
+        self.assertNotIn("priority_artifacts", summary)
+
+        filtered = self.service.inspect_case(
+            case_id=self.case_id,
+            artifact_kinds=["aee_db"],
+            path_contains="db.fatal.00.KE",
+        )
+        self.assertTrue(filtered.success)
+        self.assertEqual(filtered.data["selection"]["matched_artifact_count"], 1)
+        self.assertEqual(filtered.data["artifacts"][0]["kind"], "aee_db")
+
 
 class GetCaseCommentTest(unittest.TestCase):
     def setUp(self):
@@ -392,6 +420,34 @@ class InspectArchiveTimeRangeTest(unittest.TestCase):
             if group["latest_path_time"] is not None:
                 self.assertIsNotNone(group["latest_path_time_reliability"])
             self.assertIsNotNone(group["unreliable_timestamped_member_count"])
+
+    def test_stream_groups_pair_active_curf_with_latest_rotated_predecessor(self):
+        import zipfile
+
+        path = self.case_dir / "aplog-stream.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("APLog__9/main_log_145__2026_0908_001300", "old")
+            archive.writestr("APLog__9/main_log_146__2026_0908_001649", "previous")
+            archive.writestr("APLog__9/main_log_2026_0908_001649.curf", "active")
+            archive.writestr("APLog__9/events_log_2026_0907_233729.curf", "events")
+
+        opened = self.service.open_case(case_path=str(self.case_dir))
+        self.assertTrue(opened.success)
+        inspect = self.service.inspect_case(
+            case_id=self.case_id,
+            path_contains="aplog-stream.zip",
+        )
+        archive_id = inspect.data["artifacts"][0]["artifact_id"]
+        result = self.service.inspect_archive(case_id=self.case_id, artifact_id=archive_id)
+
+        self.assertTrue(result.success)
+        main = next(item for item in result.data["stream_groups"] if item["stream"] == "main_log")
+        self.assertEqual(
+            main["predecessor_member"],
+            "APLog__9/main_log_146__2026_0908_001649",
+        )
+        self.assertEqual(len(main["recommended_member_ids"]), 2)
+        self.assertIn("active .curf", main["coverage_rule"])
 
 
 if __name__ == "__main__":

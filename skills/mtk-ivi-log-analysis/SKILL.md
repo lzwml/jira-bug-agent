@@ -28,6 +28,8 @@ The runtime-safe archive sequence is `inspect_archive` → `probe_archive_member
 
 Treat SOS `logNN` and APLog `__NN` as source-verified round counters for boot ordering. Do not equate the highest counter with the incident round; a failure can be in the predecessor round and trigger the next boot.
 
+For every APLog stream, treat the active `*.curf` and its immediate rotated predecessor as one continuous minimum coverage unit. `inspect_archive.stream_groups` returns the recommended member/artifact IDs. Never declare a log gap from the last numbered file until the matching `.curf` content range has also been checked.
+
 ## Select one symptom route
 
 | Symptom family | Primary Skill |
