@@ -62,6 +62,9 @@ async def test_agent_can_activate_symptom_skill_and_receive_instructions():
 
     assert payload["success"] is True
     assert "SurfaceFlinger" in payload["data"]["instructions"]
+    assert payload["data"]["symptom_family"] == "display"
+    assert payload["data"]["required_coverage_contract"] == "display-v1"
+    assert payload["data"]["coverage_requirements"]
     assert router.activated_names == ["android-log-triage", "android-black-screen"]
     assert router.activations[-1].source == "agent"
     assert "启动后黑屏" in router.activations[-1].reason

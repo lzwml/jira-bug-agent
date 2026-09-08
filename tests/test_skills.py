@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from bug_agent.skills import SkillRegistry
+from bug_agent.coverage_contracts import CONTRACTS
 
 
 SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"
@@ -14,6 +15,8 @@ def test_registry_loads_builtin_skill_and_frontmatter():
     item = SkillRegistry(SKILLS_ROOT).load("android-black-screen")
     assert item.name == "android-black-screen"
     assert item.category == "symptom"
+    assert item.symptom_family == "display"
+    assert item.required_coverage_contract == "display-v1"
     assert "SurfaceFlinger" in item.instructions
     assert "black-screen" in item.description
 
@@ -105,6 +108,8 @@ def test_symptom_route_skills_are_independently_loadable(name):
     assert item.description
     assert "open_case" in item.instructions
     assert "inspect_case" in item.instructions
+    assert item.symptom_family
+    assert item.required_coverage_contract in CONTRACTS
 
 
 @pytest.mark.parametrize("name", ["../secret", "Missing", "not-found"])

@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import re
 
+from .coverage_contracts import get_coverage_contract
+
 
 SKILL_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MAX_SKILL_BYTES = 64 * 1024
@@ -21,6 +23,8 @@ class SkillDocument:
     instructions: str
     source: Path
     category: str = "supplemental"
+    symptom_family: str | None = None
+    required_coverage_contract: str | None = None
 
 
 class SkillRegistry:
@@ -62,7 +66,18 @@ class SkillRegistry:
             raise ValueError(f"Skill frontmatter 与目录不一致: {name}")
         if category not in SKILL_CATEGORIES:
             raise ValueError(f"Skill category 无效: {name}")
-        return SkillDocument(actual_name, description, instructions.strip(), path, category)
+        symptom_family = metadata.get("symptom_family") or None
+        coverage_contract = metadata.get("required_coverage_contract") or None
+        if category == "symptom":
+            if not symptom_family or not coverage_contract:
+                raise ValueError(f"症状 Skill 必须声明 symptom_family 和 required_coverage_contract: {name}")
+            get_coverage_contract(coverage_contract)
+        elif symptom_family or coverage_contract:
+            raise ValueError(f"非症状 Skill 不能声明症状 coverage 元数据: {name}")
+        return SkillDocument(
+            actual_name, description, instructions.strip(), path, category,
+            symptom_family, coverage_contract,
+        )
 
     def discover(self) -> list[SkillDocument]:
         """加载全部可用 Skill，供 Agent 查看可信目录并按需激活。"""

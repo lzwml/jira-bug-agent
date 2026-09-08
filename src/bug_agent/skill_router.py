@@ -6,6 +6,7 @@ import json
 from typing import Any, Literal, Protocol
 
 from .contracts import SkillActivation
+from .coverage_contracts import get_coverage_contract
 from .skills import MAX_SKILLS_PER_TASK, SkillDocument, SkillRegistry
 
 
@@ -75,7 +76,11 @@ class SkillAwareToolRouter:
         ]
         for item in self.documents.values():
             state = "（已激活）" if item.name in self._active else ""
-            rows.append(f"- {item.name} [{item.category}]{state}: {item.description}")
+            contract = (
+                f"; symptom_family={item.symptom_family}; coverage={item.required_coverage_contract}"
+                if item.category == "symptom" else ""
+            )
+            rows.append(f"- {item.name} [{item.category}]{state}{contract}: {item.description}")
         return "\n".join(rows)
 
     def openai_tools(self) -> list[dict[str, Any]]:
@@ -205,6 +210,15 @@ class SkillAwareToolRouter:
                 "already_active": already_active,
                 "role": role,
                 "role_adjusted_from": role_adjusted_from,
+                "symptom_family": document.symptom_family,
+                "required_coverage_contract": document.required_coverage_contract,
+                "coverage_requirements": [
+                    {
+                        "coverage_id": item.coverage_id, "domain": item.domain,
+                        "streams": list(item.streams), "condition": item.condition,
+                    }
+                    for item in get_coverage_contract(document.required_coverage_contract).requirements
+                ] if document.required_coverage_contract else [],
                 "instructions": document.instructions,
             },
             "error_code": None,

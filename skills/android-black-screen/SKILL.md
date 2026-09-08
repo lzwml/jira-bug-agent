@@ -2,6 +2,8 @@
 name: android-black-screen
 description: Analyze Android black-screen, no-display, delayed-display, or display-freeze bugs across app buffers, SurfaceFlinger, HWC, display driver, power, and backlight layers.
 category: symptom
+symptom_family: display
+required_coverage_contract: display-v1
 ---
 
 # Android Black Screen Analysis
