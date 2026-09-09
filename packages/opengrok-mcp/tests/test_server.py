@@ -12,7 +12,9 @@ from opengrok_mcp.server import (
     _fail,
     _dispatch,
 )
+from opengrok_mcp.config import OpenGrokConfig
 from opengrok_mcp.client import (
+    OpenGrokClient,
     _parse_search,
     _parse_projects,
     _parse_history,
@@ -258,3 +260,34 @@ def test_parse_search():
     assert result["results"][0]["project"] == "project-a"
     assert result["results"][0]["path"] == "src/main.cpp"
     assert result["results"][0]["matches"][0]["lineNumber"] == 42
+
+@pytest.mark.asyncio
+async def test_unscoped_defs_400_discovers_projects_then_uses_full_fallback(monkeypatch):
+    """A compatibility 400 must not be reported as missing source code."""
+    from unittest.mock import AsyncMock
+    import httpx
+
+    client = OpenGrokClient(OpenGrokConfig(base_url="https://opengrok.example.com/source"))
+    request = httpx.Request("GET", "https://opengrok.example.com/source/api/v1/search")
+    error = httpx.HTTPStatusError(
+        "Bad Request", request=request, response=httpx.Response(400, request=request)
+    )
+    fallback = {
+        "query": "cache_parity_irq_work",
+        "searchType": "full",
+        "totalCount": 1,
+        "startIndex": 0,
+        "endIndex": 1,
+        "results": [],
+    }
+    search_api = AsyncMock(side_effect=[error, error, fallback])
+    monkeypatch.setattr(client, "_search_api", search_api)
+    monkeypatch.setattr(client, "list_projects", AsyncMock(return_value=[{"name": "yocto"}, {"name": "android"}]))
+
+    result = await client.search("cache_parity_irq_work", "defs")
+
+    assert result["searchType"] == "full"
+    assert result["fallbackFrom"] == "defs"
+    assert "full 搜索兜底" in result["note"]
+    assert search_api.await_args_list[1].args[2] == ["yocto", "android"]
+    assert search_api.await_args_list[2].args[1] == "full"

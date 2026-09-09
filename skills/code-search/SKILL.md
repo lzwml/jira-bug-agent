@@ -1,63 +1,52 @@
 ---
 name: code-search
-description: Search codebase for symbol definitions, references, and recent changes via OpenGrok + local source — cross-reference code evidence with log findings.
+description: Verify a log-anchored code hypothesis with OpenGrok and local source. Use for definitions, call paths, and code changes; do not use source alone to establish an incident root cause.
 category: supplemental
 ---
 
 # Code Search (OpenGrok + Local Source)
 
-Two-step workflow: OpenGrok finds where, local source provides what.
-Do not search code without a specific log-anchored hypothesis. Code search is for verifying/refuting hypotheses, not for browsing.
+Use code to test a specific hypothesis already anchored in logs or diagnostics. Code explains what *can* happen; runtime evidence establishes what happened in this incident.
 
 ## When to activate
 
-Activate this skill when:
-- A log diagnostic (NE tombstone, kernel panic, ANR, watchdog) names a specific function, module, or file path.
-- An `extract_timeline` gap or `parse_diagnostics` finding points to a subsystem (e.g. "SurfaceFlinger present fence timeout").
-- A hypothesis requires checking whether a recent commit introduced a regression.
-- An error code or errno appears in logs and you need to understand its meaning from source.
+Activate when a log, AEE/tombstone, or user-provided path names a function, module, process, error code, or source file relevant to the incident. Do not activate for exploratory browsing without a log-anchored question.
 
-Do NOT activate when:
-- The investigation is still in the log-gathering phase and no code-level hypothesis exists.
-- The symptom is purely environmental (thermal, power, signal) with no code anchoring.
+## Search and scope
 
-## Workflow
+1. Start from an exact symbol, process name, path, or distinctive error string. Avoid repeated whole-artifact searches such as `"."`; use one only when establishing the contents of a newly extracted, small artifact.
+2. If the project is known from a path or prior result, pass it explicitly. If it is unknown, call `opengrok_list_projects` or omit `projects` and let the MCP discover them for `defs`/`refs` fallback.
+3. Inspect `fallbackFrom` and `note` in a successful OpenGrok result. A scoped `full` fallback is useful for discovery but is not equivalent to a definition/reference match.
+4. A 400 is a query compatibility or scope problem, not evidence that source is absent. Retry using discovered projects or a scoped `full` query before reporting a code-search gap.
+5. Prefer narrow reads around a matching line. If a configured local root cannot read a file, use `opengrok_get_file_content`; record the local-root gap only after the remote read also fails.
 
-### Step 1: Search (OpenGrok)
-Given a log-anchored symbol:
-- `opengrok_search_code` with `search_type="defs"` to find definitions.
-- `opengrok_search_code` with `search_type="refs"` to find all call sites.
-- `opengrok_find_file` to locate files by path pattern (e.g. `"SurfaceFlinger.cpp"`).
-- `opengrok_list_projects` to discover available indexed repositories.
+## Evidence contract
 
-### Step 2: Read (local source)
-From search results, use `project` and `path` to read the actual file from local disk:
-- `locode_read_file` — full file content, supports line ranges. Always request a narrow range (20-40 lines around the match).
-- `locode_get_history` — recent git commits, authors, and messages. A commit close to the bug report date is a strong regression signal.
-- `locode_get_blame` — who changed which lines and when. Useful for identifying module owners.
-- `locode_list_roots` — see configured local source root mappings.
+For every code finding, state its evidence class:
 
-### Step 3: Cross-reference
-- Every code finding must be linked to a log evidence_id.
-- "Code looks suspicious" is not evidence — you must find the log event that confirms the code path was taken.
-- If code logic explains the symptom but no log confirms execution, put it in hypotheses with missing_evidence.
+- **Runtime-confirmed:** an incident artifact proves the process, parent/child relationship, command, or code path executed.
+- **Source-confirmed:** source proves behavior exists, but the incident did not prove that path ran.
+- **Hypothesis:** source behavior plausibly explains the symptom but lacks a required runtime link.
 
-## Tool reference
+A user-provided source path is source context, not runtime proof. Do not infer a parent PID from `SYSTEMD_EXEC_PID`; require an incident `PPid` snapshot or equivalent process evidence. Do not infer that SIGABRT came from `abort()` solely from its signal number or `si_code`.
 
-| Phase | Tool | Use |
-|-------|------|-----|
-| Search | `opengrok_list_projects` | List all indexed repositories |
-| Search | `opengrok_search_code` | Full-text/defs/refs/path search with `file_type` filter |
-| Search | `opengrok_find_file` | Find files by path pattern |
-| Read | `locode_read_file` | Read full local source file with line ranges |
-| Read | `locode_get_history` | Git log — recent commits, authors, messages |
-| Read | `locode_get_blame` | Git blame — who changed which lines and when |
-| Read | `locode_list_roots` | List configured local source root mappings |
+## Causal conclusions and patches
 
-## Android-specific tips
+Keep the result at **hypothesis** when the incident lacks a stack, core, signal sender, parent-process timing, or another required link in the causal chain. State the shortest validating experiment, such as a controlled reproduction with signal tracing, stderr capture, and a core/backtrace.
 
-- For C++/native code: use `file_type="cxx"` for .cpp/.cc/.h/.hpp files.
-- For Java/Kotlin: use `file_type="java"`.
-- For kernel: use `file_type="c"` for C sources.
-- NE tombstone backtraces give exact library paths and offsets — use the library name (e.g. `libsurfaceflinger.so`) to find the source project.
-- When searching for a kernel symbol, limit to the kernel project (`projects=["yocto"]`).
+Only offer a patch when requested. Label it a proposal unless its exact failing path is runtime-confirmed. Before recommending lifecycle or signal changes, check process-tree behavior (including shell descendants), registered signal handlers, wait/reap semantics, timeout/API impact, and the original design intent.
+
+## Cross-reference output
+
+Return:
+
+1. The log-anchored question and selected project scope.
+2. The smallest relevant source excerpt and its evidence class.
+3. Runtime evidence that confirms the path, or the specific missing evidence.
+4. A conclusion calibrated to that evidence, plus one next validation step when the conclusion remains a hypothesis.
+
+## Language hints
+
+- C/C++: `file_type="cxx"`; kernel C: `file_type="c"`.
+- Java/Kotlin: `file_type="java"`.
+- Use `opengrok_get_file_history` or local history only when a change/regression hypothesis is in scope.

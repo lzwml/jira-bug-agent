@@ -12,7 +12,7 @@ from mcp.server.models import InitializationOptions
 import mcp.server.stdio
 import mcp.types as types
 
-from .client import OpenGrokClient
+from .client import OpenGrokClient, OpenGrokProjectDiscoveryError
 from .config import OpenGrokConfig
 
 
@@ -37,7 +37,7 @@ TOOLS = {
                 "projects": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Filter by project names. Omit to use the server default project.",
+                    "description": "Filter by project names. For defs/refs, omit to automatically discover indexed projects when no default is configured.",
                 },
                 "max_results": {
                     "type": "integer",
@@ -231,6 +231,8 @@ async def handle_call_tool(ctx, params: types.CallToolRequestParams) -> types.Ca
             result = await _dispatch(client, params.name, params.arguments or {})
         except (KeyError, TypeError, ValueError) as exc:
             result = _fail("INVALID_ARGUMENT", str(exc), False)
+        except OpenGrokProjectDiscoveryError as exc:
+            result = _fail("PROJECT_DISCOVERY_FAILED", str(exc), False)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             result = _fail(

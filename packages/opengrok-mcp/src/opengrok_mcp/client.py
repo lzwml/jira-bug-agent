@@ -13,6 +13,10 @@ import httpx
 from .config import OpenGrokConfig
 
 
+class OpenGrokProjectDiscoveryError(RuntimeError):
+    """Raised when an unscoped symbol search cannot obtain index projects."""
+
+
 class OpenGrokClient:
     """OpenGrok HTTP 客户端。"""
 
@@ -31,21 +35,67 @@ class OpenGrokClient:
         projects: list[str] | None = None, max_results: int | None = None,
         start: int = 0, file_type: str | None = None,
     ) -> dict[str, Any]:
-        """搜索代码。search_type: full|defs|refs|path|hist"""
+        """搜索代码；对旧版 OpenGrok 的 defs/refs 400 自动兜底。"""
         max_results = max_results or self._default_max
+        effective_projects = projects or ([self._default_project] if self._default_project else None)
+        try:
+            return await self._search_api(
+                query, search_type, effective_projects, max_results, start, file_type
+            )
+        except httpx.HTTPStatusError as first_error:
+            # Old OpenGrok instances commonly reject unscoped defs/refs REST
+            # searches. Discover the indexed projects instead of exposing a
+            # bare 400 to the investigation agent.
+            if first_error.response.status_code != 400 or search_type not in {"defs", "refs"}:
+                raise
+
+            if not effective_projects:
+                discovered = await self.list_projects()
+                effective_projects = [item["name"] for item in discovered if item.get("name")]
+                if not effective_projects:
+                    raise OpenGrokProjectDiscoveryError(
+                        f"{search_type} 搜索无法发现任何已索引项目；请检查 OpenGrok 项目索引。"
+                    ) from first_error
+                try:
+                    return await self._search_api(
+                        query, search_type, effective_projects, max_results, start, file_type
+                    )
+                except httpx.HTTPStatusError as scoped_error:
+                    if scoped_error.response.status_code != 400:
+                        raise
+
+            # Some older REST APIs do not implement defs/refs at all. A scoped
+            # full-text search is less precise, but preserves source discovery
+            # and makes the fallback explicit to the caller.
+            result = await self._search_api(
+                query, "full", effective_projects, max_results, start, file_type
+            )
+            result["fallbackFrom"] = search_type
+            result["note"] = (
+                f"OpenGrok REST 不支持 {search_type} 搜索；已使用限定项目范围的 full 搜索兜底。"
+            )
+            return result
+
+    async def _search_api(
+        self, query: str, search_type: str, projects: list[str] | None,
+        max_results: int, start: int, file_type: str | None,
+    ) -> dict[str, Any]:
         params: dict[str, str] = {search_type: query, "maxresults": str(max_results)}
         if projects:
             params["projects"] = ",".join(projects)
-        elif self._default_project:
-            params["projects"] = self._default_project
         if start > 0:
             params["start"] = str(start)
         if file_type:
             params["type"] = file_type
         async with httpx.AsyncClient(verify=self._verify, timeout=self._timeout, follow_redirects=True) as c:
-            r = await c.get(f"{self._base}/api/v1/search", params=params, auth=self._auth, headers={"Accept": "application/json"})
-            r.raise_for_status()
-            return _parse_search(r.json(), search_type, query)
+            response = await c.get(
+                f"{self._base}/api/v1/search",
+                params=params,
+                auth=self._auth,
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+            return _parse_search(response.json(), search_type, query)
 
     async def get_file_content(
         self, project: str, path: str,
