@@ -9,8 +9,8 @@ import pytest
 
 from bug_agent.config import AgentConfig
 from bug_agent.contracts import BugAnalysisTask
-from bug_agent.models import ToolEvent
-from bug_agent.provider import ProviderError
+from bug_agent.models import CompletionTokenUsage, TokenUsageAccumulator, ToolEvent
+from bug_agent.provider import ProviderError, ProviderMessage
 from bug_agent.skills import SkillRegistry
 from bug_agent.worker import BugAnalysisWorker
 
@@ -124,6 +124,11 @@ class FakeProvider:
         self.responses = list(response) if isinstance(response, list) else [response]
         self.closed = False
         self.messages = []
+        self._token_usage = TokenUsageAccumulator()
+
+    @property
+    def token_usage(self):
+        return self._token_usage.summary()
 
     async def complete(self, messages, tools):
         self.messages.append(messages)
@@ -131,8 +136,11 @@ class FakeProvider:
         if isinstance(response, Exception):
             raise response
         if isinstance(response, dict):
-            return response
-        return {"content": response}
+            message = response
+        else:
+            message = {"content": response}
+        self._token_usage.add(getattr(message, "token_usage", None))
+        return message
 
     async def close(self):
         self.closed = True
@@ -185,6 +193,57 @@ class SequentialHarness(Harness):
         provider = FakeProvider(config, self.responses.pop(0))
         self.providers.append(provider)
         return provider
+
+
+def usage_message(content, *, prompt, completion, reasoning=0):
+    return ProviderMessage(
+        {"content": content},
+        CompletionTokenUsage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=prompt + completion,
+            cached_prompt_tokens=0,
+            reasoning_tokens=reasoning,
+        ),
+    )
+
+
+@pytest.mark.anyio
+async def test_worker_reports_total_usage_across_compiler_agent_and_guide(tmp_path):
+    write_jira_case(tmp_path, comments=[{
+        "comment_id": "c-1", "body": "X" * 5000,
+    }])
+    harness = SequentialHarness([
+        [
+            usage_message(compiler_json(["c-1"]), prompt=100, completion=20),
+            usage_message(report_json("hypothesis_only"), prompt=200, completion=30),
+        ],
+        usage_message(analysis_guide_json(), prompt=80, completion=15),
+    ])
+    worker = BugAnalysisWorker(
+        replace(CONFIG, jira_direct_context_max_chars=4000),
+        harness.provider_factory,
+        harness.router_factory,
+    )
+
+    result = await worker.execute(BugAnalysisTask(
+        task_id="usage-total",
+        source="local",
+        case_path=str(tmp_path),
+        include_analysis_guide=True,
+    ))
+
+    assert result.token_usage is not None
+    assert result.token_usage.prompt_tokens == 380
+    assert result.token_usage.completion_tokens == 65
+    assert result.token_usage.total_tokens == 445
+    assert result.token_usage.model_calls == 3
+    assert result.token_usage.complete is True
+    record = json.loads(_find_run_file(
+        tmp_path / ".bug-agent" / "runs", "usage-total",
+    ).read_text(encoding="utf-8"))
+    assert record["result"]["token_usage"] == result.token_usage.model_dump()
+    assert record["budget"]["actual"]["token_usage"] == result.token_usage.model_dump()
 
 
 @pytest.mark.anyio

@@ -25,7 +25,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from .config import AgentConfig
-from .models import AgentRunResult, CompletionTokenUsage, TokenUsage, ToolEvent
+from .models import AgentRunResult, TokenUsageAccumulator, ToolEvent
 from .human_guidance import REQUEST_HUMAN_GUIDANCE_TOOL, checkpoint_from_result
 from .provider import ProviderError
 
@@ -57,40 +57,6 @@ class ToolRouter(Protocol):
 
     def openai_tools(self) -> list[dict[str, Any]]: ...
     async def call(self, name: str, arguments: dict[str, Any]) -> str: ...
-
-
-class _TokenUsageAccumulator:
-    """累计 Agent Loop 内成功完成的模型调用，并保留 usage 覆盖率。"""
-
-    def __init__(self) -> None:
-        self.model_calls = 0
-        self.samples: list[CompletionTokenUsage] = []
-
-    def add(self, message: dict[str, Any]) -> None:
-        self.model_calls += 1
-        usage = getattr(message, "token_usage", None)
-        if isinstance(usage, CompletionTokenUsage):
-            self.samples.append(usage)
-
-    def summary(self) -> TokenUsage | None:
-        if not self.samples:
-            return None
-
-        def optional_sum(field: str) -> int | None:
-            values = [getattr(item, field) for item in self.samples]
-            known = [value for value in values if value is not None]
-            return sum(known) if known else None
-
-        return TokenUsage(
-            prompt_tokens=sum(item.prompt_tokens for item in self.samples),
-            completion_tokens=sum(item.completion_tokens for item in self.samples),
-            total_tokens=sum(item.total_tokens for item in self.samples),
-            cached_prompt_tokens=optional_sum("cached_prompt_tokens"),
-            reasoning_tokens=optional_sum("reasoning_tokens"),
-            model_calls=self.model_calls,
-            reported_calls=len(self.samples),
-            complete=len(self.samples) == self.model_calls,
-        )
 
 
 def _result_success(raw: str) -> bool:
@@ -204,7 +170,7 @@ class BugAnalysisAgent:
             max_steps_override if max_steps_override is not None else self.config.max_steps
         )
         events: list[ToolEvent] = []
-        token_usage = _TokenUsageAccumulator()
+        token_usage = TokenUsageAccumulator()
         step = starting_step
         tool_call_count = 0
         started_at = time.monotonic()
@@ -240,7 +206,7 @@ class BugAnalysisAgent:
                     token_usage=token_usage.summary(),
                 ), messages
 
-            token_usage.add(message)
+            token_usage.add(getattr(message, "token_usage", None))
 
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:

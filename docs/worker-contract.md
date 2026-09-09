@@ -71,6 +71,12 @@ build、系统域和身份依据。无法建立的字段必须进入 limitations
 `trace` 是内部诊断信息，不是业务契约的推理依据。生产环境应单独控制保存周期
 和访问权限，因为其中可能包含 Jira 与日志内容。
 
+`token_usage` 是本次问题分析的任务级模型用量。普通分析会汇总 Jira Comment
+Compiler、Agent Loop，以及启用时的 Analysis Guide；交互分析生成正式报告时会汇总
+各对话轮次和最终报告合成调用。正式 Markdown 报告、JSON 结果和 Run Bundle 使用同一
+份总数。统计以 Provider 返回的 usage 为准，不使用字符数估算；完全未返回时为 `null`，
+只有部分调用返回时 `complete=false`。
+
 ## 人工检查点属于 Agent Runtime
 
 工具列表中的 `request_human_guidance` 是 Harness 提供的受约束能力。Agent 至少完成
@@ -102,7 +108,7 @@ Run Bundle。原有 `task`、`result`、`trace`、`phase` 等字段继续保留�
 | 字段 | 用途 |
 |---|---|
 | `provenance` | 记录 Agent 包版本、构建 revision、模型名，以及完整 System Prompt、用户指令、工具 Schema 和每个 Skill 的 SHA-256；不保存 Provider URL、API Key 或 Prompt 原文；仅 CI/发布系统注入的 revision 标记为 authoritative |
-| `budget` | 同时记录配置的步骤/工具调用/总时长/单次结果预算与实际步骤、工具调用数、结果字符数、耗时和结束原因；`token_usage` 累加 Agent Loop 每次成功响应的 prompt/completion/total，可用时同时记录 cached/reasoning token 与 usage 覆盖率；Provider 完全未返回 usage 时为 `null` |
+| `budget` | 同时记录配置的步骤/工具调用/总时长/单次结果预算与实际步骤、工具调用数、结果字符数、耗时和结束原因；`token_usage` 使用本次问题分析的任务级总数，可用时同时记录 cached/reasoning token 与 usage 覆盖率；Provider 完全未返回 usage 时为 `null` |
 | `derived.evidence_registry` | 仅从成功且可完整解析的 Tool Event 重建本轮真实 Evidence Registry |
 | `derived.claim_snapshot` | 固化症状、失效机制、根因、假设、缺失证据和报告校验结果，供后续规则化评分 |
 | `derived.input_fingerprint` | 记录本轮工具实际看见的 Case、Artifact 元数据清单和归档内容哈希覆盖率；同时保存执行 Trace 哈希 |

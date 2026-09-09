@@ -128,6 +128,7 @@ class ChatStore:
         tool_events: list[dict[str, Any]] | None = None,
         human_checkpoint: dict[str, Any] | None = None,
         human_intervention: dict[str, Any] | None = None,
+        token_usage: dict[str, Any] | None = None,
     ) -> None:
         """追加一轮对话记录，含完整的工具调用轨迹。"""
         path = _session_path(self._dir, session_id)
@@ -166,6 +167,7 @@ class ChatStore:
             "tool_events": tool_events or [],
             "human_checkpoint": human_checkpoint,
             "human_intervention": human_intervention,
+            "token_usage": token_usage,
             "optimization_candidate": str(optimization_candidate) if optimization_candidate else None,
             "tool_catalog_id": data.get("active_tool_catalog_id"),
             "created_at": timestamp,

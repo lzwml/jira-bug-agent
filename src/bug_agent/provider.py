@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from .config import AgentConfig
-from .models import CompletionTokenUsage
+from .models import CompletionTokenUsage, TokenUsage, TokenUsageAccumulator
 
 
 class ProviderMessage(dict[str, Any]):
@@ -113,6 +113,7 @@ class OpenAICompatibleProvider:
         这样 Provider 的测试既快又不需要真实模型服务。见 tests/test_provider.py。
         """
         self.config = config
+        self._token_usage = TokenUsageAccumulator()
         # 长连接复用的 AsyncClient：连接池、超时、默认 Header 都在这里配置一次，
         # 之后每次 complete() 复用同一个 client，避免每次请求重建 TCP/TLS 连接。
         self.client = httpx.AsyncClient(
@@ -120,6 +121,12 @@ class OpenAICompatibleProvider:
             transport=transport,
             headers={"Authorization": f"Bearer {config.llm_api_key}"},
         )
+
+    @property
+    def token_usage(self) -> TokenUsage | None:
+        """该 Provider 实例完成的全部成功请求的累计用量。"""
+
+        return self._token_usage.summary()
 
     async def close(self) -> None:
         """显式关闭底层连接池。
@@ -180,7 +187,9 @@ class OpenAICompatibleProvider:
             message = payload["choices"][0]["message"]
             if not isinstance(message, dict):
                 raise TypeError("message must be an object")
-            return ProviderMessage(message, _parse_token_usage(payload.get("usage")))
+            usage = _parse_token_usage(payload.get("usage"))
+            self._token_usage.add(usage)
+            return ProviderMessage(message, usage)
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             # 响应 JSON 结构不符合预期：可能是网关或代理篡改了响应，
             # 标记为可重试(也许下次正常)，但同样也可能是持续性故障。

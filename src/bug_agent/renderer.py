@@ -39,6 +39,27 @@ def _ids(values: list[str]) -> str:
     return "、".join(f"`{value}`" for value in values) if values else "-"
 
 
+def _token_usage_label(result: BugAnalysisResult) -> str:
+    usage = result.token_usage
+    if usage is None:
+        return "未知（模型服务未返回 usage）"
+    details = [
+        f"总计 {usage.total_tokens:,}",
+        f"输入 {usage.prompt_tokens:,}",
+        f"输出 {usage.completion_tokens:,}",
+        f"模型调用 {usage.model_calls} 次",
+    ]
+    if usage.cached_prompt_tokens is not None:
+        details.append(f"缓存输入 {usage.cached_prompt_tokens:,}")
+    if usage.reasoning_tokens is not None:
+        details.append(f"Reasoning {usage.reasoning_tokens:,}")
+    if not usage.complete:
+        details.append(
+            f"部分统计（{usage.reported_calls}/{usage.model_calls} 次返回 usage）"
+        )
+    return "；".join(details)
+
+
 def render_markdown(result: BugAnalysisResult) -> str:
     report = result.report
     lines = [
@@ -51,6 +72,7 @@ def render_markdown(result: BugAnalysisResult) -> str:
         f"- **直接故障机制**：{report.failure_mechanism or '尚未确认'}",
         f"- **技术根因**：{report.root_cause or '尚未确认'}",
         f"- **根因证据**：{_ids(report.root_cause_evidence_ids)}",
+        f"- **模型 Token 消耗**：{_token_usage_label(result)}",
         "",
         report.summary,
         "",

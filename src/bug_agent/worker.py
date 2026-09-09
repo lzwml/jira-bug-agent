@@ -20,7 +20,7 @@ from .contracts import (
     SkillActivation,
 )
 from .conversation import ConversationSession
-from .models import ToolEvent
+from .models import TokenUsage, TokenUsageAccumulator, ToolEvent, merge_token_usage
 from .human_guidance import HumanGuidanceToolRouter
 from .investigation_state import InvestigationStateToolRouter
 from .jira_context import JiraInitialContext, load_jira_initial_context
@@ -56,6 +56,17 @@ JiraExporter = Callable[[BugAnalysisTask, ToolRouter], Awaitable[Path]]
 
 def _default_provider(config: AgentConfig) -> CloseableProvider:
     return OpenAICompatibleProvider(config)
+
+
+def _provider_token_usage(provider: object | None) -> TokenUsage | None:
+    usage = getattr(provider, "token_usage", None)
+    return usage if isinstance(usage, TokenUsage) else None
+
+
+def _message_token_usage(message: object) -> TokenUsage | None:
+    tracker = TokenUsageAccumulator()
+    tracker.add(getattr(message, "token_usage", None))
+    return tracker.summary()
 
 
 def _extract_report(raw: str) -> tuple[RCAReport, bool]:
@@ -140,10 +151,11 @@ class BugAnalysisWorker:
         report: RCAReport,
         run_events: list,
         config: AgentConfig,
-    ) -> tuple[AnalysisGuide | None, str | None]:
+    ) -> tuple[AnalysisGuide | None, str | None, TokenUsage | None]:
         """讲解是附加能力：失败时保留已完成的 RCA。"""
 
         provider = None
+        usage = None
         try:
             provider = self.provider_factory(config)
             message = await provider.complete(
@@ -153,15 +165,20 @@ class BugAnalysisWorker:
                 ],
                 [],
             )
+            usage = _provider_token_usage(provider) or _message_token_usage(message)
             raw = str(message.get("content") or "").strip()
             if not raw:
                 raise ValueError("模型未输出问题分析讲解")
-            return _extract_analysis_guide(raw, {item.evidence_id for item in report.evidence}), None
+            return (
+                _extract_analysis_guide(raw, {item.evidence_id for item in report.evidence}),
+                None,
+                usage,
+            )
         except (json.JSONDecodeError, ValueError):
-            return None, "模型未按 AnalysisGuide Schema 返回结构化讲解"
+            return None, "模型未按 AnalysisGuide Schema 返回结构化讲解", usage
         except Exception as exc:
             # 不把 Provider 或第三方的错误正文暴露到上游结果中。
-            return None, f"问题分析讲解生成失败：{type(exc).__name__}"
+            return None, f"问题分析讲解生成失败：{type(exc).__name__}", usage
         finally:
             if provider is not None:
                 await provider.close()
@@ -270,6 +287,7 @@ class BugAnalysisWorker:
         context_mode: str | None = None
         compiler_metrics: dict[str, int] = {}
         prior_rca_context: str | None = None
+        task_token_usage: TokenUsage | None = None
         phase = "skills"
         # run 初始化为 None：若在 Agent 运行前（Skill 加载/准备阶段）就失败，
         # 落盘时仍能记录 task 与失败结果，只是没有 trace。
@@ -514,6 +532,11 @@ class BugAnalysisWorker:
                     )
                     applied_skills = skill_router.activated_names
                 finally:
+                    provider_usage = _provider_token_usage(provider)
+                    task_token_usage = (
+                        provider_usage
+                        or (run.token_usage if run is not None else None)
+                    )
                     await provider.close()
         except Exception as exc:
             # Worker 是应用边界：普通准备/基础设施错误转成稳定结果。不要把未知
@@ -544,6 +567,7 @@ class BugAnalysisWorker:
                 applied_skills=applied_skills,
                 skill_activations=skill_activations,
                 error=message,
+                token_usage=task_token_usage,
             )
             # 失败也要落盘（此时 run 为 None，trace 为空），便于排查准备阶段问题。
             context_meta = self._context_metadata(
@@ -609,14 +633,19 @@ class BugAnalysisWorker:
             trace=run.tool_events if task.include_trace else [],
             error=run.error,
             human_checkpoint=run.human_checkpoint,
+            token_usage=task_token_usage or run.token_usage,
         )
         if task.include_analysis_guide and run.status not in {"failed", "waiting_for_human"}:
-            guide, guide_error = await self._generate_analysis_guide(
+            guide, guide_error, guide_usage = await self._generate_analysis_guide(
                 report, run.tool_events, run_config,
             )
             result = result.model_copy(update={
                 "analysis_guide": guide,
                 "analysis_guide_error": guide_error,
+                "token_usage": merge_token_usage([
+                    result.token_usage,
+                    guide_usage,
+                ]),
             })
         # 落盘完整 trace（来自 run.tool_events，与 include_trace 无关），
         # 保证默认运行也能复盘。失败只警告，不影响返回给上游的结果。
@@ -797,6 +826,7 @@ class BugAnalysisWorker:
                 issue=jira_context.issue,
                 metrics=compiler_metrics,
             )
+        initial_token_usage = _provider_token_usage(provider)
 
         # 6. 构建系统提示词
         if task.source == "jira":
@@ -864,6 +894,7 @@ class BugAnalysisWorker:
             goal_mode=task.goal_mode,
             on_tool_event=on_tool_event,
             on_close=close_resources,
+            initial_token_usage=initial_token_usage,
         )
 
         return session, instruction
@@ -896,7 +927,7 @@ class BugAnalysisWorker:
         task: BugAnalysisTask,
         turns: list[dict[str, str]],
         tool_events: list[ToolEvent] | None = None,
-    ) -> tuple[RCAReport, bool, ReportValidation | None]:
+    ) -> tuple[RCAReport, bool, ReportValidation | None, TokenUsage | None]:
         """将交互式对话的轮次合成为正式 RCA 报告。
 
         Args:
@@ -904,7 +935,8 @@ class BugAnalysisWorker:
             turns: 对话轮次列表，每轮包含 user_message 和 assistant_answer。
 
         Returns:
-            (RCAReport, structured, validation): 报告、结构化标志和证据校验结果。
+            (RCAReport, structured, validation, token_usage)：报告、结构化标志、
+            证据校验结果和本次报告汇总调用的模型用量。
         """
         run_config = replace(
             self.config,
@@ -959,6 +991,7 @@ class BugAnalysisWorker:
                 ],
                 [],
             )
+            usage = _provider_token_usage(provider) or _message_token_usage(message)
             raw = str(message.get("content") or "").strip()
             if not raw:
                 raise ValueError("模型未输出报告内容")
@@ -970,7 +1003,7 @@ class BugAnalysisWorker:
                     tool_events or [],
                     strict=run_config.strict_evidence_validation,
                 )
-            return report, structured, validation
+            return report, structured, validation, usage
         finally:
             if provider is not None:
                 await provider.close()

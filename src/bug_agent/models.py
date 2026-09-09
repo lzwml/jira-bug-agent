@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,65 @@ class TokenUsage(BaseModel):
     model_calls: int = Field(ge=1)
     reported_calls: int = Field(ge=1)
     complete: bool
+
+
+class TokenUsageAccumulator:
+    """累计成功模型调用及其可选 usage，供 Provider 与 Agent 共用。"""
+
+    def __init__(self) -> None:
+        self.model_calls = 0
+        self.samples: list[CompletionTokenUsage] = []
+
+    def add(self, usage: CompletionTokenUsage | None) -> None:
+        self.model_calls += 1
+        if usage is not None:
+            self.samples.append(usage)
+
+    def summary(self) -> TokenUsage | None:
+        if not self.samples:
+            return None
+
+        def optional_sum(field: str) -> int | None:
+            values = [getattr(item, field) for item in self.samples]
+            known = [value for value in values if value is not None]
+            return sum(known) if known else None
+
+        return TokenUsage(
+            prompt_tokens=sum(item.prompt_tokens for item in self.samples),
+            completion_tokens=sum(item.completion_tokens for item in self.samples),
+            total_tokens=sum(item.total_tokens for item in self.samples),
+            cached_prompt_tokens=optional_sum("cached_prompt_tokens"),
+            reasoning_tokens=optional_sum("reasoning_tokens"),
+            model_calls=self.model_calls,
+            reported_calls=len(self.samples),
+            complete=len(self.samples) == self.model_calls,
+        )
+
+
+def merge_token_usage(usages: Iterable[TokenUsage | None]) -> TokenUsage | None:
+    """汇总多个分析阶段；所有阶段都未知时保持 ``None``。"""
+
+    items = [item for item in usages if item is not None]
+    if not items:
+        return None
+
+    def optional_sum(field: str) -> int | None:
+        values = [getattr(item, field) for item in items]
+        known = [value for value in values if value is not None]
+        return sum(known) if known else None
+
+    model_calls = sum(item.model_calls for item in items)
+    reported_calls = sum(item.reported_calls for item in items)
+    return TokenUsage(
+        prompt_tokens=sum(item.prompt_tokens for item in items),
+        completion_tokens=sum(item.completion_tokens for item in items),
+        total_tokens=sum(item.total_tokens for item in items),
+        cached_prompt_tokens=optional_sum("cached_prompt_tokens"),
+        reasoning_tokens=optional_sum("reasoning_tokens"),
+        model_calls=model_calls,
+        reported_calls=reported_calls,
+        complete=all(item.complete for item in items) and reported_calls == model_calls,
+    )
 
 
 class HumanCheckpoint(BaseModel):

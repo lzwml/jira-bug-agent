@@ -24,7 +24,7 @@ from .config import AgentConfig
 from .contracts import BugAnalysisResult, BugAnalysisTask
 from .conversation import ConversationSession, SavedTurn
 from .evaluation import evaluate_run, load_review_file, promote_review, save_review
-from .models import ToolEvent
+from .models import ToolEvent, merge_token_usage
 from .renderer import render_analysis_guide, render_markdown
 from .runstore import resolve_run_dir, write_analysis_guide
 from .run_visualization import render_run_visualization
@@ -411,7 +411,7 @@ async def _generate_chat_report(
             for turn in session._turns
             for event in turn.result.tool_events
         ]
-        report, structured, validation = await worker.synthesize_report_from_turns(
+        report, structured, validation, synthesis_usage = await worker.synthesize_report_from_turns(
             task, turns_data, tool_events,
         )
     except Exception as exc:
@@ -431,6 +431,7 @@ async def _generate_chat_report(
         structured_output=structured,
         report_validation=validation,
         applied_skills=task.skills or [],
+        token_usage=merge_token_usage([session.token_usage, synthesis_usage]),
     )
     markdown = render_markdown(result)
     print(f"\n{'=' * 60}")
@@ -449,6 +450,7 @@ async def _generate_chat_report(
             "/report（生成分析报告）",
             markdown[:5000],  # 报告可能很长，截断存储
             session._total_steps, "completed",
+            token_usage=(synthesis_usage.model_dump() if synthesis_usage else None),
         )
 
 
@@ -580,6 +582,7 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     agent_status=t["agent_status"],
                     human_checkpoint=t.get("human_checkpoint"),
                     human_intervention=t.get("human_intervention"),
+                    token_usage=t.get("token_usage"),
                 )
                 for t in existing["turns"]
             ]
@@ -670,6 +673,14 @@ async def _run_chat(args: argparse.Namespace) -> int:
                         turn.human_intervention.model_dump(mode="json")
                         if turn.human_intervention else None
                     ),
+                    token_usage=(
+                        combined.model_dump() if (
+                            combined := merge_token_usage([
+                                session.initial_token_usage,
+                                turn.result.token_usage,
+                            ])
+                        ) else None
+                    ),
                 )
             if turn.result.human_checkpoint is not None:
                 checkpoint = turn.result.human_checkpoint
@@ -735,6 +746,10 @@ async def _run_chat(args: argparse.Namespace) -> int:
                     human_intervention=(
                         turn.human_intervention.model_dump(mode="json")
                         if turn.human_intervention else None
+                    ),
+                    token_usage=(
+                        turn.result.token_usage.model_dump()
+                        if turn.result.token_usage else None
                     ),
                 )
 

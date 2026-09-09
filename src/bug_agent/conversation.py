@@ -31,7 +31,14 @@ from typing import Callable
 
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .config import AgentConfig
-from .models import AgentRunResult, HumanCheckpoint, HumanIntervention, ToolEvent
+from .models import (
+    AgentRunResult,
+    HumanCheckpoint,
+    HumanIntervention,
+    TokenUsage,
+    ToolEvent,
+    merge_token_usage,
+)
 from .prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
 from .human_guidance import infer_attribution
 from .tool_catalog import normalize_tool_catalog
@@ -47,6 +54,7 @@ class SavedTurn:
     agent_status: str = "completed"
     human_checkpoint: dict | None = None
     human_intervention: dict | None = None
+    token_usage: dict | None = None
 
 
 @dataclass
@@ -73,6 +81,9 @@ class ConversationResult:
     total_steps: int
     """所有轮次累计的模型推理步数。"""
 
+    initial_token_usage: TokenUsage | None = None
+    """进入首轮 Agent 前的模型用量，例如 Jira Comment Compiler。"""
+
     @property
     def final_answer(self) -> str:
         """最后一轮的最终回答。"""
@@ -81,6 +92,13 @@ class ConversationResult:
     @property
     def human_interventions(self) -> list[HumanIntervention]:
         return [turn.human_intervention for turn in self.turns if turn.human_intervention]
+
+    @property
+    def token_usage(self) -> TokenUsage | None:
+        return merge_token_usage([
+            self.initial_token_usage,
+            *(turn.result.token_usage for turn in self.turns),
+        ])
 
 
 class ConversationSession:
@@ -121,6 +139,7 @@ class ConversationSession:
         goal_mode: bool = False,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
         on_close: Callable[[], object] | None = None,
+        initial_token_usage: TokenUsage | None = None,
     ):
         self._agent = agent
         self._router = router
@@ -129,6 +148,7 @@ class ConversationSession:
         self._on_tool_event = on_tool_event
         self._on_close = on_close
         self._closed_resources = False
+        self._initial_token_usage = initial_token_usage
 
         # 消息历史：system prompt 只在初始化时设置一次
         self._messages: list[dict] = [
@@ -157,6 +177,17 @@ class ConversationSession:
     @property
     def pending_checkpoint(self) -> HumanCheckpoint | None:
         return self._pending_checkpoint
+
+    @property
+    def initial_token_usage(self) -> TokenUsage | None:
+        return self._initial_token_usage
+
+    @property
+    def token_usage(self) -> TokenUsage | None:
+        return merge_token_usage([
+            self._initial_token_usage,
+            *(turn.result.token_usage for turn in self._turns),
+        ])
 
     @property
     def tool_catalog(self) -> list[dict]:
@@ -283,6 +314,10 @@ class ConversationSession:
                         HumanCheckpoint.model_validate(turn_data.human_checkpoint)
                         if turn_data.human_checkpoint else None
                     ),
+                    token_usage=(
+                        TokenUsage.model_validate(turn_data.token_usage)
+                        if turn_data.token_usage else None
+                    ),
                 ),
                 human_intervention=(
                     HumanIntervention.model_validate(turn_data.human_intervention)
@@ -313,4 +348,5 @@ class ConversationSession:
         return ConversationResult(
             turns=list(self._turns),
             total_steps=self._total_steps,
+            initial_token_usage=self._initial_token_usage,
         )

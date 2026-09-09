@@ -8,6 +8,7 @@ from bug_agent.contracts import (
     RCAReport,
     TimelineEntry,
 )
+from bug_agent.models import TokenUsage
 from bug_agent.renderer import render_analysis_guide, render_markdown
 
 
@@ -17,6 +18,16 @@ def test_renderer_outputs_formal_stability_rca_sections():
         status="insufficient_evidence",
         structured_output=True,
         steps=8,
+        token_usage=TokenUsage(
+            prompt_tokens=1200,
+            completion_tokens=300,
+            total_tokens=1500,
+            cached_prompt_tokens=400,
+            reasoning_tokens=100,
+            model_calls=4,
+            reported_calls=4,
+            complete=True,
+        ),
         report=RCAReport(
             conclusion_status="insufficient_evidence",
             summary="直接机制已确认，技术根因尚未确认。",
@@ -63,6 +74,8 @@ def test_renderer_outputs_formal_stability_rca_sections():
     assert "## 6. 反证与负向结果" in markdown
     assert "| P0 | 补抓 Perfetto | 系统性能 |" in markdown
     assert "置信度**：中高" in markdown
+    assert "**模型 Token 消耗**：总计 1,500；输入 1,200；输出 300" in markdown
+    assert "模型调用 4 次；缓存输入 400；Reasoning 100" in markdown
 
 
 def test_analysis_guide_is_rendered_independently_from_formal_rca():

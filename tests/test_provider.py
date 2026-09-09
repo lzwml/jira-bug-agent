@@ -44,6 +44,8 @@ async def test_provider_returns_assistant_message_and_sends_bearer_auth():
         "cached_prompt_tokens": 80,
         "reasoning_tokens": 12,
     }
+    assert provider.token_usage is not None
+    assert provider.token_usage.total_tokens == 150
 
 
 @pytest.mark.anyio

@@ -113,7 +113,7 @@ def build_run_record(
         "jira_context": context_metadata,
         "failure": failure_metadata,
         "provenance": final_provenance,
-        "budget": build_budget_usage(run, final_provenance),
+        "budget": build_budget_usage(run, final_provenance, result.token_usage),
         "derived": build_derived_views(run, result),
         "investigation_state": investigation_state.model_dump() if investigation_state else None,
     }

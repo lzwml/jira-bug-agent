@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from .models import HumanCheckpoint, ToolEvent
+from .models import HumanCheckpoint, TokenUsage, ToolEvent
 
 
 class BugAnalysisTask(BaseModel):
@@ -281,3 +281,4 @@ class BugAnalysisResult(BaseModel):
     trace: list[ToolEvent] = Field(default_factory=list)
     error: str | None = None
     human_checkpoint: HumanCheckpoint | None = None
+    token_usage: TokenUsage | None = None
