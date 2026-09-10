@@ -42,7 +42,12 @@ class InvestigationStateToolRouter:
             "type": "function",
             "function": {
                 "name": UPDATE_INVESTIGATION_STATE_TOOL,
-                "description": "Update the in-memory investigation plan. This tool cannot read files or external systems; Evidence and Artifact IDs must come from earlier tool results.",
+                "description": (
+                    "更新当前调查的结构化工作状态（事故范围、假设、覆盖面和候选材料）。"
+                    "宿主会自动快照并在同一 Case 的后续会话中恢复该状态；此工具不是‘保存最终报告’工具，"
+                    "也不能承诺文件或服务端持久化结果。不要询问用户是否调用它来保存报告。"
+                    "它不能读取文件或外部系统；Evidence ID 和 Artifact ID 必须来自此前工具返回。"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -69,7 +74,9 @@ class InvestigationStateToolRouter:
                           arguments=arguments, success=self._success(raw), result=raw)
         self._events.append(event)
         registry = build_evidence_registry(self._events)
-        self.state.known_evidence_ids = sorted(registry)
+        self.state.known_evidence_ids = sorted(
+            set(self.state.known_evidence_ids) | set(registry)
+        )
         self.state.known_artifact_ids = sorted(self._artifact_ids(raw) | set(self.state.known_artifact_ids))
         return raw
 

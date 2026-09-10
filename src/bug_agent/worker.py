@@ -15,6 +15,7 @@ from .contracts import (
     AnalysisGuide,
     BugAnalysisResult,
     BugAnalysisTask,
+    InvestigationState,
     RCAReport,
     ReportValidation,
     SkillActivation,
@@ -702,6 +703,7 @@ class BugAnalysisWorker:
         max_steps_per_turn: int | None = None,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
         on_progress: Callable[[dict], None] | None = None,
+        initial_investigation_state: InvestigationState | None = None,
     ) -> tuple[ConversationSession, str]:
         """创建单次会话的连续问答会话。
 
@@ -865,6 +867,11 @@ class BugAnalysisWorker:
         investigation_router = InvestigationStateToolRouter(
             skill_router, mode=run_config.adaptive_investigation_mode,
         )
+        if initial_investigation_state is not None:
+            investigation_router.state = initial_investigation_state.model_copy(
+                deep=True,
+                update={"mode": run_config.adaptive_investigation_mode},
+            )
         human_router = HumanGuidanceToolRouter(investigation_router)
         session = ConversationSession(
             agent=agent,
@@ -876,6 +883,7 @@ class BugAnalysisWorker:
             on_progress=on_progress,
             on_close=close_resources,
             initial_token_usage=initial_token_usage,
+            investigation_state_getter=lambda: investigation_router.state,
         )
 
         return session, instruction
@@ -889,6 +897,8 @@ class BugAnalysisWorker:
         max_steps_per_turn: int | None = None,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
         on_progress: Callable[[dict], None] | None = None,
+        initial_investigation_state: InvestigationState | None = None,
+        on_investigation_state: Callable[[InvestigationState], None] | None = None,
     ) -> str:
         """在可持久化的消息历史之上执行一个会话回合。
 
@@ -900,10 +910,15 @@ class BugAnalysisWorker:
             max_steps_per_turn=max_steps_per_turn,
             on_tool_event=on_tool_event,
             on_progress=on_progress,
+            initial_investigation_state=initial_investigation_state,
         )
         session.load_history([{"role": "user", "content": instruction}, *history])
         try:
-            return (await session.send(user_message)).result.final_answer
+            turn = await session.send(user_message)
+            state = session.investigation_state
+            if state is not None and on_investigation_state is not None:
+                on_investigation_state(state)
+            return turn.result.final_answer
         finally:
             await session.finalize()
 

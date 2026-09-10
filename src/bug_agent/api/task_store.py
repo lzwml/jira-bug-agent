@@ -7,12 +7,19 @@ import json
 from pathlib import Path
 import sqlite3
 
-from ..contracts import BugAnalysisResult, BugAnalysisTask, RCAReport, ReportValidation
+from ..contracts import (
+    BugAnalysisResult,
+    BugAnalysisTask,
+    InvestigationState,
+    RCAReport,
+    ReportValidation,
+)
 from ..models import ToolEvent
 from .client_events import locations_from_tool_event
 from .models import (
     ConversationEvent,
     ConversationMessage,
+    ConversationPersistence,
     ConversationRecord,
     TaskRecord,
 )
@@ -106,6 +113,17 @@ class SqliteTaskStore:
             if "report_validation_json" not in columns:
                 connection.execute(
                     "ALTER TABLE conversation_messages ADD COLUMN report_validation_json TEXT"
+                )
+            if "persistence_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_messages ADD COLUMN persistence_json TEXT"
+                )
+            conversation_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(conversations)")
+            }
+            if "investigation_state_json" not in conversation_columns:
+                connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN investigation_state_json TEXT"
                 )
 
     def submit(self, task: BugAnalysisTask) -> tuple[TaskRecord, bool]:
@@ -261,6 +279,16 @@ class SqliteTaskStore:
                     return self._conversation_record(connection, row)
         return None
 
+    def save_conversation_investigation_state(
+        self, conversation_id: str, state: InvestigationState,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE conversations SET investigation_state_json = ?, updated_at = ?
+                   WHERE conversation_id = ?""",
+                (state.model_dump_json(), _now(), conversation_id),
+            )
+
     def list_conversations(self) -> list[ConversationRecord]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -372,6 +400,7 @@ class SqliteTaskStore:
         content_format: str = "plain_text",
         report: RCAReport | None = None,
         report_validation: ReportValidation | None = None,
+        persistence: ConversationPersistence | None = None,
     ) -> None:
         timestamp = _now()
         with self._connect() as connection:
@@ -392,12 +421,13 @@ class SqliteTaskStore:
             cursor = connection.execute(
                 """INSERT INTO conversation_messages
                    (conversation_id, role, content, content_format, report_json,
-                    report_validation_json, status, created_at)
-                   VALUES (?, 'assistant', ?, ?, ?, ?, 'completed', ?)""",
+                    report_validation_json, persistence_json, status, created_at)
+                   VALUES (?, 'assistant', ?, ?, ?, ?, ?, 'completed', ?)""",
                 (
                     row["conversation_id"], answer, content_format,
                     report.model_dump_json() if report else None,
                     report_validation.model_dump_json() if report_validation else None,
+                    persistence.model_dump_json() if persistence else None,
                     timestamp,
                 ),
             )
@@ -409,6 +439,7 @@ class SqliteTaskStore:
                     report_validation.model_dump(mode="json")
                     if report_validation else None
                 ),
+                "persistence": persistence.model_dump(mode="json") if persistence else None,
             }
             self._append_event(
                 connection,
@@ -597,7 +628,7 @@ class SqliteTaskStore:
     ) -> ConversationRecord:
         messages = connection.execute(
             """SELECT message_id, role, content, content_format, report_json,
-                      report_validation_json, status, error, created_at
+                      report_validation_json, persistence_json, status, error, created_at
                FROM conversation_messages
                WHERE conversation_id = ? ORDER BY message_id""",
             (row["conversation_id"],),
@@ -607,6 +638,10 @@ class SqliteTaskStore:
             status=row["status"],
             task=BugAnalysisTask.model_validate_json(row["task_json"]),
             messages=[SqliteTaskStore._conversation_message(message) for message in messages],
+            investigation_state=(
+                InvestigationState.model_validate_json(row["investigation_state_json"])
+                if row["investigation_state_json"] else None
+            ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -625,6 +660,10 @@ class SqliteTaskStore:
             report_validation=(
                 ReportValidation.model_validate_json(row["report_validation_json"])
                 if row["report_validation_json"] else None
+            ),
+            persistence=(
+                ConversationPersistence.model_validate_json(row["persistence_json"])
+                if row["persistence_json"] else None
             ),
             status=row["status"],
             error=row["error"],

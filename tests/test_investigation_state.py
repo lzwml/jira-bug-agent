@@ -72,6 +72,18 @@ async def test_state_rejects_invented_evidence_and_illegal_confirmation():
     assert confirmed["error_code"] == "INVALID_HYPOTHESIS_TRANSITION"
 
 
+@pytest.mark.anyio
+async def test_restored_evidence_registry_is_not_lost_on_next_tool_call():
+    router = InvestigationStateToolRouter(DelegateRouter(), mode="shadow")
+    router.state.known_evidence_ids = ["ev-from-prior-turn"]
+    router.state.known_artifact_ids = ["a-from-prior-turn"]
+
+    await router.call("inspect_case", {})
+
+    assert router.state.known_evidence_ids == ["ev-1", "ev-from-prior-turn"]
+    assert router.state.known_artifact_ids == ["a-1", "a-from-prior-turn"]
+
+
 def test_false_mode_does_not_expose_state_tool():
     router = InvestigationStateToolRouter(DelegateRouter(), mode="false")
     assert [x["function"]["name"] for x in router.openai_tools()] == ["inspect_case"]

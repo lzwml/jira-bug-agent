@@ -74,6 +74,34 @@ function reportList(container, title, values, className) {
   container.append(section);
 }
 
+function renderPersistence(container, persistence) {
+  if (!persistence) return;
+  const statusRow = element("div", "persistence-status");
+  statusRow.append(element("span", "validation grounded", "会话已保存"));
+  if (persistence.investigation_state_saved) {
+    statusRow.append(element("span", "validation grounded", "调查状态已保存"));
+  }
+  if (persistence.rca_saved) {
+    statusRow.append(element("span", "validation grounded", "RCA 已保存"));
+  }
+  container.append(statusRow);
+  const paths = [
+    ["可读报告", persistence.rca_markdown_path],
+    ["结构化状态", persistence.rca_state_path],
+    ["变更记录", persistence.rca_events_path],
+  ].filter((item) => item[1]);
+  if (!paths.length) return;
+  const details = element("details", "persistence-paths");
+  details.append(element("summary", "", "查看本地保存位置"));
+  for (const [label, path] of paths) {
+    const row = element("div", "persistence-path");
+    row.append(element("span", "persistence-label", label + "："));
+    appendLinkedText(row, path);
+    details.append(row);
+  }
+  container.append(details);
+}
+
 function renderReport(container, message) {
   const report = message.report;
   const head = element("div", "report-head");
@@ -193,6 +221,7 @@ function render() {
     const body = element("div", "content");
     if (message.role === "assistant" && message.report) renderReport(body, message);
     else appendLinkedText(body, message.content || "");
+    if (message.role === "assistant") renderPersistence(body, message.persistence);
     card.append(body);
     if (message.status && message.status !== "completed") {
       card.append(element("div", "message-status", message.status));
@@ -255,6 +284,7 @@ function applyEvent(event) {
       content: event.content || "", content_format: event.content_format || "plain_text",
       report: event.report || null,
       report_validation: event.report_validation || null,
+      persistence: event.persistence || null,
       status: "completed",
     });
     const active = messages.get(activeMessageId);

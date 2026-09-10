@@ -6,7 +6,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ..contracts import BugAnalysisResult, BugAnalysisTask, RCAReport, ReportValidation
+from ..contracts import (
+    BugAnalysisResult,
+    BugAnalysisTask,
+    InvestigationState,
+    RCAReport,
+    ReportValidation,
+)
 
 
 TaskStatus = Literal["queued", "running", "completed", "failed"]
@@ -78,6 +84,7 @@ class ConversationMessage(BaseModel):
     content_format: ConversationContentFormat = "plain_text"
     report: RCAReport | None = None
     report_validation: ReportValidation | None = None
+    persistence: "ConversationPersistence | None" = None
     status: ConversationMessageStatus = "completed"
     error: str | None = None
     created_at: str
@@ -95,6 +102,17 @@ class ClientLocation(BaseModel):
     member_id: str | None = None
 
 
+class ConversationPersistence(BaseModel):
+    """Host-owned persistence outcome exposed to clients and the UI."""
+
+    conversation_saved: bool = True
+    investigation_state_saved: bool = False
+    rca_saved: bool = False
+    rca_markdown_path: str | None = None
+    rca_state_path: str | None = None
+    rca_events_path: str | None = None
+
+
 class ConversationEvent(BaseModel):
     """持久化的客户端事件；event_id 同时充当断线续接游标。"""
 
@@ -110,6 +128,7 @@ class ConversationEvent(BaseModel):
     content_format: ConversationContentFormat | None = None
     report: RCAReport | None = None
     report_validation: ReportValidation | None = None
+    persistence: ConversationPersistence | None = None
     arguments: dict[str, Any] | None = None
     result: str | None = None
     locations: list[ClientLocation] = Field(default_factory=list)
@@ -127,5 +146,6 @@ class ConversationRecord(BaseModel):
     status: ConversationStatus
     task: BugAnalysisTask
     messages: list[ConversationMessage] = Field(default_factory=list)
+    investigation_state: InvestigationState | None = None
     created_at: str
     updated_at: str

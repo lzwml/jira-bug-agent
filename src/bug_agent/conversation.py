@@ -31,6 +31,7 @@ from typing import Callable
 
 from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
 from .config import AgentConfig
+from .contracts import InvestigationState
 from .models import (
     AgentRunResult,
     HumanCheckpoint,
@@ -141,6 +142,7 @@ class ConversationSession:
         on_progress: Callable[[dict], None] | None = None,
         on_close: Callable[[], object] | None = None,
         initial_token_usage: TokenUsage | None = None,
+        investigation_state_getter: Callable[[], InvestigationState | None] | None = None,
     ):
         self._agent = agent
         self._router = router
@@ -151,6 +153,7 @@ class ConversationSession:
         self._on_close = on_close
         self._closed_resources = False
         self._initial_token_usage = initial_token_usage
+        self._investigation_state_getter = investigation_state_getter
 
         # 消息历史：system prompt 只在初始化时设置一次
         self._messages: list[dict] = [
@@ -190,6 +193,15 @@ class ConversationSession:
             self._initial_token_usage,
             *(turn.result.token_usage for turn in self._turns),
         ])
+
+    @property
+    def investigation_state(self) -> InvestigationState | None:
+        """Current structured investigation state owned by the router chain."""
+
+        if self._investigation_state_getter is None:
+            return None
+        state = self._investigation_state_getter()
+        return state.model_copy(deep=True) if state is not None else None
 
     @property
     def tool_catalog(self) -> list[dict]:

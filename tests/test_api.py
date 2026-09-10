@@ -11,7 +11,13 @@ from bug_agent.api.app import create_app
 from bug_agent.api.config import ApiConfig
 from bug_agent.api.dispatcher import TaskDispatcher
 from bug_agent.api.task_store import SqliteTaskStore, TaskConflictError
-from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
+from bug_agent.contracts import (
+    BugAnalysisResult,
+    BugAnalysisTask,
+    IncidentProfile,
+    InvestigationState,
+    RCAReport,
+)
 from bug_agent.models import ToolEvent
 
 
@@ -417,7 +423,11 @@ async def test_conversation_api_persists_human_rca_and_machine_report(tmp_path):
 
     store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
     store.initialize()
-    task = BugAnalysisTask(task_id="rca-chat-task", source="jira", issue_key="BAIC-47248")
+    case_path = tmp_path / "BAIC-47248"
+    case_path.mkdir()
+    task = BugAnalysisTask(
+        task_id="rca-chat-task", source="local", case_path=str(case_path),
+    )
     store.create_conversation("rca-chat", task)
     store.add_conversation_message("rca-chat", role="user", content="生成结论")
     dispatcher = ConversationDispatcher(store, ReportWorker, concurrency=1)
@@ -433,11 +443,68 @@ async def test_conversation_api_persists_human_rca_and_machine_report(tmp_path):
         assert assistant.content.startswith("# 阶段性 RCA：rca-chat-task")
         assert assistant.report is not None
         assert assistant.report.conclusion_status == "hypothesis_only"
+        assert assistant.persistence is not None
+        assert assistant.persistence.rca_saved is True
+        assert Path(assistant.persistence.rca_markdown_path).is_file()
+        assert Path(assistant.persistence.rca_state_path).is_file()
+        assert Path(assistant.persistence.rca_events_path).is_file()
         events = store.list_conversation_events("rca-chat")
         response = next(event for event in events if event.kind == "assistant_message")
         assert response.content_format == "markdown"
         assert response.report is not None
         assert response.report.root_cause is None
+        assert response.persistence is not None
+        assert response.persistence.rca_saved is True
+    finally:
+        await dispatcher.stop()
+
+
+@pytest.mark.anyio
+async def test_conversation_restores_host_persisted_investigation_state(tmp_path):
+    """A later VS Code turn receives the prior turn's structured investigation state."""
+    from bug_agent.api.dispatcher import ConversationDispatcher
+
+    seen_states = []
+
+    class StatefulWorker(ImmediateWorker):
+        async def answer_conversation_turn(
+            self, task, history, user_message, *, max_steps_per_turn=None,
+            initial_investigation_state=None, on_investigation_state=None,
+        ):
+            seen_states.append(initial_investigation_state)
+            state = initial_investigation_state or InvestigationState()
+            if state.incident_profile is None:
+                state.incident_profile = IncidentProfile(
+                    symptom_family="anr_freeze",
+                    user_visible_symptom="DVR 卡死",
+                )
+            on_investigation_state(state)
+            return f"已处理：{user_message}"
+
+    store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = BugAnalysisTask(task_id="resume-state", source="jira", issue_key="BAIC-47248")
+    store.create_conversation("resume-state-conv", task)
+    dispatcher = ConversationDispatcher(store, StatefulWorker, concurrency=1)
+    await dispatcher.start()
+    try:
+        first = store.add_conversation_message(
+            "resume-state-conv", role="user", content="先调查生命周期",
+        )
+        await dispatcher.submit(first.message_id)
+        await asyncio.wait_for(dispatcher._queue.join(), timeout=2)
+        saved = store.get_conversation("resume-state-conv")
+        assert saved.investigation_state.incident_profile.user_visible_symptom == "DVR 卡死"
+
+        second = store.add_conversation_message(
+            "resume-state-conv", role="user", content="继续检查相机资源",
+        )
+        await dispatcher.submit(second.message_id)
+        await asyncio.wait_for(dispatcher._queue.join(), timeout=2)
+        assert seen_states[0] is None
+        assert seen_states[1].incident_profile.symptom_family == "anr_freeze"
+        assistant = store.get_conversation("resume-state-conv").messages[-1]
+        assert assistant.persistence.investigation_state_saved is True
     finally:
         await dispatcher.stop()
 

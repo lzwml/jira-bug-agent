@@ -7,10 +7,12 @@ import inspect
 import logging
 from typing import Callable, Protocol
 
-from ..contracts import BugAnalysisResult, BugAnalysisTask
+from ..contracts import BugAnalysisResult, BugAnalysisTask, InvestigationState
 from ..models import ToolEvent
 from ..presentation import present_conversation_answer
-from .models import TaskRecord
+from ..rca_reconciliation import reconcile
+from ..rca_store import RCAStore
+from .models import ConversationPersistence, TaskRecord
 from .task_store import SqliteTaskStore
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,7 @@ class ConversationDispatcher:
                     continue
                 conversation, message, history = claimed
                 worker = self.worker_factory()
+                state_saved = False
 
                 def on_tool_event(event: ToolEvent) -> None:
                     self.store.append_tool_event(
@@ -149,6 +152,13 @@ class ConversationDispatcher:
                         conversation.conversation_id, message.message_id, progress,
                     )
 
+                def on_investigation_state(state: InvestigationState) -> None:
+                    nonlocal state_saved
+                    self.store.save_conversation_investigation_state(
+                        conversation.conversation_id, state,
+                    )
+                    state_saved = True
+
                 try:
                     method = worker.answer_conversation_turn
                     parameters = inspect.signature(method).parameters
@@ -157,6 +167,10 @@ class ConversationDispatcher:
                         kwargs["on_tool_event"] = on_tool_event
                     if "on_progress" in parameters:
                         kwargs["on_progress"] = on_progress
+                    if "initial_investigation_state" in parameters:
+                        kwargs["initial_investigation_state"] = conversation.investigation_state
+                    if "on_investigation_state" in parameters:
+                        kwargs["on_investigation_state"] = on_investigation_state
                     execution = asyncio.create_task(
                         method(conversation.task, history, message.content, **kwargs),
                         name=f"bug-agent-conversation-{message_id}",
@@ -172,19 +186,47 @@ class ConversationDispatcher:
                     logger.exception("会话回合失败 (message_id=%s)", message_id)
                     self.store.fail_conversation_message(message_id, type(exc).__name__)
                 else:
+                    tool_events = self.store.conversation_tool_events(
+                        conversation.conversation_id,
+                    )
                     presentation = present_conversation_answer(
                         answer,
                         task_id=conversation.task.task_id,
-                        tool_events=self.store.conversation_tool_events(
-                            conversation.conversation_id,
-                        ),
+                        tool_events=tool_events,
                     )
+                    persistence = ConversationPersistence(
+                        investigation_state_saved=state_saved,
+                    )
+                    if presentation.report is not None:
+                        report = presentation.report
+                        result = BugAnalysisResult(
+                            task_id=conversation.task.task_id,
+                            status=(
+                                "insufficient_evidence"
+                                if report.conclusion_status == "insufficient_evidence"
+                                else "completed"
+                            ),
+                            report=report,
+                            steps=max((event.step for event in tool_events), default=0),
+                            structured_output=True,
+                            report_validation=presentation.report_validation,
+                        )
+                        reconciled = reconcile(conversation.task, result)
+                        if reconciled is not None:
+                            rca_store = RCAStore(conversation.task)
+                            persistence = persistence.model_copy(update={
+                                "rca_saved": True,
+                                "rca_markdown_path": str(rca_store.markdown_path),
+                                "rca_state_path": str(rca_store.state_path),
+                                "rca_events_path": str(rca_store.events_path),
+                            })
                     self.store.complete_conversation_message(
                         message_id,
                         presentation.content,
                         content_format=presentation.content_format,
                         report=presentation.report,
                         report_validation=presentation.report_validation,
+                        persistence=persistence,
                     )
                 finally:
                     self._active.pop(message_id, None)
