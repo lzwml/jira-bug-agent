@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Callable, Protocol
 
 from ..contracts import BugAnalysisResult, BugAnalysisTask
+from ..models import ToolEvent
 from .models import TaskRecord
 from .task_store import SqliteTaskStore
 
@@ -93,21 +95,38 @@ class ConversationDispatcher:
         self.store, self.worker_factory, self.concurrency = store, worker_factory, concurrency
         self._queue: asyncio.Queue[int] = asyncio.Queue()
         self._runners: list[asyncio.Task[None]] = []
+        self._active: dict[int, asyncio.Task[str]] = {}
+        self._stopping = False
+        self._cancelled_by_user: set[int] = set()
 
     async def start(self) -> None:
+        self._stopping = False
         self.store.requeue_running_conversation_messages()
         for message_id in self.store.queued_conversation_messages():
             self._queue.put_nowait(message_id)
         self._runners = [asyncio.create_task(self._run_loop()) for _ in range(self.concurrency)]
 
     async def stop(self) -> None:
+        self._stopping = True
+        for execution in self._active.values():
+            execution.cancel()
         for runner in self._runners:
             runner.cancel()
         await asyncio.gather(*self._runners, return_exceptions=True)
         self._runners = []
+        self._active = {}
+        self._cancelled_by_user = set()
 
     async def submit(self, message_id: int) -> None:
         await self._queue.put(message_id)
+
+    async def cancel(self, conversation_id: str, message_id: int) -> bool:
+        cancelled = self.store.cancel_conversation_message(conversation_id, message_id)
+        execution = self._active.get(message_id)
+        if execution is not None:
+            self._cancelled_by_user.add(message_id)
+            execution.cancel()
+        return cancelled
 
     async def _run_loop(self) -> None:
         while True:
@@ -117,17 +136,44 @@ class ConversationDispatcher:
                 if claimed is None:
                     continue
                 conversation, message, history = claimed
-                try:
-                    answer = await self.worker_factory().answer_conversation_turn(
-                        conversation.task, history, message.content,
+                worker = self.worker_factory()
+
+                def on_tool_event(event: ToolEvent) -> None:
+                    self.store.append_tool_event(
+                        conversation.conversation_id, message.message_id, event,
                     )
+
+                def on_progress(progress: dict) -> None:
+                    self.store.append_progress_event(
+                        conversation.conversation_id, message.message_id, progress,
+                    )
+
+                try:
+                    method = worker.answer_conversation_turn
+                    parameters = inspect.signature(method).parameters
+                    kwargs = {}
+                    if "on_tool_event" in parameters:
+                        kwargs["on_tool_event"] = on_tool_event
+                    if "on_progress" in parameters:
+                        kwargs["on_progress"] = on_progress
+                    execution = asyncio.create_task(
+                        method(conversation.task, history, message.content, **kwargs),
+                        name=f"bug-agent-conversation-{message_id}",
+                    )
+                    self._active[message_id] = execution
+                    answer = await execution
                 except asyncio.CancelledError:
-                    self.store.requeue_running_conversation_messages()
-                    raise
+                    if message_id not in self._cancelled_by_user:
+                        self.store.requeue_running_conversation_messages()
+                    if self._stopping:
+                        raise
                 except Exception as exc:
                     logger.exception("会话回合失败 (message_id=%s)", message_id)
                     self.store.fail_conversation_message(message_id, type(exc).__name__)
                 else:
                     self.store.complete_conversation_message(message_id, answer)
+                finally:
+                    self._active.pop(message_id, None)
+                    self._cancelled_by_user.discard(message_id)
             finally:
                 self._queue.task_done()

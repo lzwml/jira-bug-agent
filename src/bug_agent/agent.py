@@ -150,6 +150,7 @@ class BugAnalysisAgent:
         tools: list[dict],
         router: ToolRouter,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
         goal_mode: bool = False,
         starting_step: int = 0,
         max_steps_override: int | None = None,
@@ -196,6 +197,11 @@ class BugAnalysisAgent:
                     tool_events=events,
                     token_usage=token_usage.summary(),
                 ), messages
+            if on_progress is not None:
+                try:
+                    on_progress({"kind": "phase_changed", "step": step, "content": "正在请求模型制定下一步调查动作"})
+                except Exception:
+                    pass
             try:
                 message = await self._complete(messages, tools)
             except ProviderError as exc:
@@ -254,6 +260,14 @@ class BugAnalysisAgent:
                     arguments = json.loads(function.get("arguments") or "{}")
                     if not isinstance(arguments, dict):
                         raise ValueError("工具参数必须是 JSON 对象")
+                    if on_progress is not None:
+                        try:
+                            on_progress({
+                                "kind": "tool_started", "step": step,
+                                "tool_name": name, "arguments": arguments,
+                            })
+                        except Exception:
+                            pass
                     if name == REQUEST_HUMAN_GUIDANCE_TOOL and len(tool_calls) != 1:
                         result = json.dumps({
                             "success": False,
@@ -343,7 +357,7 @@ class BugAnalysisAgent:
         ]
         tools = router.openai_tools()
         result, _ = await self._run_loop(
-            messages, tools, router, on_tool_event, goal_mode,
+            messages, tools, router, on_tool_event, None, goal_mode,
         )
         # 把 task 信息回填到结果中，保持与旧接口兼容。
         return AgentRunResult(
@@ -364,6 +378,7 @@ class BugAnalysisAgent:
         messages: list[dict],
         router: ToolRouter,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
         goal_mode: bool = False,
         starting_step: int = 0,
         max_steps_override: int | None = None,
@@ -391,6 +406,6 @@ class BugAnalysisAgent:
         """
         tools = router.openai_tools()
         return await self._run_loop(
-            messages, tools, router, on_tool_event, goal_mode, starting_step,
+            messages, tools, router, on_tool_event, on_progress, goal_mode, starting_step,
             max_steps_override,
         )

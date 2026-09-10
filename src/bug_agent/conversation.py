@@ -138,6 +138,7 @@ class ConversationSession:
         max_steps_per_turn: int | None = None,
         goal_mode: bool = False,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
+        on_progress: Callable[[dict], None] | None = None,
         on_close: Callable[[], object] | None = None,
         initial_token_usage: TokenUsage | None = None,
     ):
@@ -146,6 +147,7 @@ class ConversationSession:
         self._max_steps_per_turn = max_steps_per_turn
         self._goal_mode = goal_mode
         self._on_tool_event = on_tool_event
+        self._on_progress = on_progress
         self._on_close = on_close
         self._closed_resources = False
         self._initial_token_usage = initial_token_usage
@@ -252,6 +254,7 @@ class ConversationSession:
             messages=self._messages,
             router=self._router,
             on_tool_event=self._on_tool_event,
+            on_progress=self._on_progress,
             goal_mode=self._goal_mode,
             starting_step=self._total_steps,
             max_steps_override=self._max_steps_per_turn,

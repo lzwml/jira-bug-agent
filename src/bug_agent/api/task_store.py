@@ -8,7 +8,14 @@ from pathlib import Path
 import sqlite3
 
 from ..contracts import BugAnalysisResult, BugAnalysisTask
-from .models import ConversationMessage, ConversationRecord, TaskRecord
+from ..models import ToolEvent
+from .client_events import locations_from_tool_event
+from .models import (
+    ConversationEvent,
+    ConversationMessage,
+    ConversationRecord,
+    TaskRecord,
+)
 
 
 class TaskConflictError(ValueError):
@@ -69,6 +76,21 @@ class SqliteTaskStore:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
                 )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS conversation_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    message_id INTEGER,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
+                )
+            """)
+            connection.execute("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_events_cursor
+                ON conversation_events(conversation_id, event_id)
             """)
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(conversation_messages)")}
             if "status" not in columns:
@@ -215,6 +237,13 @@ class SqliteTaskStore:
             ).fetchone()
             return self._conversation_record(connection, row) if row is not None else None
 
+    def list_conversations(self) -> list[ConversationRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM conversations ORDER BY updated_at DESC"
+            ).fetchall()
+            return [self._conversation_record(connection, row) for row in rows]
+
     def add_conversation_message(
         self, conversation_id: str, *, role: str, content: str,
     ) -> ConversationMessage:
@@ -228,11 +257,28 @@ class SqliteTaskStore:
                 raise KeyError(conversation_id)
             if row["status"] != "active":
                 raise RuntimeError("会话已经关闭")
+            pending = connection.execute(
+                """SELECT 1 FROM conversation_messages
+                   WHERE conversation_id = ? AND role = 'user'
+                   AND status IN ('queued', 'running') LIMIT 1""",
+                (conversation_id,),
+            ).fetchone()
+            if pending is not None:
+                raise RuntimeError("同一会话已有一轮正在排队或分析")
             cursor = connection.execute(
                 """INSERT INTO conversation_messages (conversation_id, role, content, status, created_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 (conversation_id, role, content, "queued" if role == "user" else "completed", timestamp),
             )
+            if role == "user":
+                self._append_event(
+                    connection,
+                    conversation_id=conversation_id,
+                    message_id=cursor.lastrowid,
+                    kind="message_queued",
+                    payload={"content": content},
+                    timestamp=timestamp,
+                )
             connection.execute(
                 "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
                 (timestamp, conversation_id),
@@ -263,6 +309,13 @@ class SqliteTaskStore:
             if row is None or row["role"] != "user" or row["status"] != "queued":
                 return None
             connection.execute("UPDATE conversation_messages SET status = 'running' WHERE message_id = ?", (message_id,))
+            self._append_event(
+                connection,
+                conversation_id=row["conversation_id"],
+                message_id=message_id,
+                kind="message_running",
+                payload={},
+            )
             conversation = connection.execute("SELECT * FROM conversations WHERE conversation_id = ?", (row["conversation_id"],)).fetchone()
             history = connection.execute(
                 "SELECT role, content FROM conversation_messages WHERE conversation_id = ? AND message_id < ? AND status = 'completed' ORDER BY message_id",
@@ -289,24 +342,151 @@ class SqliteTaskStore:
                 "UPDATE conversation_messages SET status = 'completed', error = NULL WHERE message_id = ?",
                 (message_id,),
             )
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO conversation_messages (conversation_id, role, content, status, created_at) VALUES (?, 'assistant', ?, 'completed', ?)",
                 (row["conversation_id"], answer, timestamp),
+            )
+            self._append_event(
+                connection,
+                conversation_id=row["conversation_id"],
+                message_id=cursor.lastrowid,
+                kind="assistant_message",
+                payload={"content": answer},
+                timestamp=timestamp,
             )
             connection.execute("UPDATE conversations SET updated_at = ? WHERE conversation_id = ?", (timestamp, row["conversation_id"]))
 
     def fail_conversation_message(self, message_id: int, error: str) -> None:
         with self._connect() as connection:
-            connection.execute(
+            row = connection.execute(
+                "SELECT conversation_id, status FROM conversation_messages WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            cursor = connection.execute(
                 "UPDATE conversation_messages SET status = 'failed', error = ? WHERE message_id = ? AND status = 'running'",
                 (error, message_id),
             )
+            if row is not None and cursor.rowcount:
+                self._append_event(
+                    connection,
+                    conversation_id=row["conversation_id"],
+                    message_id=message_id,
+                    kind="turn_failed",
+                    payload={"content": error},
+                )
+
+    def cancel_conversation_message(self, conversation_id: str, message_id: int) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE conversation_messages SET status = 'cancelled', error = NULL
+                   WHERE conversation_id = ? AND message_id = ?
+                   AND role = 'user' AND status IN ('queued', 'running')""",
+                (conversation_id, message_id),
+            )
+            if not cursor.rowcount:
+                return False
+            self._append_event(
+                connection,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                kind="turn_cancelled",
+                payload={},
+            )
+            return True
+
+    def append_tool_event(self, conversation_id: str, message_id: int, event: ToolEvent) -> None:
+        with self._connect() as connection:
+            self._append_event(
+                connection,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                kind="tool_completed",
+                payload={
+                    "step": event.step,
+                    "tool_name": event.tool_name,
+                    "success": event.success,
+                    "arguments": event.arguments,
+                    "result": event.result,
+                    "locations": [
+                        item.model_dump(mode="json")
+                        for item in locations_from_tool_event(event)
+                    ],
+                },
+            )
+
+    def append_progress_event(
+        self, conversation_id: str, message_id: int, progress: dict,
+    ) -> None:
+        kind = str(progress.get("kind") or "phase_changed")
+        if kind not in {"phase_changed", "tool_started"}:
+            kind = "phase_changed"
+        payload = {key: value for key, value in progress.items() if key != "kind"}
+        with self._connect() as connection:
+            self._append_event(
+                connection,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                kind=kind,
+                payload=payload,
+            )
+
+    def list_conversation_events(
+        self, conversation_id: str, *, after: int = 0, limit: int = 200,
+    ) -> list[ConversationEvent]:
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(conversation_id)
+            rows = connection.execute(
+                """SELECT * FROM conversation_events
+                   WHERE conversation_id = ? AND event_id > ?
+                   ORDER BY event_id LIMIT ?""",
+                (conversation_id, after, limit),
+            ).fetchall()
+        return [self._conversation_event(row) for row in rows]
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
         return connection
+
+    @staticmethod
+    def _append_event(
+        connection: sqlite3.Connection,
+        *,
+        conversation_id: str,
+        message_id: int | None,
+        kind: str,
+        payload: dict,
+        timestamp: str | None = None,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO conversation_events
+               (conversation_id, message_id, kind, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                conversation_id,
+                message_id,
+                kind,
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                timestamp or _now(),
+            ),
+        )
+
+    @staticmethod
+    def _conversation_event(row: sqlite3.Row) -> ConversationEvent:
+        payload = json.loads(row["payload_json"])
+        return ConversationEvent(
+            event_id=row["event_id"],
+            conversation_id=row["conversation_id"],
+            message_id=row["message_id"],
+            kind=row["kind"],
+            created_at=row["created_at"],
+            **payload,
+        )
 
     @staticmethod
     def _record(row: sqlite3.Row) -> TaskRecord:

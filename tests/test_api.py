@@ -11,6 +11,7 @@ from bug_agent.api.config import ApiConfig
 from bug_agent.api.dispatcher import TaskDispatcher
 from bug_agent.api.task_store import SqliteTaskStore, TaskConflictError
 from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
+from bug_agent.models import ToolEvent
 
 
 def completed_result(task_id: str) -> BugAnalysisResult:
@@ -506,3 +507,119 @@ def test_conversation_session_load_history_rejects_invalid_role():
     import pytest as pytest_mod
     with pytest_mod.raises(ValueError, match="无效的消息角色"):
         session.load_history([{"role": "invalid_role", "content": "test"}])
+
+
+@pytest.mark.anyio
+async def test_conversation_events_expose_tool_locations_and_resume_cursor(tmp_path):
+    case_root = tmp_path / "cases"
+    case_path = case_root / "APP-42"
+    (case_path / "logs").mkdir(parents=True)
+
+    class EventWorker(ImmediateWorker):
+        async def answer_conversation_turn(
+            self, task, history, user_message, *, max_steps_per_turn=None,
+            on_tool_event=None, on_progress=None,
+        ):
+            if on_progress:
+                on_progress({
+                    "kind": "tool_started", "step": 1,
+                    "tool_name": "search_evidence", "arguments": {"query": "FATAL"},
+                })
+            if on_tool_event:
+                on_tool_event(ToolEvent(
+                    step=1,
+                    tool_call_id="call-1",
+                    tool_name="search_evidence",
+                    arguments={"query": "FATAL"},
+                    result='{"success":true,"data":{"evidence":[{"evidence_id":"ev-1","relative_path":"logs/main.log","line_start":42,"line_end":44,"excerpt":"FATAL"}]}}',
+                    success=True,
+                ))
+            return "请核对 ev-1"
+
+    app = create_app(
+        ApiConfig(
+            database_path=tmp_path / "tasks.sqlite3",
+            allowed_local_roots=(case_root.resolve(),),
+        ),
+        EventWorker,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            await client.post("/conversations", json={
+                "conversation_id": "event-chat",
+                "task": {
+                    "task_id": "event-task", "source": "local",
+                    "case_path": str(case_path),
+                },
+            })
+            sent = await client.post(
+                "/conversations/event-chat/messages", json={"content": "开始分析"},
+            )
+            assert sent.status_code == 202
+            for _ in range(100):
+                page = await client.get("/conversations/event-chat/events")
+                kinds = [event["kind"] for event in page.json()["events"]]
+                if "assistant_message" in kinds:
+                    break
+                await asyncio.sleep(0)
+            assert kinds == [
+                "message_queued", "message_running", "tool_started",
+                "tool_completed", "assistant_message",
+            ]
+            location = page.json()["events"][3]["locations"][0]
+            assert location["relative_path"] == "logs/main.log"
+            assert location["line_start"] == 42
+            cursor = page.json()["next_cursor"]
+            resumed = await client.get(
+                "/conversations/event-chat/events", params={"after": cursor},
+            )
+            assert resumed.json() == {
+                "schema_version": 1, "events": [], "next_cursor": cursor,
+            }
+
+
+@pytest.mark.anyio
+async def test_conversation_turn_can_be_cancelled(tmp_path):
+    case_root = tmp_path / "cases"
+    case_path = case_root / "APP-42"
+    case_path.mkdir(parents=True)
+    started = asyncio.Event()
+
+    class WaitingConversationWorker(ImmediateWorker):
+        async def answer_conversation_turn(
+            self, task, history, user_message, *, max_steps_per_turn=None,
+        ):
+            started.set()
+            await asyncio.Event().wait()
+
+    app = create_app(
+        ApiConfig(
+            database_path=tmp_path / "tasks.sqlite3",
+            allowed_local_roots=(case_root.resolve(),),
+        ),
+        WaitingConversationWorker,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            await client.post("/conversations", json={
+                "conversation_id": "cancel-chat",
+                "task": {
+                    "task_id": "cancel-task", "source": "local",
+                    "case_path": str(case_path),
+                },
+            })
+            sent = await client.post(
+                "/conversations/cancel-chat/messages", json={"content": "开始"},
+            )
+            await asyncio.wait_for(started.wait(), timeout=2)
+            cancelled = await client.post(
+                "/conversations/cancel-chat/messages/" +
+                str(sent.json()["message_id"]) + "/cancel",
+            )
+            assert cancelled.status_code == 202
+            record = await client.get("/conversations/cancel-chat")
+            assert record.json()["messages"][0]["status"] == "cancelled"

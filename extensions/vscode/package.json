@@ -1,0 +1,103 @@
+{
+  "name": "bugagent-vscode",
+  "displayName": "BugAgent",
+  "description": "Run BugAgent and open log evidence in VS Code.",
+  "version": "0.1.0",
+  "publisher": "internal",
+  "engines": {"vscode": "^1.96.0"},
+  "categories": ["Other"],
+  "activationEvents": [
+    "onView:bugAgent.conversations",
+    "onCommand:bugAgent.newLocalCase",
+    "onCommand:bugAgent.newJiraCase"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "BugAgent",
+      "properties": {
+        "bugAgent.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "BugAgent HTTP API 地址。远程地址必须使用 HTTPS。"
+        },
+        "bugAgent.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "服务不可用时自动启动本机 BugAgent。"
+        },
+        "bugAgent.repositoryPath": {
+          "type": "string",
+          "default": "",
+          "description": "jira-bug-agent 仓库路径；留空时从工作区自动检测。"
+        },
+        "bugAgent.launchCommand": {
+          "type": "string",
+          "default": "uv",
+          "description": "本地服务启动命令。"
+        },
+        "bugAgent.launchArguments": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": ["run", "bug-agent-api"],
+          "description": "本地服务启动参数。"
+        },
+        "bugAgent.allowedLocalRoots": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "本地服务允许分析的 Case 根目录。"
+        },
+        "bugAgent.jiraExportRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Jira Case 在本机的导出根目录。"
+        },
+        "bugAgent.largeFileThresholdMB": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "description": "超过此大小时使用只读分段日志查看器。"
+        }
+      }
+    },
+    "commands": [
+      {"command": "bugAgent.newLocalCase", "title": "BugAgent: 分析本地 Case"},
+      {"command": "bugAgent.newJiraCase", "title": "BugAgent: 分析 Jira Issue"},
+      {"command": "bugAgent.openConversation", "title": "BugAgent: 打开会话"},
+      {"command": "bugAgent.refresh", "title": "BugAgent: 刷新会话"},
+      {"command": "bugAgent.setApiKey", "title": "BugAgent: 设置 API Key"},
+      {"command": "bugAgent.startServer", "title": "BugAgent: 启动本地服务"},
+      {"command": "bugAgent.stopServer", "title": "BugAgent: 停止本地服务"}
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {"id": "bugAgent", "title": "BugAgent", "icon": "media/bugagent.svg"}
+      ]
+    },
+    "views": {
+      "bugAgent": [
+        {"id": "bugAgent.conversations", "name": "Case 与会话"}
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "bugAgent.conversations",
+        "contents": "当前还没有会话。\n[分析本地 Case](command:bugAgent.newLocalCase)\n[分析 Jira Issue](command:bugAgent.newJiraCase)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {"command": "bugAgent.newLocalCase", "when": "view == bugAgent.conversations", "group": "navigation@1"},
+        {"command": "bugAgent.newJiraCase", "when": "view == bugAgent.conversations", "group": "navigation@2"},
+        {"command": "bugAgent.refresh", "when": "view == bugAgent.conversations", "group": "navigation@3"}
+      ]
+    }
+  },
+  "scripts": {
+    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2"
+  }
+}

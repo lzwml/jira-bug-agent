@@ -722,6 +722,7 @@ class BugAnalysisWorker:
         *,
         max_steps_per_turn: int | None = None,
         on_tool_event: Callable[[ToolEvent], None] | None = None,
+        on_progress: Callable[[dict], None] | None = None,
     ) -> tuple[ConversationSession, str]:
         """创建单次会话的连续问答会话。
 
@@ -893,6 +894,7 @@ class BugAnalysisWorker:
             max_steps_per_turn=max_steps_per_turn,
             goal_mode=task.goal_mode,
             on_tool_event=on_tool_event,
+            on_progress=on_progress,
             on_close=close_resources,
             initial_token_usage=initial_token_usage,
         )
@@ -906,6 +908,8 @@ class BugAnalysisWorker:
         user_message: str,
         *,
         max_steps_per_turn: int | None = None,
+        on_tool_event: Callable[[ToolEvent], None] | None = None,
+        on_progress: Callable[[dict], None] | None = None,
     ) -> str:
         """在可持久化的消息历史之上执行一个会话回合。
 
@@ -915,6 +919,8 @@ class BugAnalysisWorker:
         session, instruction = await self.create_conversation(
             task,
             max_steps_per_turn=max_steps_per_turn,
+            on_tool_event=on_tool_event,
+            on_progress=on_progress,
         )
         session.load_history([{"role": "user", "content": instruction}, *history])
         try:

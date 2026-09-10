@@ -16,3 +16,6 @@ tools/*.DEC/
 build/
 .coverage
 htmlcov/
+.bug-agent/
+extensions/**/node_modules/
+*.vsix

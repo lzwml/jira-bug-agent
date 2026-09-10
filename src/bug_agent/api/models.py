@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +12,11 @@ from ..contracts import BugAnalysisResult, BugAnalysisTask
 TaskStatus = Literal["queued", "running", "completed", "failed"]
 ConversationStatus = Literal["active", "closed"]
 ConversationRole = Literal["user", "assistant"]
-ConversationMessageStatus = Literal["queued", "running", "completed", "failed"]
+ConversationMessageStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+ConversationEventKind = Literal[
+    "message_queued", "message_running", "phase_changed", "tool_started", "tool_completed",
+    "assistant_message", "turn_failed", "turn_cancelled",
+]
 
 
 class TaskRecord(BaseModel):
@@ -73,6 +77,42 @@ class ConversationMessage(BaseModel):
     status: ConversationMessageStatus = "completed"
     error: str | None = None
     created_at: str
+
+
+class ClientLocation(BaseModel):
+    """VS Code 等客户端可稳定消费的 Case 内位置。"""
+
+    relative_path: str
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    identifier: str | None = None
+    excerpt: str | None = None
+    archive_relative_path: str | None = None
+    member_id: str | None = None
+
+
+class ConversationEvent(BaseModel):
+    """持久化的客户端事件；event_id 同时充当断线续接游标。"""
+
+    schema_version: Literal[1] = 1
+    event_id: int
+    conversation_id: str
+    message_id: int | None = None
+    kind: ConversationEventKind
+    step: int | None = None
+    tool_name: str | None = None
+    success: bool | None = None
+    content: str | None = None
+    arguments: dict[str, Any] | None = None
+    result: str | None = None
+    locations: list[ClientLocation] = Field(default_factory=list)
+    created_at: str
+
+
+class ConversationEventPage(BaseModel):
+    schema_version: Literal[1] = 1
+    events: list[ConversationEvent] = Field(default_factory=list)
+    next_cursor: int = Field(default=0, ge=0)
 
 
 class ConversationRecord(BaseModel):
