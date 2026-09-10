@@ -140,6 +140,7 @@ async function createAndOpen(server, panels, tree, taskFields, caseRoot) {
         task: {
           task_id: "chat-" + crypto.randomUUID(),
           include_trace: true,
+          goal_mode: vscode.workspace.getConfiguration("bugAgent").get("goalMode", true),
           ...taskFields,
         },
       });

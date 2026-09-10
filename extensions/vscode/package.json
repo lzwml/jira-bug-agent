@@ -58,6 +58,11 @@
           "default": 100,
           "minimum": 1,
           "description": "超过此大小时使用只读分段日志查看器。"
+        },
+        "bugAgent.goalMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "持续调查直到得到结论、达到工具调用或运行时间安全上限。"
         }
       }
     },
