@@ -247,12 +247,41 @@ class SqliteTaskStore:
             ).fetchone()
             return self._conversation_record(connection, row) if row is not None else None
 
+    def find_active_conversation(self, task: BugAnalysisTask) -> ConversationRecord | None:
+        """Return the most recently updated active conversation for the same Case."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM conversations WHERE status = 'active'
+                   ORDER BY updated_at DESC"""
+            ).fetchall()
+            for row in rows:
+                candidate = BugAnalysisTask.model_validate_json(row["task_json"])
+                if self._same_case(candidate, task):
+                    return self._conversation_record(connection, row)
+        return None
+
     def list_conversations(self) -> list[ConversationRecord]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM conversations ORDER BY updated_at DESC"
             ).fetchall()
             return [self._conversation_record(connection, row) for row in rows]
+
+    @staticmethod
+    def _same_case(left: BugAnalysisTask, right: BugAnalysisTask) -> bool:
+        if left.source != right.source:
+            return False
+        if left.source == "jira":
+            return bool(
+                left.issue_key and right.issue_key
+                and left.issue_key.casefold() == right.issue_key.casefold()
+            )
+        if not left.case_path or not right.case_path:
+            return False
+        return str(Path(left.case_path).resolve()).casefold() == str(
+            Path(right.case_path).resolve()
+        ).casefold()
 
     def add_conversation_message(
         self, conversation_id: str, *, role: str, content: str,

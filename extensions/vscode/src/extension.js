@@ -134,9 +134,38 @@ async function createAndOpen(server, panels, tree, taskFields, caseRoot) {
       title: "BugAgent 正在启动分析…",
     }, async () => {
       const api = await server.ensure(caseRoot);
-      const conversationId = "vscode-" + crypto.randomUUID();
-      await api.createConversation({
-        conversation_id: conversationId,
+      const conversations = await api.listConversations();
+      const existing = conversations.find((item) =>
+        item.status === "active" && sameCase(item.task || {}, taskFields));
+      let forceNew = false;
+      if (existing) {
+        const choice = await vscode.window.showQuickPick([
+          {
+            label: "$(history) 继续已有会话",
+            description: "推荐·保留已查证据、人工纠偏和调查上下文",
+            resume: true,
+          },
+          {
+            label: "$(new-file) 重新分析",
+            description: "创建独立新会话，不继承上一次对话",
+            resume: false,
+          },
+        ], {
+          placeHolder: "已找到该 Case 的历史会话",
+          ignoreFocusOut: true,
+        });
+        if (!choice) return;
+        if (choice.resume) {
+          const record = await api.getConversation(existing.conversation_id);
+          tree.refresh();
+          await panels.open(record);
+          vscode.window.showInformationMessage("已恢复该 Case 的历史会话。");
+          return;
+        }
+        forceNew = true;
+      }
+      const created = await api.createConversation({
+        ...(forceNew ? {conversation_id: "vscode-" + crypto.randomUUID()} : {}),
         task: {
           task_id: "chat-" + crypto.randomUUID(),
           include_trace: true,
@@ -144,17 +173,30 @@ async function createAndOpen(server, panels, tree, taskFields, caseRoot) {
           ...taskFields,
         },
       });
-      await api.sendMessage(
-        conversationId,
-        "开始分析这个 Case。目标：" + taskFields.objective,
-      );
-      const record = await api.getConversation(conversationId);
+      if (!(created.messages || []).length) {
+        await api.sendMessage(
+          created.conversation_id,
+          "开始分析这个 Case。目标：" + taskFields.objective,
+        );
+      }
+      const record = await api.getConversation(created.conversation_id);
       tree.refresh();
       await panels.open(record);
     });
   } catch (error) {
     vscode.window.showErrorMessage("BugAgent: " + error.message);
   }
+}
+
+function sameCase(left, right) {
+  if (left.source !== right.source) return false;
+  if (left.source === "jira") {
+    return String(left.issue_key || "").toUpperCase() ===
+      String(right.issue_key || "").toUpperCase();
+  }
+  const normalize = (value) => path.resolve(String(value || "")).toLowerCase();
+  return Boolean(left.case_path && right.case_path) &&
+    normalize(left.case_path) === normalize(right.case_path);
 }
 
 function deactivate() {}

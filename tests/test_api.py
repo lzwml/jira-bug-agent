@@ -239,6 +239,58 @@ async def test_http_api_persists_case_conversation_messages(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_conversation_create_resumes_latest_active_jira_case_by_default(tmp_path):
+    app = create_app(
+        ApiConfig(database_path=tmp_path / "tasks.sqlite3"),
+        ImmediateWorker,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            first = await client.post("/conversations", json={
+                "task": {
+                    "task_id": "jira-first", "source": "jira",
+                    "issue_key": "BAIC-47248", "objective": "首次分析",
+                },
+            })
+            first_id = first.json()["conversation_id"]
+            await client.post(
+                f"/conversations/{first_id}/messages",
+                json={"content": "保留这条人工纠偏"},
+            )
+            for _ in range(50):
+                current = await client.get(f"/conversations/{first_id}")
+                if len(current.json()["messages"]) == 2:
+                    break
+                await asyncio.sleep(0)
+
+            resumed = await client.post("/conversations", json={
+                "task": {
+                    "task_id": "jira-second", "source": "jira",
+                    "issue_key": "BAIC-47248", "objective": "不同的后续目标",
+                },
+            })
+
+            assert resumed.status_code == 201
+            assert resumed.json()["conversation_id"] == first_id
+            assert any(
+                item["content"] == "保留这条人工纠偏"
+                for item in resumed.json()["messages"]
+            )
+
+            forced = await client.post("/conversations", json={
+                "conversation_id": "explicit-fresh-analysis",
+                "task": {
+                    "task_id": "jira-third", "source": "jira",
+                    "issue_key": "BAIC-47248",
+                },
+            })
+            assert forced.json()["conversation_id"] == "explicit-fresh-analysis"
+            assert forced.json()["messages"] == []
+
+
+@pytest.mark.anyio
 async def test_http_api_cannot_continue_running_task(tmp_path):
     case_root = tmp_path / "cases"
     case_path = case_root / "APP-42"

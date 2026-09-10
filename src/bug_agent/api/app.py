@@ -134,6 +134,10 @@ def create_app(
         """建立 Case 级持久会话；消息和调查状态将在后续请求中连续累积。"""
         authorize(x_api_key)
         task = validate_local_task(request_body.task)
+        if request_body.conversation_id is None:
+            existing = store.find_active_conversation(task)
+            if existing is not None:
+                return existing
         conversation_id = request_body.conversation_id or str(uuid4())
         try:
             return store.create_conversation(conversation_id, task)
