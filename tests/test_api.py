@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -341,6 +342,50 @@ async def test_conversation_dispatcher_consumes_queued_messages(tmp_path):
         assert record.messages[0].status == "completed"
         assert record.messages[1].role == "assistant"
         assert record.messages[1].content == "已收到：冷启动黑屏？"
+    finally:
+        await dispatcher.stop()
+
+
+@pytest.mark.anyio
+async def test_conversation_api_persists_human_rca_and_machine_report(tmp_path):
+    """VS Code receives a readable presentation and a typed report in one response."""
+    from bug_agent.api.dispatcher import ConversationDispatcher
+
+    class ReportWorker(ImmediateWorker):
+        async def answer_conversation_turn(
+            self, task, history, user_message, *, max_steps_per_turn=None,
+        ):
+            return json.dumps({
+                "conclusion_status": "hypothesis_only",
+                "summary": "当前仅怀疑 DVR 存在相机资源竞争，根因尚未确认。",
+                "observed_symptom": "DVR 画面卡死",
+                "root_cause": None,
+                "missing_evidence": ["CameraService 资源归属"],
+            }, ensure_ascii=False)
+
+    store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = BugAnalysisTask(task_id="rca-chat-task", source="jira", issue_key="BAIC-47248")
+    store.create_conversation("rca-chat", task)
+    store.add_conversation_message("rca-chat", role="user", content="生成结论")
+    dispatcher = ConversationDispatcher(store, ReportWorker, concurrency=1)
+    await dispatcher.start()
+    try:
+        for _ in range(50):
+            record = store.get_conversation("rca-chat")
+            if any(message.role == "assistant" for message in record.messages):
+                break
+            await asyncio.sleep(0)
+        assistant = next(message for message in record.messages if message.role == "assistant")
+        assert assistant.content_format == "markdown"
+        assert assistant.content.startswith("# 阶段性 RCA：rca-chat-task")
+        assert assistant.report is not None
+        assert assistant.report.conclusion_status == "hypothesis_only"
+        events = store.list_conversation_events("rca-chat")
+        response = next(event for event in events if event.kind == "assistant_message")
+        assert response.content_format == "markdown"
+        assert response.report is not None
+        assert response.report.root_cause is None
     finally:
         await dispatcher.stop()
 

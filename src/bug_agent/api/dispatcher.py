@@ -9,6 +9,7 @@ from typing import Callable, Protocol
 
 from ..contracts import BugAnalysisResult, BugAnalysisTask
 from ..models import ToolEvent
+from ..presentation import present_conversation_answer
 from .models import TaskRecord
 from .task_store import SqliteTaskStore
 
@@ -171,7 +172,20 @@ class ConversationDispatcher:
                     logger.exception("会话回合失败 (message_id=%s)", message_id)
                     self.store.fail_conversation_message(message_id, type(exc).__name__)
                 else:
-                    self.store.complete_conversation_message(message_id, answer)
+                    presentation = present_conversation_answer(
+                        answer,
+                        task_id=conversation.task.task_id,
+                        tool_events=self.store.conversation_tool_events(
+                            conversation.conversation_id,
+                        ),
+                    )
+                    self.store.complete_conversation_message(
+                        message_id,
+                        presentation.content,
+                        content_format=presentation.content_format,
+                        report=presentation.report,
+                        report_validation=presentation.report_validation,
+                    )
                 finally:
                     self._active.pop(message_id, None)
                     self._cancelled_by_user.discard(message_id)

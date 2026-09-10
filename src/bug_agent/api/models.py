@@ -6,13 +6,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ..contracts import BugAnalysisResult, BugAnalysisTask
+from ..contracts import BugAnalysisResult, BugAnalysisTask, RCAReport, ReportValidation
 
 
 TaskStatus = Literal["queued", "running", "completed", "failed"]
 ConversationStatus = Literal["active", "closed"]
 ConversationRole = Literal["user", "assistant"]
 ConversationMessageStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+ConversationContentFormat = Literal["plain_text", "markdown"]
 ConversationEventKind = Literal[
     "message_queued", "message_running", "phase_changed", "tool_started", "tool_completed",
     "assistant_message", "turn_failed", "turn_cancelled",
@@ -74,6 +75,9 @@ class ConversationMessage(BaseModel):
     message_id: int
     role: ConversationRole
     content: str
+    content_format: ConversationContentFormat = "plain_text"
+    report: RCAReport | None = None
+    report_validation: ReportValidation | None = None
     status: ConversationMessageStatus = "completed"
     error: str | None = None
     created_at: str
@@ -103,6 +107,9 @@ class ConversationEvent(BaseModel):
     tool_name: str | None = None
     success: bool | None = None
     content: str | None = None
+    content_format: ConversationContentFormat | None = None
+    report: RCAReport | None = None
+    report_validation: ReportValidation | None = None
     arguments: dict[str, Any] | None = None
     result: str | None = None
     locations: list[ClientLocation] = Field(default_factory=list)

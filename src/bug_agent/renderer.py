@@ -74,9 +74,17 @@ def render_markdown(result: BugAnalysisResult) -> str:
         f"- **根因证据**：{_ids(report.root_cause_evidence_ids)}",
         f"- **模型 Token 消耗**：{_token_usage_label(result)}",
         "",
-        report.summary,
-        "",
     ]
+    if report.conclusion_status != "confirmed":
+        lines.extend([
+            "> **阅读提示**：当前没有已验证的技术根因。"
+            "下方涉及因果的内容均为候选解释，不能作为定案结论。",
+            "",
+        ])
+    summary = report.summary
+    if report.conclusion_status != "confirmed" and "根因尚未确认" not in summary:
+        summary = f"根因尚未确认。当前证据下：{summary}"
+    lines.extend([summary, ""])
 
     if result.human_checkpoint is not None:
         checkpoint = result.human_checkpoint

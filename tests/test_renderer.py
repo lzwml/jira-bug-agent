@@ -76,6 +76,7 @@ def test_renderer_outputs_formal_stability_rca_sections():
     assert "置信度**：中高" in markdown
     assert "**模型 Token 消耗**：总计 1,500；输入 1,200；输出 300" in markdown
     assert "模型调用 4 次；缓存输入 400；Reasoning 100" in markdown
+    assert "当前没有已验证的技术根因" in markdown
 
 
 def test_analysis_guide_is_rendered_independently_from_formal_rca():

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from ..contracts import BugAnalysisResult, BugAnalysisTask
+from ..contracts import BugAnalysisResult, BugAnalysisTask, RCAReport, ReportValidation
 from ..models import ToolEvent
 from .client_events import locations_from_tool_event
 from .models import (
@@ -97,6 +97,16 @@ class SqliteTaskStore:
                 connection.execute("ALTER TABLE conversation_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
             if "error" not in columns:
                 connection.execute("ALTER TABLE conversation_messages ADD COLUMN error TEXT")
+            if "content_format" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_messages ADD COLUMN content_format TEXT NOT NULL DEFAULT 'plain_text'"
+                )
+            if "report_json" not in columns:
+                connection.execute("ALTER TABLE conversation_messages ADD COLUMN report_json TEXT")
+            if "report_validation_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_messages ADD COLUMN report_validation_json TEXT"
+                )
 
     def submit(self, task: BugAnalysisTask) -> tuple[TaskRecord, bool]:
         payload = _canonical_task(task)
@@ -325,7 +335,15 @@ class SqliteTaskStore:
             message = ConversationMessage(message_id=message_id, role="user", content=row["content"], status="running", created_at=row["created_at"])
             return record, message, [dict(item) for item in history]
 
-    def complete_conversation_message(self, message_id: int, answer: str) -> None:
+    def complete_conversation_message(
+        self,
+        message_id: int,
+        answer: str,
+        *,
+        content_format: str = "plain_text",
+        report: RCAReport | None = None,
+        report_validation: ReportValidation | None = None,
+    ) -> None:
         timestamp = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -343,15 +361,32 @@ class SqliteTaskStore:
                 (message_id,),
             )
             cursor = connection.execute(
-                "INSERT INTO conversation_messages (conversation_id, role, content, status, created_at) VALUES (?, 'assistant', ?, 'completed', ?)",
-                (row["conversation_id"], answer, timestamp),
+                """INSERT INTO conversation_messages
+                   (conversation_id, role, content, content_format, report_json,
+                    report_validation_json, status, created_at)
+                   VALUES (?, 'assistant', ?, ?, ?, ?, 'completed', ?)""",
+                (
+                    row["conversation_id"], answer, content_format,
+                    report.model_dump_json() if report else None,
+                    report_validation.model_dump_json() if report_validation else None,
+                    timestamp,
+                ),
             )
+            presentation_payload = {
+                "content": answer,
+                "content_format": content_format,
+                "report": report.model_dump(mode="json") if report else None,
+                "report_validation": (
+                    report_validation.model_dump(mode="json")
+                    if report_validation else None
+                ),
+            }
             self._append_event(
                 connection,
                 conversation_id=row["conversation_id"],
                 message_id=cursor.lastrowid,
                 kind="assistant_message",
-                payload={"content": answer},
+                payload=presentation_payload,
                 timestamp=timestamp,
             )
             connection.execute("UPDATE conversations SET updated_at = ? WHERE conversation_id = ?", (timestamp, row["conversation_id"]))
@@ -447,6 +482,29 @@ class SqliteTaskStore:
             ).fetchall()
         return [self._conversation_event(row) for row in rows]
 
+    def conversation_tool_events(self, conversation_id: str) -> list[ToolEvent]:
+        """Rebuild the durable tool trace used to validate a presented RCA."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT event_id, payload_json FROM conversation_events
+                   WHERE conversation_id = ? AND kind = 'tool_completed'
+                   ORDER BY event_id""",
+                (conversation_id,),
+            ).fetchall()
+        events: list[ToolEvent] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            events.append(ToolEvent(
+                step=int(payload.get("step") or 0),
+                tool_call_id=f"conversation-event-{row['event_id']}",
+                tool_name=str(payload.get("tool_name") or ""),
+                arguments=payload.get("arguments") or {},
+                result=str(payload.get("result") or ""),
+                success=bool(payload.get("success")),
+            ))
+        return events
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -509,7 +567,9 @@ class SqliteTaskStore:
         connection: sqlite3.Connection, row: sqlite3.Row,
     ) -> ConversationRecord:
         messages = connection.execute(
-            """SELECT message_id, role, content, status, error, created_at FROM conversation_messages
+            """SELECT message_id, role, content, content_format, report_json,
+                      report_validation_json, status, error, created_at
+               FROM conversation_messages
                WHERE conversation_id = ? ORDER BY message_id""",
             (row["conversation_id"],),
         ).fetchall()
@@ -517,7 +577,27 @@ class SqliteTaskStore:
             conversation_id=row["conversation_id"],
             status=row["status"],
             task=BugAnalysisTask.model_validate_json(row["task_json"]),
-            messages=[ConversationMessage(**dict(message)) for message in messages],
+            messages=[SqliteTaskStore._conversation_message(message) for message in messages],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _conversation_message(row: sqlite3.Row) -> ConversationMessage:
+        return ConversationMessage(
+            message_id=row["message_id"],
+            role=row["role"],
+            content=row["content"],
+            content_format=row["content_format"] or "plain_text",
+            report=(
+                RCAReport.model_validate_json(row["report_json"])
+                if row["report_json"] else None
+            ),
+            report_validation=(
+                ReportValidation.model_validate_json(row["report_validation_json"])
+                if row["report_validation_json"] else None
+            ),
+            status=row["status"],
+            error=row["error"],
+            created_at=row["created_at"],
         )

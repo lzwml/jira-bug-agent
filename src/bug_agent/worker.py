@@ -36,6 +36,7 @@ from .prompts import (
     VIDEO_ANALYSIS_WORKFLOW_PROMPT,
 )
 from .provider import OpenAICompatibleProvider, ProviderError
+from .presentation import parse_report_output
 from .report_validation import build_evidence_registry, validate_report
 from .run_bundle import build_execution_context
 from .runstore import RunRecorder, write_run_record
@@ -67,28 +68,6 @@ def _message_token_usage(message: object) -> TokenUsage | None:
     tracker = TokenUsageAccumulator()
     tracker.add(getattr(message, "token_usage", None))
     return tracker.summary()
-
-
-def _extract_report(raw: str) -> tuple[RCAReport, bool]:
-    """优先解析严格 JSON；失败时保留模型文本并显式标记为非结构化。"""
-
-    candidate = raw.strip()
-    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", candidate, re.DOTALL | re.IGNORECASE)
-    if fenced:
-        candidate = fenced.group(1)
-    else:
-        start, end = candidate.find("{"), candidate.rfind("}")
-        if start >= 0 and end > start:
-            candidate = candidate[start:end + 1]
-    try:
-        return RCAReport.model_validate(json.loads(candidate)), True
-    except (json.JSONDecodeError, ValueError):
-        return RCAReport(
-            conclusion_status="hypothesis_only",
-            summary=raw.strip() or "Agent 未生成分析结论。",
-            missing_evidence=["模型未按 RCAReport Schema 返回结构化结果"],
-            next_actions=["检查模型的结构化输出能力或调整 Prompt"],
-        ), False
 
 
 def _extract_analysis_guide(raw: str, evidence_ids: set[str]) -> AnalysisGuide:
@@ -604,7 +583,7 @@ class BugAnalysisWorker:
                 next_actions=[run.final_answer],
             )
         else:
-            report, structured = _extract_report(run.final_answer)
+            report, structured = parse_report_output(run.final_answer)
             if structured:
                 report, report_validation = validate_report(
                     report,
@@ -1001,7 +980,7 @@ class BugAnalysisWorker:
             raw = str(message.get("content") or "").strip()
             if not raw:
                 raise ValueError("模型未输出报告内容")
-            report, structured = _extract_report(raw)
+            report, structured = parse_report_output(raw)
             validation = None
             if structured:
                 report, validation = validate_report(

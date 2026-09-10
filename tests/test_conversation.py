@@ -119,6 +119,14 @@ def test_chat_synthesis_drops_retracted_guesses_and_preserves_identity_conflicts
     assert "降低结论等级" in CHAT_REPORT_SYNTHESIS_PROMPT
 
 
+def test_report_prompt_forbids_confirmed_wording_for_hypotheses():
+    from bug_agent.prompts import REPORT_FORMAT_PROMPT
+
+    assert "根因尚未确认" in REPORT_FORMAT_PROMPT
+    assert "由…引发" in REPORT_FORMAT_PROMPT
+    assert "把 hypotheses 写成已确认因果" in REPORT_FORMAT_PROMPT
+
+
 @pytest.mark.anyio
 async def test_tool_calls_are_recorded_in_turn():
     """每轮的工具调用应记录在 turn.result.tool_events 中。"""

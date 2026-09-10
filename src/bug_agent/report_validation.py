@@ -175,6 +175,19 @@ def validate_report(
             or incident.build_identity
         )
     )
+    if conclusion != "confirmed" and root_cause:
+        issues.append("未确认报告不应填写 root_cause，已转为候选假设")
+        if not any(item.statement == root_cause for item in hypotheses):
+            hypotheses.append(Hypothesis(
+                statement=root_cause,
+                confidence=0.0,
+                status="candidate",
+                supporting_evidence_ids=root_cause_evidence_ids,
+                missing_evidence=["技术根因尚未被直接证据验证"],
+                falsification="补充能够直接验证或排除该因果链的日志证据",
+            ))
+        root_cause = None
+        root_cause_evidence_ids = []
     if conclusion == "confirmed" and (
         not root_cause or not root_cause_evidence_ids or not incident_anchored
     ):

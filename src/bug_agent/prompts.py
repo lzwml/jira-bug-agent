@@ -137,6 +137,7 @@ REPORT_FORMAT_PROMPT = """
   "next_actions": []
 }
 必须区分现象、直接故障机制和根因；根因未验证时 root_cause 必须为 null。
+当 conclusion_status 不是 confirmed 时，summary 必须明确写“根因尚未确认”，候选解释必须使用“可能”“怀疑”“待验证”等非确定性表述；禁止使用“由…引发”“导致”“根因是”把 hypotheses 写成已确认因果。
 零匹配只能放入 negative_findings，不能放入 confirmed_facts。
 不得虚构 evidence_id、文件、行号、时间或负责人；没有可靠证据时使用 insufficient_evidence。
 incident 必须区分 reported_window 与 verified_window；不得把上报时间直接写成日志已验证时间。

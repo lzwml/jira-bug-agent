@@ -25,10 +25,22 @@ from .contracts import BugAnalysisResult, BugAnalysisTask
 from .conversation import ConversationSession, SavedTurn
 from .evaluation import evaluate_run, load_review_file, promote_review, save_review
 from .models import ToolEvent, merge_token_usage
+from .presentation import present_conversation_answer
 from .renderer import render_analysis_guide, render_markdown
 from .runstore import resolve_run_dir, write_analysis_guide
 from .run_visualization import render_run_visualization
 from .worker import BugAnalysisWorker
+
+
+def _human_turn_answer(task: BugAnalysisTask, session: ConversationSession, raw: str) -> str:
+    """Render an RCA-shaped chat answer without changing the persisted model history."""
+
+    events = [event for turn in session._turns for event in turn.result.tool_events]
+    return present_conversation_answer(
+        raw,
+        task_id=task.task_id,
+        tool_events=events,
+    ).content
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -651,7 +663,7 @@ async def _run_chat(args: argparse.Namespace) -> int:
             turn = await session.send(first_instruction)
             print(f"[第 1 轮回答]")
             print("-" * 40)
-            print(turn.result.final_answer)
+            print(_human_turn_answer(task, session, turn.result.final_answer))
             print("-" * 40)
             if turn.result.status == "failed":
                 print(f"\n[错误] {turn.result.error}")
@@ -723,7 +735,7 @@ async def _run_chat(args: argparse.Namespace) -> int:
 
             print(f"\n[第 {session.turn_count} 轮回答]")
             print("-" * 40)
-            print(turn.result.final_answer)
+            print(_human_turn_answer(task, session, turn.result.final_answer))
             print("-" * 40)
             if turn.result.status == "max_steps":
                 print(f"\n[提示] 本轮达到步数上限。")

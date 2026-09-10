@@ -44,6 +44,115 @@ function appendLinkedText(container, text) {
   container.append(document.createTextNode(text.slice(offset)));
 }
 
+const statusLabels = {
+  confirmed: "根因已确认",
+  hypothesis_only: "已形成候选根因",
+  insufficient_evidence: "根因未确认（证据不足）",
+};
+const hypothesisStatusLabels = {
+  candidate: "待验证",
+  supported: "有证据支持",
+  rejected: "已排除",
+};
+
+function reportField(container, label, value, className) {
+  const row = element("div", "report-field" + (className ? " " + className : ""));
+  row.append(
+    element("span", "report-key", label),
+    element("span", "report-value", value || "尚未确认"),
+  );
+  container.append(row);
+}
+
+function reportList(container, title, values, className) {
+  if (!values || !values.length) return;
+  const section = element("section", "report-section" + (className ? " " + className : ""));
+  section.append(element("h3", "", title));
+  const list = element("ul");
+  for (const value of values) list.append(element("li", "", value));
+  section.append(list);
+  container.append(section);
+}
+
+function renderReport(container, message) {
+  const report = message.report;
+  const head = element("div", "report-head");
+  head.append(element(
+    "span", "report-status " + report.conclusion_status,
+    statusLabels[report.conclusion_status] || report.conclusion_status,
+  ));
+  if (message.report_validation) {
+    head.append(element(
+      "span",
+      message.report_validation.grounded ? "validation grounded" : "validation ungrounded",
+      message.report_validation.grounded ? "引用校验通过" : "引用校验未通过",
+    ));
+  }
+  container.append(head);
+  if (report.conclusion_status !== "confirmed") {
+    container.append(element(
+      "div", "report-warning",
+      "当前没有已验证的技术根因；下方因果解释均是候选假设，不能作为定案结论。",
+    ));
+  }
+  const facts = element("div", "report-facts");
+  reportField(facts, "用户现象", report.observed_symptom);
+  reportField(facts, "直接机制", report.failure_mechanism);
+  reportField(facts, "技术根因", report.root_cause, report.root_cause ? "" : "unconfirmed");
+  container.append(facts);
+  const summary = element("section", "report-section report-summary");
+  const summaryText = report.conclusion_status !== "confirmed" &&
+    !(report.summary || "").includes("根因尚未确认")
+    ? "根因尚未确认。当前证据下：" + (report.summary || "暂无摘要")
+    : (report.summary || "暂无摘要");
+  summary.append(
+    element("h3", "", "当前结论"),
+    element("p", "", summaryText),
+  );
+  container.append(summary);
+  reportList(container, "已确认事实", report.confirmed_facts);
+
+  if (report.hypotheses && report.hypotheses.length) {
+    const section = element("section", "report-section hypotheses");
+    section.append(element("h3", "", "候选假设与验证缺口"));
+    for (const hypothesis of report.hypotheses) {
+      const item = element("div", "hypothesis");
+      item.append(element("strong", "", hypothesis.statement));
+      item.append(element(
+        "div", "muted", "状态：" +
+        (hypothesisStatusLabels[hypothesis.status] || hypothesis.status) + " · 置信度：" +
+        Math.round(Number(hypothesis.confidence || 0) * 100) + "%",
+      ));
+      if (hypothesis.missing_evidence && hypothesis.missing_evidence.length) {
+        item.append(element("div", "gap", "尚缺：" + hypothesis.missing_evidence.join("；")));
+      }
+      if (hypothesis.falsification) {
+        item.append(element("div", "", "最低成本验证：" + hypothesis.falsification));
+      }
+      section.append(item);
+    }
+    container.append(section);
+  }
+  reportList(container, "整体缺失证据", report.missing_evidence, "gaps");
+  const actions = (report.actions || []).map((item) =>
+    item.priority + " · " + item.action + "（完成标准：" + item.completion_criteria + "）");
+  reportList(container, "下一步动作", actions.length ? actions : report.next_actions);
+
+  if (report.evidence && report.evidence.length) {
+    const evidence = element("details", "report-evidence");
+    evidence.append(element("summary", "", "查看证据定位（" + report.evidence.length + "）"));
+    for (const item of report.evidence) {
+      const button = element(
+        "button", "location", item.evidence_id + " · " + item.relative_path +
+        (item.line_start ? ":L" + item.line_start : ""),
+      );
+      button.onclick = () => vscode.postMessage({type: "openLocation", location: item});
+      evidence.append(button);
+    }
+    container.append(evidence);
+  }
+}
+
 function renderTool(event) {
   const card = element("details", "tool");
   card.append(element(
@@ -82,7 +191,8 @@ function render() {
     const card = element("article", "message " + message.role);
     card.append(element("div", "label", message.role === "user" ? "你" : "BugAgent"));
     const body = element("div", "content");
-    appendLinkedText(body, message.content || "");
+    if (message.role === "assistant" && message.report) renderReport(body, message);
+    else appendLinkedText(body, message.content || "");
     card.append(body);
     if (message.status && message.status !== "completed") {
       card.append(element("div", "message-status", message.status));
@@ -142,7 +252,10 @@ function applyEvent(event) {
   } else if (event.kind === "assistant_message") {
     messages.set(event.message_id, {
       message_id: event.message_id, role: "assistant",
-      content: event.content || "", status: "completed",
+      content: event.content || "", content_format: event.content_format || "plain_text",
+      report: event.report || null,
+      report_validation: event.report_validation || null,
+      status: "completed",
     });
     const active = messages.get(activeMessageId);
     if (active) active.status = "completed";

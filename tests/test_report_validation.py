@@ -120,3 +120,23 @@ def test_confirmed_report_with_real_evidence_but_no_incident_anchor_is_downgrade
     assert validated.root_cause is None
     assert result.grounded is False
     assert any("事故身份" in issue for issue in result.issues)
+
+
+def test_hypothesis_report_moves_root_cause_to_candidate():
+    report = RCAReport(
+        conclusion_status="hypothesis_only",
+        summary="根因仍待验证",
+        root_cause="新旧 Task 竞争相机资源",
+        root_cause_evidence_ids=["ev-real"],
+        evidence=[EvidenceReference(
+            evidence_id="ev-real", artifact_id="artifact-1", relative_path="logcat.txt",
+            line_start=42, line_end=42, excerpt="FATAL EXCEPTION",
+        )],
+    )
+
+    validated, result = validate_report(report, [evidence_event()])
+
+    assert validated.root_cause is None
+    assert validated.root_cause_evidence_ids == []
+    assert validated.hypotheses[-1].statement == "新旧 Task 竞争相机资源"
+    assert result.grounded is False
