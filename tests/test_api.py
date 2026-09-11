@@ -678,6 +678,7 @@ async def test_conversation_events_expose_tool_locations_and_resume_cursor(tmp_p
     case_root = tmp_path / "cases"
     case_path = case_root / "APP-42"
     (case_path / "logs").mkdir(parents=True)
+    (case_path / "logs" / "main.log").write_text("FATAL\n", encoding="utf-8")
 
     class EventWorker(ImmediateWorker):
         async def answer_conversation_turn(
@@ -735,6 +736,9 @@ async def test_conversation_events_expose_tool_locations_and_resume_cursor(tmp_p
             location = page.json()["events"][3]["locations"][0]
             assert location["relative_path"] == "logs/main.log"
             assert location["line_start"] == 42
+            assert location["case_root"] == str(case_path.resolve())
+            assert location["resolved_path"] == str((case_path / "logs" / "main.log").resolve())
+            assert location["availability"] == "ready"
             cursor = page.json()["next_cursor"]
             resumed = await client.get(
                 "/conversations/event-chat/events", params={"after": cursor},

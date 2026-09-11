@@ -197,8 +197,12 @@ function renderTool(event) {
         "button", "location",
         (location.identifier ? location.identifier + " · " : "") +
         location.relative_path +
-        (location.line_start ? ":L" + location.line_start : ""),
+        (location.line_start ? ":L" + location.line_start : "") +
+        (location.availability === "not_extracted" ? "（尚未提取）" : ""),
       );
+      if (location.availability === "not_extracted") {
+        button.title = "点击查看归档与成员位置";
+      }
       button.onclick = () => vscode.postMessage({type: "openLocation", location});
       list.append(button);
     }

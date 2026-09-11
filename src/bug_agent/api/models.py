@@ -100,6 +100,10 @@ class ClientLocation(BaseModel):
     excerpt: str | None = None
     archive_relative_path: str | None = None
     member_id: str | None = None
+    member_path: str | None = None
+    case_root: str | None = None
+    resolved_path: str | None = None
+    availability: Literal["ready", "not_extracted", "missing"] = "missing"
 
 
 class ConversationPersistence(BaseModel):
@@ -145,6 +149,7 @@ class ConversationRecord(BaseModel):
     conversation_id: str
     status: ConversationStatus
     task: BugAnalysisTask
+    case_root: str | None = None
     messages: list[ConversationMessage] = Field(default_factory=list)
     investigation_state: InvestigationState | None = None
     created_at: str

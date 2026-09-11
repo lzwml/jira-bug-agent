@@ -40,6 +40,15 @@ def _canonical_task(task: BugAnalysisTask) -> str:
     )
 
 
+def _case_root(task: BugAnalysisTask) -> Path | None:
+    if task.source == "local":
+        return Path(task.case_path).expanduser().resolve() if task.case_path else None
+    if not task.issue_key:
+        return None
+    from ..config import default_export_root
+    return (default_export_root() / task.issue_key.upper()).resolve()
+
+
 class SqliteTaskStore:
     """每次操作使用独立连接，便于事件循环中的多个执行器安全共享。"""
 
@@ -491,6 +500,11 @@ class SqliteTaskStore:
 
     def append_tool_event(self, conversation_id: str, message_id: int, event: ToolEvent) -> None:
         with self._connect() as connection:
+            row = connection.execute(
+                "SELECT task_json FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            task = BugAnalysisTask.model_validate_json(row["task_json"]) if row else None
             self._append_event(
                 connection,
                 conversation_id=conversation_id,
@@ -504,7 +518,9 @@ class SqliteTaskStore:
                     "result": event.result,
                     "locations": [
                         item.model_dump(mode="json")
-                        for item in locations_from_tool_event(event)
+                        for item in locations_from_tool_event(
+                            event, case_root=_case_root(task) if task else None,
+                        )
                     ],
                 },
             )
@@ -529,10 +545,10 @@ class SqliteTaskStore:
         self, conversation_id: str, *, after: int = 0, limit: int = 200,
     ) -> list[ConversationEvent]:
         with self._connect() as connection:
-            exists = connection.execute(
-                "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,),
+            conversation = connection.execute(
+                "SELECT task_json FROM conversations WHERE conversation_id = ?", (conversation_id,),
             ).fetchone()
-            if exists is None:
+            if conversation is None:
                 raise KeyError(conversation_id)
             rows = connection.execute(
                 """SELECT * FROM conversation_events
@@ -540,7 +556,8 @@ class SqliteTaskStore:
                    ORDER BY event_id LIMIT ?""",
                 (conversation_id, after, limit),
             ).fetchall()
-        return [self._conversation_event(row) for row in rows]
+        task = BugAnalysisTask.model_validate_json(conversation["task_json"])
+        return [self._conversation_event(row, case_root=_case_root(task)) for row in rows]
 
     def conversation_tool_events(self, conversation_id: str) -> list[ToolEvent]:
         """Rebuild the durable tool trace used to validate a presented RCA."""
@@ -595,8 +612,23 @@ class SqliteTaskStore:
         )
 
     @staticmethod
-    def _conversation_event(row: sqlite3.Row) -> ConversationEvent:
+    def _conversation_event(
+        row: sqlite3.Row, *, case_root: Path | None = None,
+    ) -> ConversationEvent:
         payload = json.loads(row["payload_json"])
+        if row["kind"] == "tool_completed" and payload.get("result"):
+            tool_event = ToolEvent(
+                step=int(payload.get("step") or 0),
+                tool_call_id=f"conversation-event-{row['event_id']}",
+                tool_name=str(payload.get("tool_name") or ""),
+                arguments=payload.get("arguments") or {},
+                result=str(payload.get("result") or ""),
+                success=bool(payload.get("success")),
+            )
+            payload["locations"] = [
+                item.model_dump(mode="json")
+                for item in locations_from_tool_event(tool_event, case_root=case_root)
+            ]
         return ConversationEvent(
             event_id=row["event_id"],
             conversation_id=row["conversation_id"],
@@ -633,10 +665,12 @@ class SqliteTaskStore:
                WHERE conversation_id = ? ORDER BY message_id""",
             (row["conversation_id"],),
         ).fetchall()
+        task = BugAnalysisTask.model_validate_json(row["task_json"])
         return ConversationRecord(
             conversation_id=row["conversation_id"],
             status=row["status"],
-            task=BugAnalysisTask.model_validate_json(row["task_json"]),
+            task=task,
+            case_root=str(_case_root(task)) if _case_root(task) else None,
             messages=[SqliteTaskStore._conversation_message(message) for message in messages],
             investigation_state=(
                 InvestigationState.model_validate_json(row["investigation_state_json"])

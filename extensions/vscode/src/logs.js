@@ -50,9 +50,24 @@ class LogOpener {
 
   async open(location, casePath, jiraExportRoot) {
     const rawPath = location.relative_path || "";
-    let filePath = path.isAbsolute(rawPath) ? rawPath : undefined;
-    if (!filePath && casePath) filePath = path.resolve(casePath, rawPath);
-    if (!filePath && jiraExportRoot) filePath = path.resolve(jiraExportRoot, rawPath);
+    let filePath = location.resolved_path || undefined;
+    if (!filePath && rawPath.includes("!/")) {
+      const archive = location.archive_relative_path || rawPath.split("!/")[0];
+      const member = location.member_path || rawPath.split("!/").slice(1).join("!/");
+      throw new Error(
+        "该归档成员尚未提取，暂时不能直接打开。归档：" + archive +
+        (member ? "；成员：" + member : ""),
+      );
+    }
+    if (!filePath && path.isAbsolute(rawPath)) filePath = rawPath;
+    const roots = [location.case_root, casePath, jiraExportRoot].filter(Boolean);
+    for (const root of roots) {
+      if (filePath) break;
+      const resolvedRoot = path.resolve(root);
+      const candidate = path.resolve(resolvedRoot, rawPath);
+      const relative = path.relative(resolvedRoot, candidate);
+      if (!relative.startsWith("..") && !path.isAbsolute(relative)) filePath = candidate;
+    }
     if (!filePath || !fs.existsSync(filePath)) {
       throw new Error("文件尚未提取或本机不可访问：" + rawPath);
     }
@@ -65,17 +80,33 @@ class LogOpener {
         filePath, location.line_start, location.line_end,
       );
       const document = await vscode.workspace.openTextDocument(fragment.uri);
-      await vscode.window.showTextDocument(document, {
+      const editor = await vscode.window.showTextDocument(document, {
         viewColumn: vscode.ViewColumn.Beside, preview: true,
       });
+      const start = Math.min(
+        document.lineCount - 1,
+        Math.max(0, (location.line_start || fragment.first) - fragment.first + 3),
+      );
+      const end = Math.min(
+        document.lineCount - 1,
+        Math.max(start, (location.line_end || location.line_start || fragment.first) -
+          fragment.first + 3),
+      );
+      const range = new vscode.Range(start, 0, end, document.lineAt(end).text.length);
+      editor.selection = new vscode.Selection(range.start, range.end);
+      editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
       return;
     }
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
     const editor = await vscode.window.showTextDocument(document, {
       viewColumn: vscode.ViewColumn.Beside, preview: true,
     });
-    const start = Math.max(0, (location.line_start || 1) - 1);
-    const end = Math.max(start, (location.line_end || location.line_start || 1) - 1);
+    const lastLine = Math.max(0, document.lineCount - 1);
+    const start = Math.min(lastLine, Math.max(0, (location.line_start || 1) - 1));
+    const end = Math.min(
+      lastLine,
+      Math.max(start, (location.line_end || location.line_start || 1) - 1),
+    );
     const range = new vscode.Range(start, 0, end, document.lineAt(end).text.length);
     editor.selection = new vscode.Selection(range.start, range.end);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);

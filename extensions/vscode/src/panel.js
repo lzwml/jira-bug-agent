@@ -63,7 +63,11 @@ class ConversationPanel {
         const config = vscode.workspace.getConfiguration("bugAgent");
         let jiraRoot = config.get("jiraExportRoot", "");
         if (jiraRoot && task.issue_key) jiraRoot = path.join(jiraRoot, task.issue_key);
-        await this.logOpener.open(message.location, task.case_path, jiraRoot);
+        await this.logOpener.open(
+          message.location,
+          state.record.case_root || task.case_path,
+          jiraRoot,
+        );
       } else if (message.type === "refresh") {
         state.record = await api.getConversation(state.record.conversation_id);
         state.panel.webview.postMessage({type: "conversation", value: state.record});
