@@ -106,13 +106,15 @@ class ConversationPanel {
   html(webview, media) {
     const script = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel.js"));
     const style = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel.css"));
+    const fileCardsStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "file-cards.css"));
     const nonce = String(Date.now());
     return [
       "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">",
       "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
       "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; ",
       "style-src " + webview.cspSource + "; script-src 'nonce-" + nonce + "';\">",
-      "<link rel=\"stylesheet\" href=\"" + style + "\"></head><body>",
+      "<link rel=\"stylesheet\" href=\"" + style + "\">",
+      "<link rel=\"stylesheet\" href=\"" + fileCardsStyle + "\"></head><body>",
       "<header><h1 id=\"title\">BugAgent</h1><span id=\"status\">连接中…</span>",
       "<button id=\"refresh\">刷新</button></header>",
       "<main id=\"messages\"></main>",

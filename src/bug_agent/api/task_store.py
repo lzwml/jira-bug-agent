@@ -15,7 +15,7 @@ from ..contracts import (
     ReportValidation,
 )
 from ..models import ToolEvent
-from .client_events import locations_from_tool_event
+from .client_events import locations_from_evidence, locations_from_tool_event
 from .models import (
     ConversationEvent,
     ConversationMessage,
@@ -415,7 +415,11 @@ class SqliteTaskStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT conversation_id, status FROM conversation_messages WHERE message_id = ?",
+                """SELECT message.conversation_id, message.status, conversation.task_json
+                   FROM conversation_messages AS message
+                   JOIN conversations AS conversation
+                     ON conversation.conversation_id = message.conversation_id
+                   WHERE message.message_id = ?""",
                 (message_id,),
             ).fetchone()
             if row is None:
@@ -449,6 +453,13 @@ class SqliteTaskStore:
                     if report_validation else None
                 ),
                 "persistence": persistence.model_dump(mode="json") if persistence else None,
+                "locations": [
+                    item.model_dump(mode="json")
+                    for item in locations_from_evidence(
+                        report.evidence,
+                        case_root=_case_root(BugAnalysisTask.model_validate_json(row["task_json"])),
+                    )
+                ] if report else [],
             }
             self._append_event(
                 connection,
@@ -629,6 +640,12 @@ class SqliteTaskStore:
                 item.model_dump(mode="json")
                 for item in locations_from_tool_event(tool_event, case_root=case_root)
             ]
+        elif row["kind"] == "assistant_message" and payload.get("report"):
+            report = RCAReport.model_validate(payload["report"])
+            payload["locations"] = [
+                item.model_dump(mode="json")
+                for item in locations_from_evidence(report.evidence, case_root=case_root)
+            ]
         return ConversationEvent(
             event_id=row["event_id"],
             conversation_id=row["conversation_id"],
@@ -671,7 +688,10 @@ class SqliteTaskStore:
             status=row["status"],
             task=task,
             case_root=str(_case_root(task)) if _case_root(task) else None,
-            messages=[SqliteTaskStore._conversation_message(message) for message in messages],
+            messages=[
+                SqliteTaskStore._conversation_message(message, case_root=_case_root(task))
+                for message in messages
+            ],
             investigation_state=(
                 InvestigationState.model_validate_json(row["investigation_state_json"])
                 if row["investigation_state_json"] else None
@@ -681,16 +701,19 @@ class SqliteTaskStore:
         )
 
     @staticmethod
-    def _conversation_message(row: sqlite3.Row) -> ConversationMessage:
+    def _conversation_message(
+        row: sqlite3.Row, *, case_root: Path | None = None,
+    ) -> ConversationMessage:
+        report = (
+            RCAReport.model_validate_json(row["report_json"])
+            if row["report_json"] else None
+        )
         return ConversationMessage(
             message_id=row["message_id"],
             role=row["role"],
             content=row["content"],
             content_format=row["content_format"] or "plain_text",
-            report=(
-                RCAReport.model_validate_json(row["report_json"])
-                if row["report_json"] else None
-            ),
+            report=report,
             report_validation=(
                 ReportValidation.model_validate_json(row["report_validation_json"])
                 if row["report_validation_json"] else None
@@ -698,6 +721,10 @@ class SqliteTaskStore:
             persistence=(
                 ConversationPersistence.model_validate_json(row["persistence_json"])
                 if row["persistence_json"] else None
+            ),
+            locations=(
+                locations_from_evidence(report.evidence, case_root=case_root)
+                if report else []
             ),
             status=row["status"],
             error=row["error"],

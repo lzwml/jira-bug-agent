@@ -74,6 +74,108 @@ function reportList(container, title, values, className) {
   container.append(section);
 }
 
+function basename(rawPath) {
+  const parts = String(rawPath || "").replaceAll("\\", "/").split("!/");
+  return (parts.at(-1) || "文件").split("/").at(-1);
+}
+
+function locationForEvidence(message, evidence) {
+  const location = (message.locations || []).find((item) =>
+    item.identifier === evidence.evidence_id);
+  return {...evidence, ...(location || {})};
+}
+
+function renderFileCard(location, relation) {
+  const button = element("button", "evidence-file");
+  const isArchive = Boolean(location.archive_relative_path ||
+    String(location.relative_path || "").includes("!/"));
+  const icon = element("span", "evidence-file-icon", isArchive ? "▣" : "▤");
+  const body = element("span", "evidence-file-body");
+  const title = element("span", "evidence-file-title");
+  title.append(
+    element("span", "evidence-file-name", basename(location.relative_path)),
+    element(
+      "span",
+      "evidence-file-state " + (location.availability || "missing"),
+      location.availability === "ready" ? "可打开" :
+        location.availability === "not_extracted" ? "未提取" : "待定位",
+    ),
+  );
+  const anchors = [];
+  if (location.line_start) {
+    anchors.push("L" + location.line_start +
+      (location.line_end && location.line_end !== location.line_start
+        ? "–" + location.line_end : ""));
+  } else if (location.timestamp_ms !== undefined && location.timestamp_ms !== null) {
+    anchors.push(String(location.timestamp_ms) + " ms");
+  }
+  if (relation) anchors.push(relation);
+  body.append(title);
+  if (anchors.length) body.append(element("span", "evidence-file-meta", anchors.join(" · ")));
+  body.append(element("span", "evidence-file-path", location.relative_path || "路径未记录"));
+  if (location.excerpt) body.append(element("span", "evidence-file-excerpt", location.excerpt));
+  button.append(icon, body, element("span", "evidence-file-open", "在右侧打开 ›"));
+  button.onclick = () => vscode.postMessage({type: "openLocation", location});
+  return button;
+}
+
+function renderEvidenceCards(container, ids, report, message, title, relation) {
+  const wanted = new Set(ids || []);
+  const evidence = (report.evidence || []).filter((item) => wanted.has(item.evidence_id));
+  if (!evidence.length) return;
+  const group = element("div", "evidence-files");
+  if (title) group.append(element("div", "evidence-files-label", title));
+  for (const item of evidence) {
+    group.append(renderFileCard(locationForEvidence(message, item), relation));
+  }
+  container.append(group);
+}
+
+function turnLocationsForAssistant(ordered, index) {
+  let userMessage;
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    if (ordered[cursor].role === "user") {
+      userMessage = ordered[cursor];
+      break;
+    }
+  }
+  if (!userMessage) return [];
+  const unique = new Map();
+  for (const tool of tools.values()) {
+    if (tool.message_id !== userMessage.message_id) continue;
+    for (const location of tool.locations || []) {
+      const key = [location.identifier, location.relative_path, location.line_start].join("|");
+      unique.set(key, location);
+    }
+  }
+  return [...unique.values()];
+}
+
+function renderTurnFiles(container, locations, report) {
+  const reportIds = new Set((report && report.evidence || []).map((item) => item.evidence_id));
+  const relevant = locations.filter((location) => {
+    if (reportIds.has(location.identifier)) return false;
+    const identifier = String(location.identifier || "").toLowerCase();
+    return Boolean(location.line_start) || identifier.startsWith("ev-") ||
+      identifier.startsWith("evidence_") || identifier.startsWith("finding");
+  });
+  if (!relevant.length) return;
+  const group = element("div", "evidence-files turn-evidence-files");
+  group.append(element("div", "evidence-files-label", "本轮相关文件"));
+  for (const location of relevant.slice(0, 5)) {
+    group.append(renderFileCard(location, "工具已定位"));
+  }
+  if (relevant.length > 5) {
+    const more = element("details", "evidence-files-more");
+    more.append(element("summary", "", "另外 " + String(relevant.length - 5) + " 个文件"));
+    for (const location of relevant.slice(5)) {
+      more.append(renderFileCard(location, "工具已定位"));
+    }
+    group.append(more);
+  }
+  container.append(group);
+}
+
 function renderPersistence(container, persistence) {
   if (!persistence) return;
   const statusRow = element("div", "persistence-status");
@@ -128,6 +230,10 @@ function renderReport(container, message) {
   reportField(facts, "直接机制", report.failure_mechanism);
   reportField(facts, "技术根因", report.root_cause, report.root_cause ? "" : "unconfirmed");
   container.append(facts);
+  renderEvidenceCards(
+    container, report.root_cause_evidence_ids, report, message,
+    "支撑技术根因的文件", "根因证据",
+  );
   const summary = element("section", "report-section report-summary");
   const summaryText = report.conclusion_status !== "confirmed" &&
     !(report.summary || "").includes("根因尚未确认")
@@ -157,6 +263,14 @@ function renderReport(container, message) {
       if (hypothesis.falsification) {
         item.append(element("div", "", "最低成本验证：" + hypothesis.falsification));
       }
+      renderEvidenceCards(
+        item, hypothesis.supporting_evidence_ids, report, message,
+        "支持该假设", "支持证据",
+      );
+      renderEvidenceCards(
+        item, hypothesis.contradicting_evidence_ids, report, message,
+        "反驳该假设", "反证",
+      );
       section.append(item);
     }
     container.append(section);
@@ -168,14 +282,9 @@ function renderReport(container, message) {
 
   if (report.evidence && report.evidence.length) {
     const evidence = element("details", "report-evidence");
-    evidence.append(element("summary", "", "查看证据定位（" + report.evidence.length + "）"));
+    evidence.append(element("summary", "", "全部证据文件（" + report.evidence.length + "）"));
     for (const item of report.evidence) {
-      const button = element(
-        "button", "location", item.evidence_id + " · " + item.relative_path +
-        (item.line_start ? ":L" + item.line_start : ""),
-      );
-      button.onclick = () => vscode.postMessage({type: "openLocation", location: item});
-      evidence.append(button);
+      evidence.append(renderFileCard(locationForEvidence(message, item), "证据 " + item.evidence_id));
     }
     container.append(evidence);
   }
@@ -187,24 +296,16 @@ function renderTool(event) {
     "summary", event.success ? "success" : "failure",
     "第 " + String(event.step || "?") + " 步 · " + (event.tool_name || "工具"),
   ));
-  const body = element("div", "tool-body");
+    const body = element("div", "tool-body");
   body.append(element("pre", "", JSON.stringify(event.arguments || {}, null, 2)));
   const locations = event.locations || [];
   if (locations.length) {
     const list = element("div", "locations");
     for (const location of locations) {
-      const button = element(
-        "button", "location",
-        (location.identifier ? location.identifier + " · " : "") +
-        location.relative_path +
-        (location.line_start ? ":L" + location.line_start : "") +
-        (location.availability === "not_extracted" ? "（尚未提取）" : ""),
-      );
-      if (location.availability === "not_extracted") {
-        button.title = "点击查看归档与成员位置";
-      }
-      button.onclick = () => vscode.postMessage({type: "openLocation", location});
-      list.append(button);
+      list.append(renderFileCard(
+        location,
+        location.identifier ? "定位 " + location.identifier : "工具返回",
+      ));
     }
     body.append(list);
   }
@@ -219,12 +320,16 @@ function renderTool(event) {
 function render() {
   root.replaceChildren();
   const ordered = [...messages.values()].sort((a, b) => a.message_id - b.message_id);
-  for (const message of ordered) {
+  for (let index = 0; index < ordered.length; index += 1) {
+    const message = ordered[index];
     const card = element("article", "message " + message.role);
     card.append(element("div", "label", message.role === "user" ? "你" : "BugAgent"));
     const body = element("div", "content");
     if (message.role === "assistant" && message.report) renderReport(body, message);
     else appendLinkedText(body, message.content || "");
+    if (message.role === "assistant") {
+      renderTurnFiles(body, turnLocationsForAssistant(ordered, index), message.report);
+    }
     if (message.role === "assistant") renderPersistence(body, message.persistence);
     card.append(body);
     if (message.status && message.status !== "completed") {
@@ -288,6 +393,7 @@ function applyEvent(event) {
       content: event.content || "", content_format: event.content_format || "plain_text",
       report: event.report || null,
       report_validation: event.report_validation || null,
+      locations: event.locations || [],
       persistence: event.persistence || null,
       status: "completed",
     });

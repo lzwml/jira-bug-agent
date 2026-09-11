@@ -84,6 +84,7 @@ class ConversationMessage(BaseModel):
     content_format: ConversationContentFormat = "plain_text"
     report: RCAReport | None = None
     report_validation: ReportValidation | None = None
+    locations: list["ClientLocation"] = Field(default_factory=list)
     persistence: "ConversationPersistence | None" = None
     status: ConversationMessageStatus = "completed"
     error: str | None = None

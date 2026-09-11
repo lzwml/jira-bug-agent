@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..models import ToolEvent
+from ..contracts import EvidenceReference
 from .models import ClientLocation
 
 
@@ -81,6 +82,32 @@ def _resolve_location(case_root: Path | None, raw_path: str) -> tuple[str | None
     if target is not None and target.is_file():
         return str(target), "ready"
     return None, "not_extracted" if "!/" in raw_path else "missing"
+
+
+def locations_from_evidence(
+    evidence: list[EvidenceReference], *, case_root: Path | None = None,
+) -> list[ClientLocation]:
+    resolved_root = case_root.resolve() if case_root is not None else None
+    locations: list[ClientLocation] = []
+    for item in evidence:
+        raw_path = item.frame_path or item.relative_path
+        resolved_path, availability = _resolve_location(resolved_root, raw_path)
+        virtual_parts = raw_path.replace("\\", "/").split("!/")
+        locations.append(ClientLocation(
+            relative_path=raw_path,
+            line_start=item.line_start,
+            line_end=item.line_end,
+            identifier=item.evidence_id,
+            excerpt=item.excerpt,
+            archive_relative_path=(
+                "!/".join(virtual_parts[:-1]) if len(virtual_parts) > 1 else None
+            ),
+            member_path=virtual_parts[-1] if len(virtual_parts) > 1 else None,
+            case_root=str(resolved_root) if resolved_root else None,
+            resolved_path=resolved_path,
+            availability=availability,
+        ))
+    return locations
 
 
 def locations_from_tool_event(

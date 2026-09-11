@@ -1,0 +1,134 @@
+.evidence-files {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.evidence-files-label {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.evidence-file {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-textCodeBlock-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  text-align: left;
+}
+
+.evidence-file:hover {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder);
+}
+
+.evidence-file-icon {
+  color: var(--vscode-symbolIcon-fileForeground, var(--vscode-descriptionForeground));
+  font-size: 18px;
+  text-align: center;
+}
+
+.evidence-file-body,
+.evidence-file-title {
+  display: flex;
+  min-width: 0;
+}
+
+.evidence-file-body {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.evidence-file-title {
+  align-items: center;
+  gap: 7px;
+}
+
+.evidence-file-name,
+.evidence-file-path,
+.evidence-file-excerpt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-file-name {
+  font-family: var(--vscode-editor-font-family);
+  font-weight: 650;
+}
+
+.evidence-file-meta,
+.evidence-file-path,
+.evidence-file-excerpt,
+.evidence-file-open {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.evidence-file-excerpt {
+  color: var(--vscode-foreground);
+}
+
+.evidence-file-state {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.evidence-file-state.ready {
+  color: var(--vscode-testing-iconPassed);
+  background: color-mix(in srgb, var(--vscode-testing-iconPassed) 11%, transparent);
+}
+
+.evidence-file-state.not_extracted {
+  color: var(--vscode-editorWarning-foreground);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 11%, transparent);
+}
+
+.evidence-file-state.missing {
+  color: var(--vscode-testing-iconFailed);
+  background: color-mix(in srgb, var(--vscode-testing-iconFailed) 9%, transparent);
+}
+
+.evidence-file-open {
+  color: var(--vscode-textLink-foreground);
+  white-space: nowrap;
+}
+
+.report-evidence .evidence-file {
+  margin-top: 7px;
+}
+
+.turn-evidence-files {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.evidence-files-more summary {
+  margin: 4px 0;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+}
+
+.locations {
+  width: 100%;
+}
+
+@media (max-width: 620px) {
+  .evidence-file {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .evidence-file-open {
+    display: none;
+  }
+}

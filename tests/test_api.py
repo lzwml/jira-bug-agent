@@ -14,6 +14,7 @@ from bug_agent.api.task_store import SqliteTaskStore, TaskConflictError
 from bug_agent.contracts import (
     BugAnalysisResult,
     BugAnalysisTask,
+    EvidenceReference,
     IncidentProfile,
     InvestigationState,
     RCAReport,
@@ -528,6 +529,47 @@ def test_complete_message_idempotent_when_already_completed(tmp_path):
     assistant_msgs = [m for m in record.messages if m.role == "assistant"]
     assert len(assistant_msgs) == 1
     assert assistant_msgs[0].content == "第一次完成"
+
+
+def test_assistant_report_exposes_openable_evidence_locations(tmp_path):
+    case_path = tmp_path / "APP-42"
+    log_path = case_path / "logs" / "main.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("fatal\n", encoding="utf-8")
+    store = SqliteTaskStore(tmp_path / "tasks.sqlite3")
+    store.initialize()
+    task = BugAnalysisTask(
+        task_id="evidence-card", source="local", case_path=str(case_path),
+    )
+    store.create_conversation("evidence-card-conv", task)
+    message = store.add_conversation_message(
+        "evidence-card-conv", role="user", content="给出证据",
+    )
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE conversation_messages SET status = 'running' WHERE message_id = ?",
+            (message.message_id,),
+        )
+    report = RCAReport(
+        conclusion_status="hypothesis_only",
+        summary="根因尚未确认",
+        evidence=[EvidenceReference(
+            evidence_id="ev-1", relative_path="logs/main.log",
+            line_start=1, line_end=1, excerpt="fatal",
+        )],
+    )
+
+    store.complete_conversation_message(message.message_id, "报告", report=report)
+
+    assistant = store.get_conversation("evidence-card-conv").messages[-1]
+    assert assistant.locations[0].identifier == "ev-1"
+    assert assistant.locations[0].resolved_path == str(log_path.resolve())
+    assert assistant.locations[0].availability == "ready"
+    event = next(
+        item for item in store.list_conversation_events("evidence-card-conv")
+        if item.kind == "assistant_message"
+    )
+    assert event.locations[0].resolved_path == str(log_path.resolve())
 
 
 def test_fail_message_idempotent_when_already_completed(tmp_path):
