@@ -6,6 +6,7 @@ const path = require("path");
 const {ServerManager, SECRET_KEY} = require("./server");
 const {LargeLogProvider, LogOpener} = require("./logs");
 const {ConversationPanel} = require("./panel");
+const {EvidenceAnnotationManager} = require("./annotations");
 
 class ConversationTree {
   constructor(server) {
@@ -56,14 +57,20 @@ async function activate(context) {
   const server = new ServerManager(context, output);
   const largeLogs = new LargeLogProvider();
   const logOpener = new LogOpener(largeLogs);
+  const annotations = new EvidenceAnnotationManager(context, largeLogs);
   const tree = new ConversationTree(server);
-  const panels = new ConversationPanel(context, server, logOpener, () => tree.refresh());
+  const panels = new ConversationPanel(
+    context, server, logOpener, annotations, () => tree.refresh(),
+  );
 
   context.subscriptions.push(
     output,
     vscode.workspace.registerTextDocumentContentProvider("bugagent-log", largeLogs),
     vscode.window.registerTreeDataProvider("bugAgent.conversations", tree),
     vscode.commands.registerCommand("bugAgent.refresh", () => tree.refresh()),
+    vscode.commands.registerCommand(
+      "bugAgent.toggleEvidenceAnnotations", () => annotations.toggle(),
+    ),
     vscode.commands.registerCommand("bugAgent.openConversation", (record) => panels.open(record)),
     vscode.commands.registerCommand("bugAgent.setApiKey", async () => {
       const value = await vscode.window.showInputBox({

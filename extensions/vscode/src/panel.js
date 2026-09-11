@@ -4,15 +4,17 @@ const vscode = require("vscode");
 const path = require("path");
 
 class ConversationPanel {
-  constructor(context, server, logOpener, onChanged) {
+  constructor(context, server, logOpener, annotations, onChanged) {
     this.context = context;
     this.server = server;
     this.logOpener = logOpener;
+    this.annotations = annotations;
     this.onChanged = onChanged;
     this.panels = new Map();
   }
 
   async open(record) {
+    await this.annotations.syncRecord(record);
     const existing = this.panels.get(record.conversation_id);
     if (existing) {
       existing.panel.reveal();
@@ -66,11 +68,15 @@ class ConversationPanel {
         const config = vscode.workspace.getConfiguration("bugAgent");
         let jiraRoot = config.get("jiraExportRoot", "");
         if (jiraRoot && task.issue_key) jiraRoot = path.join(jiraRoot, task.issue_key);
-        await this.logOpener.open(
+        if (message.annotationMessage) {
+          await this.annotations.syncMessage(state.record, message.annotationMessage);
+        }
+        const editor = await this.logOpener.open(
           message.location,
           state.record.case_root || task.case_path,
           jiraRoot,
         );
+        await this.annotations.apply(editor);
       } else if (message.type === "openExternal") {
         const target = new URL(String(message.href || ""));
         if (!new Set(["https:", "http:"]).has(target.protocol)) {
@@ -99,6 +105,17 @@ class ConversationPanel {
           (event) => {
             state.cursor = Math.max(state.cursor, event.event_id || 0);
             state.panel.webview.postMessage({type: "event", value: event});
+            if (event.kind === "assistant_message") {
+              const annotationMessage = {
+                message_id: event.message_id,
+                report: event.report,
+                locations: event.locations || [],
+              };
+              this.annotations.syncMessage(state.record, annotationMessage)
+                .catch((error) => vscode.window.showWarningMessage(
+                  "BugAgent 注释保存失败：" + error.message,
+                ));
+            }
             this.onChanged();
           },
         );

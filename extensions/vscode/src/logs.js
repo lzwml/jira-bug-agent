@@ -8,6 +8,7 @@ const readline = require("readline");
 class LargeLogProvider {
   constructor() {
     this.documents = new Map();
+    this.metadataByUri = new Map();
   }
 
   provideTextDocumentContent(uri) {
@@ -39,7 +40,12 @@ class LargeLogProvider {
       "只读日志片段：" + filePath + "\n显示 L" + first + "-L" + number + "\n\n" +
       rows.join("\n"),
     );
+    this.metadataByUri.set(uri.toString(), {filePath, first, last: number});
     return {uri, first};
+  }
+
+  metadata(uri) {
+    return this.metadataByUri.get(uri.toString());
   }
 }
 
@@ -95,7 +101,7 @@ class LogOpener {
       const range = new vscode.Range(start, 0, end, document.lineAt(end).text.length);
       editor.selection = new vscode.Selection(range.start, range.end);
       editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-      return;
+      return editor;
     }
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
     const editor = await vscode.window.showTextDocument(document, {
@@ -110,6 +116,7 @@ class LogOpener {
     const range = new vscode.Range(start, 0, end, document.lineAt(end).text.length);
     editor.selection = new vscode.Selection(range.start, range.end);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    return editor;
   }
 }
 

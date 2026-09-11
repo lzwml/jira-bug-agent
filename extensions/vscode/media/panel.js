@@ -103,7 +103,7 @@ function locationForEvidence(message, evidence) {
   return {...evidence, ...(location || {})};
 }
 
-function renderFileCard(location, relation) {
+function renderFileCard(location, relation, annotationMessage) {
   const button = element("button", "evidence-file");
   const isArchive = Boolean(location.archive_relative_path ||
     String(location.relative_path || "").includes("!/"));
@@ -133,7 +133,9 @@ function renderFileCard(location, relation) {
   body.append(element("span", "evidence-file-path", location.relative_path || "路径未记录"));
   if (location.excerpt) body.append(element("span", "evidence-file-excerpt", location.excerpt));
   button.append(icon, body, element("span", "evidence-file-open", "在右侧打开 ›"));
-  button.onclick = () => vscode.postMessage({type: "openLocation", location});
+  button.onclick = () => vscode.postMessage({
+    type: "openLocation", location, annotationMessage,
+  });
   return button;
 }
 
@@ -144,7 +146,10 @@ function renderEvidenceCards(container, ids, report, message, title, relation) {
   const group = element("div", "evidence-files");
   if (title) group.append(element("div", "evidence-files-label", title));
   for (const item of evidence) {
-    group.append(renderFileCard(locationForEvidence(message, item), relation));
+    group.append(renderFileCard(
+      locationForEvidence(message, item), relation,
+      {message_id: message.message_id, report, locations: message.locations || []},
+    ));
   }
   container.append(group);
 }

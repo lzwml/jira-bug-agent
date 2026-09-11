@@ -105,6 +105,10 @@
       {
         "command": "bugAgent.stopServer",
         "title": "BugAgent: 停止本地服务"
+      },
+      {
+        "command": "bugAgent.toggleEvidenceAnnotations",
+        "title": "BugAgent: 显示/隐藏证据注释"
       }
     ],
     "viewsContainers": {
