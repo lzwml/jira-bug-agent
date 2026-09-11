@@ -44,6 +44,20 @@ async function fingerprint(filePath) {
   }
 }
 
+async function replaceFile(temporary, target) {
+  try {
+    await fs.promises.rename(temporary, target);
+    return;
+  } catch (error) {
+    // Windows and cloud-sync providers commonly reject rename-over-existing with EPERM.
+    // This snapshot is reproducible, so fall back to an overwrite without deleting the
+    // last good target first.  A failed copy leaves that target in place.
+    if (!["EPERM", "EEXIST", "ENOTEMPTY"].includes(error.code)) throw error;
+  }
+  await fs.promises.copyFile(temporary, target);
+  await fs.promises.unlink(temporary);
+}
+
 function sameFingerprint(left, right) {
   return Boolean(left && right) && left.size === right.size &&
     left.mtime_ms === right.mtime_ms && left.sample_sha256 === right.sample_sha256;
@@ -100,6 +114,7 @@ class EvidenceAnnotationManager {
     this.enabled = context.workspaceState.get("bugAgent.annotationsVisible", true);
     this.byFile = new Map();
     this.caseFiles = new Map();
+    this.persistQueue = Promise.resolve();
     const gutter = vscode.Uri.joinPath(context.extensionUri, "media", "evidence-marker.svg");
     this.decorations = {
       confirmed: this.createDecoration("rgba(46, 160, 67, 0.10)", "#3fb950", gutter),
@@ -143,16 +158,23 @@ class EvidenceAnnotationManager {
     if (!caseRoot) return;
     const generated = (record.messages || []).flatMap((message) =>
       annotationsFromMessage(message, record.conversation_id));
-    await this.persist(caseRoot, generated);
+    await this.enqueuePersist(caseRoot, generated);
   }
 
   async syncMessage(record, message) {
     const caseRoot = record.case_root || (record.task || {}).case_path;
     if (!caseRoot) return;
-    await this.persist(
+    await this.enqueuePersist(
       caseRoot,
       annotationsFromMessage(message, record.conversation_id),
     );
+  }
+
+  enqueuePersist(caseRoot, generated) {
+    const operation = this.persistQueue.then(() => this.persist(caseRoot, generated));
+    // Keep the queue usable after one failed write; callers still receive the failure.
+    this.persistQueue = operation.catch(() => undefined);
+    return operation;
   }
 
   async persist(caseRoot, generated) {
@@ -160,13 +182,18 @@ class EvidenceAnnotationManager {
     const agentDir = path.join(resolvedRoot, ".bug-agent");
     const target = path.join(agentDir, "evidence-annotations.json");
     if (!inside(resolvedRoot, target)) return;
+    await fs.promises.mkdir(agentDir, {recursive: true});
+    await this.cleanupOrphans(agentDir);
     let stored = {schema_version: SCHEMA_VERSION, annotations: []};
+    let targetExists = true;
     try {
       stored = JSON.parse(await fs.promises.readFile(target, "utf8"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
+      targetExists = false;
     }
     const merged = new Map((stored.annotations || []).map((item) => [item.annotation_id, item]));
+    let changed = false;
     for (const item of generated) {
       if (!inside(resolvedRoot, item.resolved_path)) continue;
       try {
@@ -174,20 +201,51 @@ class EvidenceAnnotationManager {
       } catch {
         continue;
       }
+      const previous = merged.get(item.annotation_id);
+      if (JSON.stringify(previous) !== JSON.stringify(item)) changed = true;
       merged.set(item.annotation_id, item);
     }
+    if (!changed && targetExists) {
+      this.caseFiles.set(resolvedRoot, target);
+      await this.loadFile(target);
+      this.refreshVisible();
+      return;
+    }
+    if (!generated.length && !targetExists) return;
     const payload = {
       schema_version: SCHEMA_VERSION,
       updated_at: new Date().toISOString(),
       annotations: [...merged.values()],
     };
-    await fs.promises.mkdir(agentDir, {recursive: true});
     const temporary = target + "." + crypto.randomUUID() + ".tmp";
-    await fs.promises.writeFile(temporary, JSON.stringify(payload, null, 2) + "\n", "utf8");
-    await fs.promises.rename(temporary, target);
+    try {
+      await fs.promises.writeFile(temporary, JSON.stringify(payload, null, 2) + "\n", "utf8");
+      await replaceFile(temporary, target);
+    } finally {
+      await fs.promises.unlink(temporary).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
     this.caseFiles.set(resolvedRoot, target);
     await this.loadFile(target);
     this.refreshVisible();
+  }
+
+  async cleanupOrphans(agentDir) {
+    const prefix = "evidence-annotations.json.";
+    const cutoff = Date.now() - 60_000;
+    const names = await fs.promises.readdir(agentDir).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    await Promise.all(names.filter((name) => name.startsWith(prefix) && name.endsWith(".tmp"))
+      .map(async (name) => {
+        const candidate = path.join(agentDir, name);
+        const stat = await fs.promises.stat(candidate).catch(() => undefined);
+        if (stat && stat.mtimeMs < cutoff) {
+          await fs.promises.unlink(candidate).catch(() => undefined);
+        }
+      }));
   }
 
   async loadFile(filePath) {
@@ -289,5 +347,6 @@ module.exports = {
   EvidenceAnnotationManager,
   annotationsFromMessage,
   fingerprint,
+  replaceFile,
   sameFingerprint,
 };
