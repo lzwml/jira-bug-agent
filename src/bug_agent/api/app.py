@@ -98,8 +98,15 @@ def create_app(
         return task.model_copy(update={"case_path": str(case_path)})
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, object]:
+        return {
+            "status": "ok",
+            "api_version": "0.2.0",
+            "capabilities": [
+                "resolved_client_locations",
+                "assistant_evidence_locations",
+            ],
+        }
 
     @app.post("/tasks", response_model=TaskSubmission, status_code=status.HTTP_202_ACCEPTED)
     async def submit_task(

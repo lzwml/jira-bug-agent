@@ -8,6 +8,16 @@ const {spawn} = require("child_process");
 const {BugAgentApi} = require("./api");
 
 const SECRET_KEY = "bugAgent.apiKey";
+const REQUIRED_CAPABILITIES = new Set([
+  "resolved_client_locations",
+  "assistant_evidence_locations",
+]);
+
+function compatibleHealth(health) {
+  const capabilities = new Set(health && health.capabilities || []);
+  return health && health.status === "ok" &&
+    [...REQUIRED_CAPABILITIES].every((item) => capabilities.has(item));
+}
 
 class ServerManager {
   constructor(context, output) {
@@ -67,9 +77,15 @@ class ServerManager {
     }
     const client = await this.client();
     try {
-      await client.health();
-      return client;
-    } catch {}
+      const health = await client.health();
+      if (compatibleHealth(health)) return client;
+      throw new Error(
+        "检测到旧版 BugAgent 服务（缺少文件定位能力）。请先结束旧的 " +
+        "bug-agent-api 进程，再执行“BugAgent: 启动本地服务”。",
+      );
+    } catch (error) {
+      if (error.message && error.message.includes("检测到旧版")) throw error;
+    }
     if (!this.config.get("autoStart", true)) {
       throw new Error("BugAgent 服务不可用，且自动启动已关闭。");
     }
@@ -77,8 +93,8 @@ class ServerManager {
     for (let attempt = 0; attempt < 40; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       try {
-        await client.health();
-        return client;
+        const health = await client.health();
+        if (compatibleHealth(health)) return client;
       } catch {}
     }
     throw new Error("BugAgent 服务启动超时，请查看 BugAgent 输出。");
@@ -121,4 +137,4 @@ class ServerManager {
   }
 }
 
-module.exports = {ServerManager, SECRET_KEY};
+module.exports = {ServerManager, SECRET_KEY, compatibleHealth};

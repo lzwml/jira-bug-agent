@@ -372,7 +372,14 @@ async def test_http_api_health_does_not_require_api_key(tmp_path):
         ) as client:
             response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "api_version": "0.2.0",
+        "capabilities": [
+            "resolved_client_locations",
+            "assistant_evidence_locations",
+        ],
+    }
 
 
 @pytest.mark.anyio
