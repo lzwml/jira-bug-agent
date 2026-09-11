@@ -12,6 +12,7 @@
   ],
   "activationEvents": [
     "onView:bugAgent.conversations",
+    "onView:bugAgent.chat",
     "onCommand:bugAgent.newLocalCase",
     "onCommand:bugAgent.newJiraCase"
   ],
@@ -118,6 +119,13 @@
           "title": "BugAgent",
           "icon": "media/bugagent.svg"
         }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "bugAgentChat",
+          "title": "BugAgent",
+          "icon": "media/bugagent.svg"
+        }
       ]
     },
     "views": {
@@ -125,6 +133,13 @@
         {
           "id": "bugAgent.conversations",
           "name": "Case 与会话"
+        }
+      ],
+      "bugAgentChat": [
+        {
+          "id": "bugAgent.chat",
+          "name": "Agent 对话",
+          "type": "webview"
         }
       ]
     },

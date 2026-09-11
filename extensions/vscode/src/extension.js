@@ -67,6 +67,9 @@ async function activate(context) {
     output,
     vscode.workspace.registerTextDocumentContentProvider("bugagent-log", largeLogs),
     vscode.window.registerTreeDataProvider("bugAgent.conversations", tree),
+    vscode.window.registerWebviewViewProvider("bugAgent.chat", panels, {
+      webviewOptions: {retainContextWhenHidden: true},
+    }),
     vscode.commands.registerCommand("bugAgent.refresh", () => tree.refresh()),
     vscode.commands.registerCommand(
       "bugAgent.toggleEvidenceAnnotations", () => annotations.toggle(),

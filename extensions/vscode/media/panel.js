@@ -380,6 +380,7 @@ function applyConversation(record) {
   document.getElementById("title").textContent =
     record.task.issue_key || record.task.case_path || "BugAgent";
   messages.clear();
+  tools.clear();
   for (const message of record.messages || []) messages.set(message.message_id, message);
   const active = [...messages.values()].find((message) =>
     message.role === "user" &&
@@ -387,6 +388,20 @@ function applyConversation(record) {
   activeMessageId = active ? active.message_id : undefined;
   setBusy(Boolean(activeMessageId));
   render();
+}
+
+function applyEmpty() {
+  conversation = undefined;
+  activeMessageId = undefined;
+  messages.clear();
+  tools.clear();
+  document.getElementById("title").textContent = "BugAgent";
+  status.textContent = "请选择一个 Case";
+  root.replaceChildren(element(
+    "div", "empty-state", "从 Case 与会话列表中选择一项，这里会持续显示分析过程。",
+  ));
+  send.disabled = true;
+  cancel.disabled = true;
 }
 
 function applyEvent(event) {
@@ -449,6 +464,7 @@ input.onkeydown = (event) => {
 };
 window.addEventListener("message", ({data}) => {
   if (data.type === "conversation") applyConversation(data.value);
+  else if (data.type === "empty") applyEmpty();
   else if (data.type === "event") applyEvent(data.value);
   else if (data.type === "pending") {
     messages.set(data.value.message_id, data.value);
