@@ -81,7 +81,7 @@ class LogOpener {
       );
       const document = await vscode.workspace.openTextDocument(fragment.uri);
       const editor = await vscode.window.showTextDocument(document, {
-        viewColumn: vscode.ViewColumn.Beside, preview: true,
+        viewColumn: vscode.ViewColumn.Beside, preview: true, preserveFocus: true,
       });
       const start = Math.min(
         document.lineCount - 1,
@@ -99,7 +99,7 @@ class LogOpener {
     }
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
     const editor = await vscode.window.showTextDocument(document, {
-      viewColumn: vscode.ViewColumn.Beside, preview: true,
+      viewColumn: vscode.ViewColumn.Beside, preview: true, preserveFocus: true,
     });
     const lastLine = Math.max(0, document.lineCount - 1);
     const start = Math.min(lastLine, Math.max(0, (location.line_start || 1) - 1));
