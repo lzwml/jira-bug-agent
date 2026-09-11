@@ -9,6 +9,12 @@ const messages = new Map();
 const tools = new Map();
 let conversation;
 let activeMessageId;
+const markdown = globalThis.markdownit({
+  html: false,
+  linkify: true,
+  breaks: false,
+  typographer: false,
+});
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -42,6 +48,18 @@ function appendLinkedText(container, text) {
     offset = match.index + match[0].length;
   }
   container.append(document.createTextNode(text.slice(offset)));
+}
+
+function appendMarkdown(container, text) {
+  const rendered = element("div", "markdown-body");
+  rendered.innerHTML = markdown.render(String(text || ""));
+  for (const link of rendered.querySelectorAll("a[href]")) {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      vscode.postMessage({type: "openExternal", href: link.href});
+    });
+  }
+  container.append(rendered);
 }
 
 const statusLabels = {
@@ -326,6 +344,7 @@ function render() {
     card.append(element("div", "label", message.role === "user" ? "你" : "BugAgent"));
     const body = element("div", "content");
     if (message.role === "assistant" && message.report) renderReport(body, message);
+    else if (message.role === "assistant") appendMarkdown(body, message.content || "");
     else appendLinkedText(body, message.content || "");
     if (message.role === "assistant") {
       renderTurnFiles(body, turnLocationsForAssistant(ordered, index), message.report);

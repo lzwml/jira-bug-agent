@@ -19,6 +19,9 @@ class ConversationPanel {
       return;
     }
     const media = vscode.Uri.joinPath(this.context.extensionUri, "media");
+    const markdownRoot = vscode.Uri.joinPath(
+      this.context.extensionUri, "node_modules", "markdown-it", "dist",
+    );
     const panel = vscode.window.createWebviewPanel(
       "bugAgent.conversation",
       this.title(record),
@@ -26,7 +29,7 @@ class ConversationPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [media],
+        localResourceRoots: [media, markdownRoot],
       },
     );
     panel.webview.html = this.html(panel.webview, media);
@@ -68,6 +71,12 @@ class ConversationPanel {
           state.record.case_root || task.case_path,
           jiraRoot,
         );
+      } else if (message.type === "openExternal") {
+        const target = new URL(String(message.href || ""));
+        if (!new Set(["https:", "http:"]).has(target.protocol)) {
+          throw new Error("仅允许打开 HTTP/HTTPS 链接。");
+        }
+        await vscode.env.openExternal(vscode.Uri.parse(target.toString()));
       } else if (message.type === "refresh") {
         state.record = await api.getConversation(state.record.conversation_id);
         state.panel.webview.postMessage({type: "conversation", value: state.record});
@@ -107,6 +116,10 @@ class ConversationPanel {
     const script = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel.js"));
     const style = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel.css"));
     const fileCardsStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "file-cards.css"));
+    const markdownStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "markdown.css"));
+    const markdownScript = webview.asWebviewUri(vscode.Uri.joinPath(
+      this.context.extensionUri, "node_modules", "markdown-it", "dist", "markdown-it.min.js",
+    ));
     const nonce = String(Date.now());
     return [
       "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">",
@@ -114,13 +127,15 @@ class ConversationPanel {
       "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; ",
       "style-src " + webview.cspSource + "; script-src 'nonce-" + nonce + "';\">",
       "<link rel=\"stylesheet\" href=\"" + style + "\">",
-      "<link rel=\"stylesheet\" href=\"" + fileCardsStyle + "\"></head><body>",
+      "<link rel=\"stylesheet\" href=\"" + fileCardsStyle + "\">",
+      "<link rel=\"stylesheet\" href=\"" + markdownStyle + "\"></head><body>",
       "<header><h1 id=\"title\">BugAgent</h1><span id=\"status\">连接中…</span>",
       "<button id=\"refresh\">刷新</button></header>",
       "<main id=\"messages\"></main>",
       "<footer><textarea id=\"input\" placeholder=\"补充线索或继续追问（Ctrl+Enter 发送）\"></textarea>",
       "<div><button id=\"cancel\" disabled>取消本轮</button>",
       "<button id=\"send\">发送</button></div></footer>",
+      "<script nonce=\"" + nonce + "\" src=\"" + markdownScript + "\"></script>",
       "<script nonce=\"" + nonce + "\" src=\"" + script + "\"></script>",
       "</body></html>",
     ].join("");

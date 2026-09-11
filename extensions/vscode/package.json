@@ -4,8 +4,12 @@
   "description": "Run BugAgent and open log evidence in VS Code.",
   "version": "0.1.0",
   "publisher": "internal",
-  "engines": {"vscode": "^1.96.0"},
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [
     "onView:bugAgent.conversations",
     "onCommand:bugAgent.newLocalCase",
@@ -38,13 +42,20 @@
         },
         "bugAgent.launchArguments": {
           "type": "array",
-          "items": {"type": "string"},
-          "default": ["run", "bug-agent-api"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "run",
+            "bug-agent-api"
+          ],
           "description": "本地服务启动参数。"
         },
         "bugAgent.allowedLocalRoots": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "本地服务允许分析的 Case 根目录。"
         },
@@ -67,22 +78,50 @@
       }
     },
     "commands": [
-      {"command": "bugAgent.newLocalCase", "title": "BugAgent: 分析本地 Case"},
-      {"command": "bugAgent.newJiraCase", "title": "BugAgent: 分析 Jira Issue"},
-      {"command": "bugAgent.openConversation", "title": "BugAgent: 打开会话"},
-      {"command": "bugAgent.refresh", "title": "BugAgent: 刷新会话"},
-      {"command": "bugAgent.setApiKey", "title": "BugAgent: 设置 API Key"},
-      {"command": "bugAgent.startServer", "title": "BugAgent: 启动本地服务"},
-      {"command": "bugAgent.stopServer", "title": "BugAgent: 停止本地服务"}
+      {
+        "command": "bugAgent.newLocalCase",
+        "title": "BugAgent: 分析本地 Case"
+      },
+      {
+        "command": "bugAgent.newJiraCase",
+        "title": "BugAgent: 分析 Jira Issue"
+      },
+      {
+        "command": "bugAgent.openConversation",
+        "title": "BugAgent: 打开会话"
+      },
+      {
+        "command": "bugAgent.refresh",
+        "title": "BugAgent: 刷新会话"
+      },
+      {
+        "command": "bugAgent.setApiKey",
+        "title": "BugAgent: 设置 API Key"
+      },
+      {
+        "command": "bugAgent.startServer",
+        "title": "BugAgent: 启动本地服务"
+      },
+      {
+        "command": "bugAgent.stopServer",
+        "title": "BugAgent: 停止本地服务"
+      }
     ],
     "viewsContainers": {
       "activitybar": [
-        {"id": "bugAgent", "title": "BugAgent", "icon": "media/bugagent.svg"}
+        {
+          "id": "bugAgent",
+          "title": "BugAgent",
+          "icon": "media/bugagent.svg"
+        }
       ]
     },
     "views": {
       "bugAgent": [
-        {"id": "bugAgent.conversations", "name": "Case 与会话"}
+        {
+          "id": "bugAgent.conversations",
+          "name": "Case 与会话"
+        }
       ]
     },
     "viewsWelcome": [
@@ -93,9 +132,21 @@
     ],
     "menus": {
       "view/title": [
-        {"command": "bugAgent.newLocalCase", "when": "view == bugAgent.conversations", "group": "navigation@1"},
-        {"command": "bugAgent.newJiraCase", "when": "view == bugAgent.conversations", "group": "navigation@2"},
-        {"command": "bugAgent.refresh", "when": "view == bugAgent.conversations", "group": "navigation@3"}
+        {
+          "command": "bugAgent.newLocalCase",
+          "when": "view == bugAgent.conversations",
+          "group": "navigation@1"
+        },
+        {
+          "command": "bugAgent.newJiraCase",
+          "when": "view == bugAgent.conversations",
+          "group": "navigation@2"
+        },
+        {
+          "command": "bugAgent.refresh",
+          "when": "view == bugAgent.conversations",
+          "group": "navigation@3"
+        }
       ]
     }
   },
@@ -104,5 +155,8 @@
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.2"
+  },
+  "dependencies": {
+    "markdown-it": "^14.3.1"
   }
 }
