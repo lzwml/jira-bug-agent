@@ -5,8 +5,11 @@ const input = document.getElementById("input");
 const send = document.getElementById("send");
 const cancel = document.getElementById("cancel");
 const status = document.getElementById("status");
+const statusDot = document.getElementById("status-dot");
+const caseMeta = document.getElementById("case-meta");
 const messages = new Map();
 const tools = new Map();
+const progress = new Map();
 let conversation;
 let activeMessageId;
 const markdown = globalThis.markdownit({
@@ -21,6 +24,12 @@ function element(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = String(text);
   return node;
+}
+
+function updateStatus(text, state = "ready") {
+  status.textContent = text;
+  statusDot.className = "status-dot" +
+    (state === "busy" ? " busy" : state === "error" ? " error" : "");
 }
 
 function pathParts(raw) {
@@ -340,6 +349,49 @@ function renderTool(event) {
   return card;
 }
 
+function renderActivity(message) {
+  const completed = [...tools.values()]
+    .filter((item) => item.message_id === message.message_id)
+    .sort((a, b) => (a.step || 0) - (b.step || 0));
+  const current = progress.get(message.message_id);
+  if (!completed.length && !current) return null;
+  const activity = element("details", "activity");
+  activity.open = Boolean(current);
+  const summary = element("summary", "");
+  summary.append(
+    element("span", "", current ? "正在调查" : "调查过程"),
+    element(
+      "span", "activity-count",
+      completed.length + " 个工具" + (current ? " · 进行中" : ""),
+    ),
+  );
+  activity.append(summary);
+  const list = element("div", "activity-list");
+  for (const item of completed) {
+    const row = element("div", "activity-item");
+    row.append(
+      element("span", "activity-icon", item.success ? "✓" : "!"),
+      element("span", "", "第 " + String(item.step || "?") + " 步 · " +
+        (item.tool_name || "工具") + (item.success ? " 已完成" : " 失败")),
+    );
+    list.append(row);
+  }
+  if (current) {
+    const row = element("div", "activity-item current");
+    const label = current.kind === "tool_started"
+      ? "正在执行 " + (current.tool_name || "工具")
+      : (current.content || "正在制定下一步调查动作");
+    row.append(
+      element("span", "activity-icon", "●"),
+      element("span", "", "第 " + String(current.step || "?") + " 步 · " + label),
+    );
+    list.append(row);
+  }
+  activity.append(list);
+  for (const item of completed) activity.append(renderTool(item));
+  return activity;
+}
+
 function render() {
   root.replaceChildren();
   const ordered = [...messages.values()].sort((a, b) => a.message_id - b.message_id);
@@ -360,10 +412,9 @@ function render() {
       card.append(element("div", "message-status", message.status));
     }
     root.append(card);
-    for (const tool of [...tools.values()]
-      .filter((item) => item.message_id === message.message_id)
-      .sort((a, b) => (a.step || 0) - (b.step || 0))) {
-      root.append(renderTool(tool));
+    if (message.role === "user") {
+      const activity = renderActivity(message);
+      if (activity) root.append(activity);
     }
   }
   root.scrollTop = root.scrollHeight;
@@ -372,15 +423,21 @@ function render() {
 function setBusy(busy) {
   send.disabled = busy;
   cancel.disabled = !busy;
-  status.textContent = busy ? "Agent 正在分析…" : "就绪";
+  updateStatus(busy ? "Agent 正在分析…" : "就绪", busy ? "busy" : "");
 }
 
 function applyConversation(record) {
   conversation = record;
   document.getElementById("title").textContent =
     record.task.issue_key || record.task.case_path || "BugAgent";
+  document.getElementById("case-meta").textContent = [
+    record.task.source === "jira" ? "Jira Case" : "本地 Case",
+    record.task.goal_mode ? "Goal Mode" : "限步模式",
+    record.status === "active" ? "持续会话" : record.status,
+  ].join(" · ");
   messages.clear();
   tools.clear();
+  progress.clear();
   for (const message of record.messages || []) messages.set(message.message_id, message);
   const active = [...messages.values()].find((message) =>
     message.role === "user" &&
@@ -396,7 +453,8 @@ function applyEmpty() {
   messages.clear();
   tools.clear();
   document.getElementById("title").textContent = "BugAgent";
-  status.textContent = "请选择一个 Case";
+  document.getElementById("case-meta").textContent = "工程调查助手";
+  updateStatus("请选择一个 Case", "");
   root.replaceChildren(element(
     "div", "empty-state", "从 Case 与会话列表中选择一项，这里会持续显示分析过程。",
   ));
@@ -415,17 +473,25 @@ function applyEvent(event) {
   } else if (event.kind === "message_running") {
     const message = messages.get(event.message_id);
     if (message) message.status = "running";
-    status.textContent = "正在准备 Case 与调查上下文…";
+    progress.set(event.message_id, {
+      kind: event.kind, content: "正在准备 Case 与调查上下文…",
+    });
+    updateStatus("正在准备 Case 与调查上下文…", "busy");
   } else if (event.kind === "phase_changed") {
-    status.textContent = "第 " + String(event.step || "?") + " 步 · " +
-      (event.content || "正在分析");
+    progress.set(event.message_id, event);
+    updateStatus("第 " + String(event.step || "?") + " 步 · " +
+      (event.content || "正在分析"), "busy");
   } else if (event.kind === "tool_started") {
-    status.textContent = "第 " + String(event.step || "?") + " 步 · 正在执行 " +
-      (event.tool_name || "工具");
+    progress.set(event.message_id, event);
+    updateStatus("第 " + String(event.step || "?") + " 步 · 正在执行 " +
+      (event.tool_name || "工具"), "busy");
   } else if (event.kind === "tool_completed") {
     tools.set(event.event_id, event);
-    status.textContent = "第 " + String(event.step || "?") + " 步 · " +
-      (event.tool_name || "工具") + " 已完成，正在检查结果…";
+    progress.set(event.message_id, {
+      ...event, kind: "phase_changed", content: "正在检查工具结果",
+    });
+    updateStatus("第 " + String(event.step || "?") + " 步 · " +
+      (event.tool_name || "工具") + " 已完成，正在检查结果…", "busy");
   } else if (event.kind === "assistant_message") {
     messages.set(event.message_id, {
       message_id: event.message_id, role: "assistant",
@@ -438,11 +504,13 @@ function applyEvent(event) {
     });
     const active = messages.get(activeMessageId);
     if (active) active.status = "completed";
+    progress.delete(activeMessageId);
     activeMessageId = undefined;
     setBusy(false);
   } else if (event.kind === "turn_failed" || event.kind === "turn_cancelled") {
     const active = messages.get(event.message_id);
     if (active) active.status = event.kind === "turn_failed" ? "failed" : "cancelled";
+    progress.delete(event.message_id);
     activeMessageId = undefined;
     setBusy(false);
   }
@@ -454,6 +522,7 @@ send.onclick = () => {
   if (!content || !conversation) return;
   vscode.postMessage({type: "send", content});
   input.value = "";
+  input.style.height = "54px";
 };
 cancel.onclick = () => {
   if (activeMessageId) vscode.postMessage({type: "cancel", messageId: activeMessageId});
@@ -461,6 +530,10 @@ cancel.onclick = () => {
 document.getElementById("refresh").onclick = () => vscode.postMessage({type: "refresh"});
 input.onkeydown = (event) => {
   if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) send.click();
+};
+input.oninput = () => {
+  input.style.height = "54px";
+  input.style.height = Math.min(input.scrollHeight, 160) + "px";
 };
 window.addEventListener("message", ({data}) => {
   if (data.type === "conversation") applyConversation(data.value);
@@ -472,6 +545,7 @@ window.addEventListener("message", ({data}) => {
     setBusy(true);
     render();
   } else if (data.type === "connection" || data.type === "error") {
-    status.textContent = data.value;
+    updateStatus(data.value, data.type === "error" ? "error" :
+      String(data.value).includes("中断") ? "busy" : "ready");
   }
 });

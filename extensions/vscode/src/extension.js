@@ -36,13 +36,19 @@ class ConversationTree {
     const task = item.task || {};
     const label = task.issue_key || path.basename(task.case_path || item.conversation_id);
     const treeItem = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-    treeItem.description = item.status;
-    treeItem.tooltip = task.objective || item.conversation_id;
-    treeItem.iconPath = new vscode.ThemeIcon(
-      item.messages && item.messages.some((message) =>
-        message.status === "queued" || message.status === "running")
-        ? "loading~spin" : "comment-discussion",
-    );
+    const running = (item.messages || []).some((message) =>
+      message.status === "queued" || message.status === "running");
+    const count = (item.messages || []).length;
+    treeItem.description = running ? "分析中" : count ? count + " 条消息" : "尚未开始";
+    treeItem.tooltip = new vscode.MarkdownString([
+      "**" + label + "**",
+      "",
+      task.objective || "未设置分析目标",
+      "",
+      task.goal_mode ? "`Goal Mode`" : "`限步模式`",
+    ].join("\n"));
+    treeItem.contextValue = running ? "bugAgentConversationRunning" : "bugAgentConversation";
+    treeItem.iconPath = new vscode.ThemeIcon(running ? "loading~spin" : "comment-discussion");
     treeItem.command = {
       command: "bugAgent.openConversation",
       title: "打开 BugAgent 会话",

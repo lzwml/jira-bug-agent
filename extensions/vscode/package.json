@@ -2,7 +2,7 @@
   "name": "bugagent-vscode",
   "displayName": "BugAgent",
   "description": "Run BugAgent and open log evidence in VS Code.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "internal",
   "engines": {
     "vscode": "^1.96.0"
@@ -170,7 +170,7 @@
     }
   },
   "scripts": {
-    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.1.0.vsix"
+    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.2.0.vsix"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.2"
