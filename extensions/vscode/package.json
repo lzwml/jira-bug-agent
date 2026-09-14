@@ -2,7 +2,7 @@
   "name": "bugagent-vscode",
   "displayName": "BugAgent",
   "description": "Run BugAgent and open log evidence in VS Code.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "internal",
   "engines": {
     "vscode": "^1.96.0"
@@ -113,13 +113,6 @@
       }
     ],
     "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "bugAgent",
-          "title": "BugAgent",
-          "icon": "media/bugagent.svg"
-        }
-      ],
       "secondarySidebar": [
         {
           "id": "bugAgentChat",
@@ -129,16 +122,14 @@
       ]
     },
     "views": {
-      "bugAgent": [
-        {
-          "id": "bugAgent.conversations",
-          "name": "Case 与会话"
-        }
-      ],
       "bugAgentChat": [
         {
+          "id": "bugAgent.conversations",
+          "name": "历史会话"
+        },
+        {
           "id": "bugAgent.chat",
-          "name": "Agent 对话",
+          "name": "当前对话",
           "type": "webview"
         }
       ]
@@ -170,7 +161,7 @@
     }
   },
   "scripts": {
-    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.2.0.vsix"
+    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.2.1.vsix"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.2"
