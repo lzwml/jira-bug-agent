@@ -5,13 +5,26 @@ const input = document.getElementById("input");
 const send = document.getElementById("send");
 const cancel = document.getElementById("cancel");
 const status = document.getElementById("status");
-const statusDot = document.getElementById("status-dot");
 const caseMeta = document.getElementById("case-meta");
+const historyScreen = document.getElementById("history-screen");
+const chatScreen = document.getElementById("chat-screen");
+const historyList = document.getElementById("history-list");
+const connectionBanner = document.getElementById("connection-banner");
+const connectionCopy = document.getElementById("connection-copy");
+const runStrip = document.getElementById("run-strip");
+const elapsed = document.getElementById("elapsed");
+const addMenu = document.getElementById("add-menu");
+const toast = document.getElementById("toast");
+const connectionPill = document.getElementById("connection-pill");
 const messages = new Map();
 const tools = new Map();
 const progress = new Map();
 let conversation;
 let activeMessageId;
+let lastError = "";
+let deletedId;
+let busySince;
+let elapsedTimer;
 const markdown = globalThis.markdownit({
   html: false,
   linkify: true,
@@ -28,8 +41,79 @@ function element(tag, className, text) {
 
 function updateStatus(text, state = "ready") {
   status.textContent = text;
-  statusDot.className = "status-dot" +
-    (state === "busy" ? " busy" : state === "error" ? " error" : "");
+  runStrip.classList.toggle("error", state === "error");
+}
+
+function showChat() {
+  historyScreen.classList.add("hidden");
+  chatScreen.classList.remove("hidden");
+}
+
+function showHistory() {
+  chatScreen.classList.add("hidden");
+  historyScreen.classList.remove("hidden");
+  vscode.postMessage({type: "showHistory"});
+}
+
+function shortTitle(record) {
+  const task = record.task || {};
+  const fallback = task.issue_key || basename(task.case_path || "") || "未命名分析";
+  const text = String(task.objective || fallback).replace(/\s+/g, " ").trim();
+  return text.length > 48 ? text.slice(0, 47) + "…" : text;
+}
+
+function relativeTime(value) {
+  const time = new Date(value || 0).getTime();
+  if (!Number.isFinite(time) || !time) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - time) / 1000));
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3600) return Math.floor(seconds / 60) + " 分钟前";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + " 小时前";
+  if (seconds < 604800) return Math.floor(seconds / 86400) + " 天前";
+  return new Date(time).toLocaleDateString("zh-CN", {month: "short", day: "numeric"});
+}
+
+function renderHistory(records) {
+  historyList.replaceChildren();
+  if (!records.length) {
+    const empty = element("div", "history-empty");
+    empty.append(
+      element("div", "empty-orb", "✦"),
+      element("h2", "", "还没有分析记录"),
+      element("p", "", "创建第一个 Jira 或本地日志分析，会话会保存在这里。"),
+    );
+    historyList.append(empty);
+    return;
+  }
+  historyList.append(element("div", "history-section-label", "最近"));
+  for (const record of records) {
+    const task = record.task || {};
+    const running = (record.messages || []).some((message) =>
+      message.status === "queued" || message.status === "running");
+    const row = element("div", "history-item" +
+      (conversation?.conversation_id === record.conversation_id ? " active" : ""));
+    const open = element("button", "history-open-item");
+    const copy = element("span", "history-copy");
+    copy.append(
+      element("span", "history-title", shortTitle(record)),
+      element("span", "history-meta", [
+        task.issue_key || basename(task.case_path || "本地 Case"),
+        running ? "分析中" : relativeTime(record.updated_at),
+      ].filter(Boolean).join(" · ")),
+    );
+    open.append(element("span", running ? "history-dot running" : "history-dot"), copy);
+    open.onclick = () => vscode.postMessage({
+      type: "openConversation", conversationId: record.conversation_id,
+    });
+    const remove = element("button", "history-delete", "×");
+    remove.title = "删除会话";
+    remove.setAttribute("aria-label", "删除会话");
+    remove.onclick = () => vscode.postMessage({
+      type: "deleteConversation", conversationId: record.conversation_id,
+    });
+    row.append(open, remove);
+    historyList.append(row);
+  }
 }
 
 function pathParts(raw) {
@@ -408,6 +492,14 @@ function render() {
     }
     if (message.role === "assistant") renderPersistence(body, message.persistence);
     card.append(body);
+    if (message.role === "assistant" && /最大步骤数|尚未形成可靠结论/.test(message.content || "")) {
+      const resume = element("button", "continue-button", "继续调查 →");
+      resume.onclick = () => {
+        input.value = "继续调查。保留已有证据和调查状态，优先补齐尚未验证的关键缺口。";
+        send.click();
+      };
+      card.append(resume);
+    }
     if (message.status && message.status !== "completed") {
       card.append(element("div", "message-status", message.status));
     }
@@ -423,17 +515,29 @@ function render() {
 function setBusy(busy) {
   send.disabled = busy;
   cancel.disabled = !busy;
+  runStrip.classList.toggle("hidden", !busy);
+  if (busy && !busySince) {
+    busySince = Date.now();
+    elapsedTimer = setInterval(() => {
+      const total = Math.floor((Date.now() - busySince) / 1000);
+      elapsed.textContent = Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+    }, 1000);
+  } else if (!busy) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = undefined;
+    busySince = undefined;
+    elapsed.textContent = "0:00";
+  }
   updateStatus(busy ? "Agent 正在分析…" : "就绪", busy ? "busy" : "");
 }
 
 function applyConversation(record) {
   conversation = record;
-  document.getElementById("title").textContent =
-    record.task.issue_key || record.task.case_path || "BugAgent";
+  showChat();
+  document.getElementById("title").textContent = shortTitle(record);
   document.getElementById("case-meta").textContent = [
-    record.task.source === "jira" ? "Jira Case" : "本地 Case",
+    record.task.issue_key || basename(record.task.case_path || "本地 Case"),
     record.task.goal_mode ? "Goal Mode" : "限步模式",
-    record.status === "active" ? "持续会话" : record.status,
   ].join(" · ");
   messages.clear();
   tools.clear();
@@ -453,13 +557,24 @@ function applyEmpty() {
   messages.clear();
   tools.clear();
   document.getElementById("title").textContent = "BugAgent";
-  document.getElementById("case-meta").textContent = "工程调查助手";
-  updateStatus("请选择一个 Case", "");
-  root.replaceChildren(element(
-    "div", "empty-state", "从 Case 与会话列表中选择一项，这里会持续显示分析过程。",
-  ));
-  send.disabled = true;
+  document.getElementById("case-meta").textContent = "日志证据驱动的工程调查助手";
+  const welcome = element("div", "welcome");
+  welcome.append(
+    element("div", "welcome-mark", "✦"),
+    element("h2", "", "从一个问题开始"),
+    element("p", "", "输入 Jira 编号、粘贴本地 Case 路径，或描述你要调查的问题。"),
+  );
+  const starters = element("div", "starters");
+  const jira = element("button", "starter", "分析 Jira Issue");
+  jira.onclick = () => vscode.postMessage({type: "newJira"});
+  const local = element("button", "starter", "选择本地 Case");
+  local.onclick = () => vscode.postMessage({type: "newLocal"});
+  starters.append(jira, local);
+  welcome.append(starters);
+  root.replaceChildren(welcome);
+  send.disabled = false;
   cancel.disabled = true;
+  runStrip.classList.add("hidden");
 }
 
 function applyEvent(event) {
@@ -519,33 +634,89 @@ function applyEvent(event) {
 
 send.onclick = () => {
   const content = input.value.trim();
-  if (!content || !conversation) return;
-  vscode.postMessage({type: "send", content});
+  if (!content) return;
+  vscode.postMessage({type: conversation ? "send" : "startInput", content});
   input.value = "";
-  input.style.height = "54px";
+  input.style.height = "42px";
 };
 cancel.onclick = () => {
   if (activeMessageId) vscode.postMessage({type: "cancel", messageId: activeMessageId});
 };
 document.getElementById("refresh").onclick = () => vscode.postMessage({type: "refresh"});
+document.getElementById("history-open").onclick = showHistory;
+document.getElementById("history-close").onclick = showChat;
+document.getElementById("history-new").onclick = (event) => {
+  event.stopPropagation();
+  showChat();
+  addMenu.classList.remove("hidden");
+};
+document.getElementById("add").onclick = (event) => {
+  event.stopPropagation();
+  addMenu.classList.toggle("hidden");
+};
+document.getElementById("new-jira").onclick = () => {
+  addMenu.classList.add("hidden");
+  vscode.postMessage({type: "newJira"});
+};
+document.getElementById("new-local").onclick = () => {
+  addMenu.classList.add("hidden");
+  vscode.postMessage({type: "newLocal"});
+};
+document.addEventListener("click", () => addMenu.classList.add("hidden"));
+document.getElementById("retry").onclick = () => {
+  connectionCopy.textContent = "正在重新连接…";
+  vscode.postMessage({type: "retryConnection"});
+};
+document.getElementById("error-details").onclick = () => {
+  connectionCopy.textContent = lastError || "没有更多错误信息";
+};
+document.getElementById("undo-delete").onclick = () => {
+  if (deletedId) vscode.postMessage({type: "undoDelete", conversationId: deletedId});
+  deletedId = undefined;
+  toast.classList.add("hidden");
+};
 input.onkeydown = (event) => {
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) send.click();
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    send.click();
+  }
 };
 input.oninput = () => {
-  input.style.height = "54px";
-  input.style.height = Math.min(input.scrollHeight, 160) + "px";
+  input.style.height = "42px";
+  input.style.height = Math.min(input.scrollHeight, 150) + "px";
 };
 window.addEventListener("message", ({data}) => {
   if (data.type === "conversation") applyConversation(data.value);
   else if (data.type === "empty") applyEmpty();
+  else if (data.type === "history") renderHistory(data.value || []);
   else if (data.type === "event") applyEvent(data.value);
   else if (data.type === "pending") {
     messages.set(data.value.message_id, data.value);
     activeMessageId = data.value.message_id;
     setBusy(true);
     render();
-  } else if (data.type === "connection" || data.type === "error") {
-    updateStatus(data.value, data.type === "error" ? "error" :
-      String(data.value).includes("中断") ? "busy" : "ready");
+  } else if (data.type === "connection") {
+    const interrupted = String(data.value).includes("中断");
+    updateStatus(data.value, interrupted ? "busy" : "ready");
+    connectionPill.className = "connection-pill" + (interrupted ? " connecting" : "");
+    connectionPill.querySelector("b").textContent = interrupted ? "重连中" : "在线";
+    if (!interrupted) connectionBanner.classList.add("hidden");
+  } else if (data.type === "connectionError" || data.type === "error") {
+    lastError = String(data.value || "未知错误");
+    connectionCopy.textContent = data.type === "connectionError"
+      ? "服务连接中断，正在自动重连" : lastError;
+    connectionBanner.classList.remove("hidden");
+    connectionPill.className = "connection-pill error";
+    connectionPill.querySelector("b").textContent = "离线";
+  } else if (data.type === "inputHint") {
+    connectionCopy.textContent = data.value;
+    connectionBanner.classList.remove("hidden");
+    input.focus();
+  } else if (data.type === "deleted") {
+    deletedId = data.value;
+    toast.classList.remove("hidden");
+    setTimeout(() => toast.classList.add("hidden"), 6500);
   }
 });
+
+applyEmpty();

@@ -2,6 +2,7 @@
 
 const vscode = require("vscode");
 const path = require("path");
+const fs = require("fs");
 
 class ConversationPanel {
   constructor(context, server, logOpener, annotations, onChanged) {
@@ -15,6 +16,7 @@ class ConversationPanel {
     this.abort = undefined;
     this.cursor = 0;
     this.messageSubscription = undefined;
+    this.lastError = "";
   }
 
   async resolveWebviewView(view) {
@@ -38,6 +40,7 @@ class ConversationPanel {
       this.messageSubscription = undefined;
       this.view = undefined;
     });
+    await this.refreshHistory();
     if (this.record) {
       this.post({type: "conversation", value: this.record});
       this.stream();
@@ -55,7 +58,29 @@ class ConversationPanel {
     if (!this.view) return;
     this.view.title = this.title(record);
     this.post({type: "conversation", value: record});
+    await this.refreshHistory();
     this.stream();
+  }
+
+  hiddenConversationIds() {
+    return new Set(this.context.globalState.get("bugAgent.hiddenConversations", []));
+  }
+
+  async refreshHistory() {
+    try {
+      const api = await this.server.ensure(
+        this.record?.case_root || this.record?.task?.case_path,
+      );
+      const hidden = this.hiddenConversationIds();
+      const records = (await api.listConversations())
+        .filter((item) => !hidden.has(item.conversation_id));
+      this.post({type: "history", value: records});
+      this.post({type: "connection", value: "已连接"});
+      this.lastError = "";
+    } catch (error) {
+      this.lastError = error.message;
+      this.post({type: "connectionError", value: error.message});
+    }
   }
 
   title(record) {
@@ -68,18 +93,49 @@ class ConversationPanel {
   }
 
   async handle(message) {
-    if (!this.record) return;
     try {
       const api = await this.server.client();
-      if (message.type === "send") {
+      if (message.type === "openConversation") {
+        await this.open(await api.getConversation(String(message.conversationId || "")));
+      } else if (message.type === "showHistory") {
+        await this.refreshHistory();
+      } else if (message.type === "newLocal") {
+        await vscode.commands.executeCommand("bugAgent.newLocalCase");
+      } else if (message.type === "newJira") {
+        await vscode.commands.executeCommand("bugAgent.newJiraCase");
+      } else if (message.type === "startInput") {
+        await this.startFromInput(String(message.content || ""));
+      } else if (message.type === "deleteConversation") {
+        const id = String(message.conversationId || "");
+        const hidden = this.hiddenConversationIds();
+        hidden.add(id);
+        await this.context.globalState.update("bugAgent.hiddenConversations", [...hidden]);
+        if (this.record?.conversation_id === id) {
+          this.abort?.abort();
+          this.record = undefined;
+          if (this.view) this.view.title = "BugAgent";
+          this.post({type: "empty"});
+        }
+        await this.refreshHistory();
+        this.post({type: "deleted", value: id});
+      } else if (message.type === "undoDelete") {
+        const hidden = this.hiddenConversationIds();
+        hidden.delete(String(message.conversationId || ""));
+        await this.context.globalState.update("bugAgent.hiddenConversations", [...hidden]);
+        await this.refreshHistory();
+      } else if (message.type === "retryConnection") {
+        await this.server.ensure(this.record?.case_root || this.record?.task?.case_path);
+        await this.refreshHistory();
+        if (this.record) this.stream();
+      } else if (message.type === "send" && this.record) {
         const pending = await api.sendMessage(
           this.record.conversation_id, String(message.content || ""),
         );
         this.post({type: "pending", value: pending});
         this.onChanged();
-      } else if (message.type === "cancel") {
+      } else if (message.type === "cancel" && this.record) {
         await api.cancelMessage(this.record.conversation_id, Number(message.messageId));
-      } else if (message.type === "openLocation") {
+      } else if (message.type === "openLocation" && this.record) {
         const task = this.record.task || {};
         const config = vscode.workspace.getConfiguration("bugAgent");
         let jiraRoot = config.get("jiraExportRoot", "");
@@ -99,7 +155,7 @@ class ConversationPanel {
           throw new Error("仅允许打开 HTTP/HTTPS 链接。");
         }
         await vscode.env.openExternal(vscode.Uri.parse(target.toString()));
-      } else if (message.type === "refresh") {
+      } else if (message.type === "refresh" && this.record) {
         this.record = await api.getConversation(this.record.conversation_id);
         await this.annotations.syncRecord(this.record);
         this.post({type: "conversation", value: this.record});
@@ -108,6 +164,30 @@ class ConversationPanel {
       vscode.window.showErrorMessage("BugAgent: " + error.message);
       this.post({type: "error", value: error.message});
     }
+  }
+
+  async startFromInput(raw) {
+    const content = raw.trim();
+    if (!content) return;
+    const jira = content.match(/\b[A-Za-z][A-Za-z0-9_]*-\d+\b/);
+    if (jira) {
+      await vscode.commands.executeCommand("bugAgent.newJiraCase", {
+        issueKey: jira[0].toUpperCase(), objective: content, sendImmediately: true,
+      });
+      return;
+    }
+    const candidate = content.replace(/^['"]|['"]$/g, "");
+    if (path.isAbsolute(candidate) && fs.existsSync(candidate)) {
+      await vscode.commands.executeCommand("bugAgent.newLocalCase", {
+        casePath: candidate, objective: "定位 Bug 根因并给出下一步建议",
+        sendImmediately: false,
+      });
+      return;
+    }
+    this.post({
+      type: "inputHint",
+      value: "请在描述中包含 Jira 编号，粘贴本地 Case 路径，或通过＋选择分析来源。",
+    });
   }
 
   async stream() {
@@ -142,9 +222,11 @@ class ConversationPanel {
             this.onChanged();
           },
         );
-      } catch {
+      } catch (error) {
         if (abort.signal.aborted) return;
+        this.lastError = error.message;
         this.post({type: "connection", value: "连接中断，正在重连…"});
+        this.post({type: "connectionError", value: error.message});
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
@@ -152,7 +234,7 @@ class ConversationPanel {
 
   html(webview, media) {
     const script = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel.js"));
-    const style = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel.css"));
+    const style = webview.asWebviewUri(vscode.Uri.joinPath(media, "panel-v3.css"));
     const fileCardsStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "file-cards.css"));
     const markdownStyle = webview.asWebviewUri(vscode.Uri.joinPath(media, "markdown.css"));
     const markdownScript = webview.asWebviewUri(vscode.Uri.joinPath(
@@ -167,18 +249,27 @@ class ConversationPanel {
       "<link rel=\"stylesheet\" href=\"" + style + "\">",
       "<link rel=\"stylesheet\" href=\"" + fileCardsStyle + "\">",
       "<link rel=\"stylesheet\" href=\"" + markdownStyle + "\"></head><body>",
-      "<header class=\"case-header\"><div class=\"case-heading\">",
-      "<span class=\"agent-mark\">✦</span><div class=\"case-copy\">",
-      "<h1 id=\"title\">BugAgent</h1><div id=\"case-meta\" class=\"case-meta\">工程调查助手</div>",
-      "</div><button id=\"refresh\" class=\"icon-button\" title=\"刷新会话\" aria-label=\"刷新会话\">↻</button></div>",
-      "<div class=\"connection-row\"><span id=\"status-dot\" class=\"status-dot busy\"></span>",
-      "<span id=\"status\">连接中…</span></div></header>",
-      "<main id=\"messages\"><div class=\"empty-state\">从 Case 与会话列表中选择一项，这里会持续显示分析过程。</div></main>",
-      "<footer class=\"composer\"><div class=\"composer-box\">",
-      "<textarea id=\"input\" rows=\"2\" placeholder=\"补充线索或继续追问…\"></textarea>",
-      "<div class=\"composer-actions\"><span class=\"composer-hint\">Ctrl+Enter 发送</span>",
-      "<button id=\"cancel\" disabled>停止</button>",
-      "<button id=\"send\" disabled>发送 ↑</button></div></div></footer>",
+      "<div id=\"app\"><section id=\"history-screen\" class=\"screen hidden\">",
+      "<header class=\"history-header\"><div><div class=\"eyebrow\">BUGAGENT</div><h1>历史会话</h1></div>",
+      "<button id=\"history-close\" class=\"ghost icon-button\" aria-label=\"关闭历史记录\">×</button></header>",
+      "<div class=\"history-actions\"><button id=\"history-new\" class=\"primary wide\">＋ 新建分析</button></div>",
+      "<div id=\"history-list\" class=\"history-list\"></div></section>",
+      "<section id=\"chat-screen\" class=\"screen\"><header class=\"case-header\">",
+      "<button id=\"history-open\" class=\"ghost icon-button\" title=\"历史会话\" aria-label=\"历史会话\">☰</button>",
+      "<div class=\"case-copy\"><h1 id=\"title\">BugAgent</h1><div id=\"case-meta\" class=\"case-meta\">工程调查助手</div></div>",
+      "<span id=\"connection-pill\" class=\"connection-pill connecting\"><i></i><b>连接中</b></span>",
+      "<button id=\"refresh\" class=\"ghost icon-button\" title=\"刷新会话\" aria-label=\"刷新会话\">↻</button></header>",
+      "<div id=\"connection-banner\" class=\"connection-banner hidden\"><span id=\"connection-copy\"></span>",
+      "<button id=\"retry\" class=\"text-button\">立即重试</button><button id=\"error-details\" class=\"text-button\">详情</button></div>",
+      "<main id=\"messages\"></main>",
+      "<footer class=\"composer\"><div id=\"run-strip\" class=\"run-strip hidden\"><span class=\"spinner\"></span>",
+      "<span id=\"status\">正在分析</span><span id=\"elapsed\">0:00</span><button id=\"cancel\" class=\"text-button\" disabled>停止</button></div>",
+      "<div class=\"composer-box\"><textarea id=\"input\" rows=\"1\" placeholder=\"输入 Jira 编号、Case 路径或问题…\"></textarea>",
+      "<div class=\"composer-actions\"><div class=\"add-wrap\"><button id=\"add\" class=\"ghost round\" aria-label=\"新建分析\">＋</button>",
+      "<div id=\"add-menu\" class=\"add-menu hidden\"><button id=\"new-jira\">Jira Issue<span>输入问题编号</span></button>",
+      "<button id=\"new-local\">本地 Case<span>选择日志目录</span></button></div></div>",
+      "<span class=\"composer-hint\">Enter 发送 · Shift+Enter 换行</span><button id=\"send\" class=\"send-button\" aria-label=\"发送\">↑</button>",
+      "</div></div></footer></section><div id=\"toast\" class=\"toast hidden\"><span>会话已删除</span><button id=\"undo-delete\">撤销</button></div></div>",
       "<script nonce=\"" + nonce + "\" src=\"" + markdownScript + "\"></script>",
       "<script nonce=\"" + nonce + "\" src=\"" + script + "\"></script>",
       "</body></html>",
