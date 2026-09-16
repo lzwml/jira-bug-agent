@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from .contracts import ActionItem, BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis
-from .rca_state import Claim, RCAEvent, RCAEventDetail, RCAState, RCAMetadata, stable_claim_id
+from ..domain.contracts import ActionItem, BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis
+from ..domain.rca_state import Claim, RCAEvent, RCAEventDetail, RCAState, RCAMetadata, stable_claim_id
 
 
 def _confidence(value: float) -> str:
@@ -261,7 +261,7 @@ def reconcile_state(current: RCAState, task: BugAnalysisTask, result: BugAnalysi
 
 def reconcile(task: BugAnalysisTask, result: BugAnalysisResult, run=None, config=None):
     """Worker 边界调用的容错入口；存储失败只记录 warning。"""
-    from .rca_store import RCAStore
+    from ..infrastructure.persistence.rca_store import RCAStore
     import logging
     try:
         store = RCAStore(task)

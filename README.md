@@ -47,7 +47,15 @@ MCP 是 Agent 的工具层。完整 Agent 还包含 Prompt、规划循环、上�
 ## 仓库结构
 
 ```text
-src/bug_agent/                    # Worker / Agent Core / Harness / CLI
+src/bug_agent/domain/             # 稳定业务契约与确定性 RCA 规则
+src/bug_agent/agent_core/         # 框架无关的 Agent Loop、端口契约与 Prompt
+src/bug_agent/application/        # Worker、会话与分析用例协调
+src/bug_agent/infrastructure/     # Provider、MCP、配置与外部资源适配
+src/bug_agent/infrastructure/persistence/ # Run Bundle 与 RCA 状态存储
+src/bug_agent/presentation/       # 报告解析、Markdown 渲染与运行可视化
+src/bug_agent/interfaces/         # 命令行等进程入口
+src/bug_agent/api/                # HTTP API 入口
+src/bug_agent/__init__.py         # 稳定的包级公共 API
 packages/jira-bug-mcp/            # Jira Adapter
 packages/log-analysis-core/       # 与协议无关的确定性解析引擎
 packages/log-analyzer-mcp/        # Core 的 MCP 安全适配层
@@ -196,7 +204,7 @@ uv run bug-agent-api
 
 ```python
 from bug_agent import BugAnalysisTask, BugAnalysisWorker
-from bug_agent.config import AgentConfig
+from bug_agent.infrastructure.config import AgentConfig
 
 worker = BugAnalysisWorker(AgentConfig.from_environment())
 result = await worker.execute(BugAnalysisTask(

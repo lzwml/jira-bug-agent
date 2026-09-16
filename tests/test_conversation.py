@@ -6,13 +6,13 @@ import json
 
 import pytest
 
-from bug_agent.agent import BugAnalysisAgent
-from bug_agent.config import AgentConfig
-from bug_agent.conversation import ConversationSession
-from bug_agent.prompts import (
+from bug_agent.agent_core import BugAnalysisAgent
+from bug_agent.agent_core.prompts import (
     CHAT_REPORT_SYNTHESIS_PROMPT,
     CONVERSATION_FOLLOWUP_SYSTEM_PROMPT,
 )
+from bug_agent.application.conversation import ConversationSession
+from bug_agent.infrastructure.config import AgentConfig
 
 
 CONFIG = AgentConfig(
@@ -120,7 +120,7 @@ def test_chat_synthesis_drops_retracted_guesses_and_preserves_identity_conflicts
 
 
 def test_report_prompt_forbids_confirmed_wording_for_hypotheses():
-    from bug_agent.prompts import REPORT_FORMAT_PROMPT
+    from bug_agent.agent_core.prompts import REPORT_FORMAT_PROMPT
 
     assert "根因尚未确认" in REPORT_FORMAT_PROMPT
     assert "由…引发" in REPORT_FORMAT_PROMPT

@@ -13,9 +13,9 @@ import json
 import time
 from typing import Any
 
-from .agent import ModelProvider
-from .config import AgentConfig
-from .provider import ProviderError
+from ..agent_core import ModelProvider
+from ..infrastructure.config import AgentConfig
+from ..infrastructure.provider import ProviderError
 
 
 DESCRIPTION_SOURCE_ID = "issue-description"

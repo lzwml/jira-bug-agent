@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from bug_agent.config import AgentConfig
-from bug_agent.contracts import BugAnalysisTask
-from bug_agent.models import CompletionTokenUsage, TokenUsageAccumulator, ToolEvent
-from bug_agent.provider import ProviderError, ProviderMessage
-from bug_agent.skills import SkillRegistry
-from bug_agent.worker import BugAnalysisWorker
+from bug_agent.application.worker import BugAnalysisWorker
+from bug_agent.domain.contracts import BugAnalysisTask
+from bug_agent.domain.models import CompletionTokenUsage, TokenUsageAccumulator, ToolEvent
+from bug_agent.infrastructure.config import AgentConfig
+from bug_agent.infrastructure.provider import ProviderError, ProviderMessage
+from bug_agent.infrastructure.skills import SkillRegistry
 
 
 def _find_run_file(runs_dir: Path, task_id: str) -> Path:

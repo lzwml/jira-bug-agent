@@ -38,8 +38,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .contracts import BugAnalysisResult, BugAnalysisTask, InvestigationState
-from .models import AgentRunResult, ToolEvent
+from ...domain.contracts import BugAnalysisResult, BugAnalysisTask, InvestigationState
+from ...domain.models import AgentRunResult, ToolEvent
 from .run_bundle import (
     SCHEMA_VERSION,
     build_budget_usage,
@@ -71,7 +71,7 @@ def resolve_run_dir(task: BugAnalysisTask) -> Path | None:
         return case_path / ".bug-agent" / "runs"
 
     # jira 模式：export_issue_case 把 Case 落到 <export_root>/<ISSUE_KEY>/
-    from .config import default_export_root
+    from ..config import default_export_root
 
     issue_key = (task.issue_key or "").upper()
     if not issue_key:

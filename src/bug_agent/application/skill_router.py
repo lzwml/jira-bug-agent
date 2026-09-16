@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, Protocol
 
-from .contracts import SkillActivation
-from .coverage_contracts import get_coverage_contract
-from .skills import MAX_SKILLS_PER_TASK, SkillDocument, SkillRegistry
+from ..domain.contracts import SkillActivation
+from ..domain.coverage_contracts import get_coverage_contract
+from ..infrastructure.skills import MAX_SKILLS_PER_TASK, SkillDocument, SkillRegistry
 
 
 ACTIVATE_SKILL_TOOL = "activate_skill"

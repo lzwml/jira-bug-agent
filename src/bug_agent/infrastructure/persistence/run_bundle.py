@@ -9,9 +9,9 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
-from .contracts import BugAnalysisResult, BugAnalysisTask
-from .models import AgentRunResult, TokenUsage, ToolEvent
-from .report_validation import build_evidence_registry
+from ...domain.contracts import BugAnalysisResult, BugAnalysisTask
+from ...domain.models import AgentRunResult, TokenUsage, ToolEvent
+from ...domain.report_validation import build_evidence_registry
 
 
 SCHEMA_VERSION = 2

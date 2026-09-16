@@ -7,8 +7,8 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from bug_agent.chat_store import ChatStore, _session_path
-from bug_agent.contracts import BugAnalysisTask
+from bug_agent.domain.contracts import BugAnalysisTask
+from bug_agent.infrastructure.persistence.chat_store import ChatStore, _session_path
 
 
 def _temp_dir() -> Path:

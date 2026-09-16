@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 
-from bug_agent.contracts import BugAnalysisResult, BugAnalysisTask, IncidentProfile, InvestigationState, RCAReport
-from bug_agent.models import AgentRunResult, TokenUsage, ToolEvent
-from bug_agent.run_bundle import build_execution_context, verify_record
-from bug_agent.runstore import build_run_record
+from bug_agent.domain.contracts import BugAnalysisResult, BugAnalysisTask, IncidentProfile, InvestigationState, RCAReport
+from bug_agent.domain.models import AgentRunResult, TokenUsage, ToolEvent
+from bug_agent.infrastructure.persistence.run_bundle import build_execution_context, verify_record
+from bug_agent.infrastructure.persistence.runstore import build_run_record
 
 
 class _Skill:

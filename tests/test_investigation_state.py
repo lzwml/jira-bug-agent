@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from bug_agent.investigation_state import (
+from bug_agent.application.investigation_state import (
     UPDATE_INVESTIGATION_STATE_TOOL,
     InvestigationStateToolRouter,
 )

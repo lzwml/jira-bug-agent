@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 
-from bug_agent import cli
+from bug_agent.interfaces import cli
 
 
 @pytest.mark.anyio

@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from bug_agent.config import AgentConfig
-from bug_agent.provider import OpenAICompatibleProvider, ProviderError
+from bug_agent.infrastructure.config import AgentConfig
+from bug_agent.infrastructure.provider import OpenAICompatibleProvider, ProviderError
 
 
 def config():

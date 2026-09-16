@@ -6,8 +6,8 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..models import ToolEvent
-from ..contracts import EvidenceReference
+from ..domain.contracts import EvidenceReference
+from ..domain.models import ToolEvent
 from .models import ClientLocation
 
 

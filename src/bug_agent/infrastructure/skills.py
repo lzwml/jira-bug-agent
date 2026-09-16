@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 
-from .coverage_contracts import get_coverage_contract
+from ..domain.coverage_contracts import get_coverage_contract
 
 
 SKILL_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -36,10 +36,16 @@ class SkillRegistry:
         configured = os.getenv("BUG_AGENT_SKILLS_ROOT")
         if configured:
             return cls(Path(configured).expanduser())
-        source_checkout = Path(__file__).resolve().parents[2] / "skills"
+        return cls.builtin()
+
+    @classmethod
+    def builtin(cls) -> "SkillRegistry":
+        """Locate repository Skills or their installed wheel equivalent."""
+
+        source_checkout = Path(__file__).resolve().parents[3] / "skills"
         if source_checkout.is_dir():
             return cls(source_checkout)
-        bundled = Path(__file__).resolve().parent.parent / "bug_agent_builtin_skills"
+        bundled = Path(__file__).resolve().parents[2] / "bug_agent_builtin_skills"
         return cls(bundled)
 
     def load(self, name: str) -> SkillDocument:

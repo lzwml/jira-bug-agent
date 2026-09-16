@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from bug_agent.skill_router import ACTIVATE_SKILL_TOOL, SkillAwareToolRouter
-from bug_agent.skills import SkillRegistry
+from bug_agent.application.skill_router import ACTIVATE_SKILL_TOOL, SkillAwareToolRouter
+from bug_agent.infrastructure.skills import SkillRegistry
 
 
 SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"

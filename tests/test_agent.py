@@ -5,10 +5,10 @@ from dataclasses import replace
 
 import pytest
 
-from bug_agent.agent import BugAnalysisAgent
-from bug_agent.config import AgentConfig
-from bug_agent.models import CompletionTokenUsage
-from bug_agent.provider import ProviderError, ProviderMessage
+from bug_agent.agent_core import BugAnalysisAgent
+from bug_agent.domain.models import CompletionTokenUsage
+from bug_agent.infrastructure.config import AgentConfig
+from bug_agent.infrastructure.provider import ProviderError, ProviderMessage
 
 
 CONFIG = AgentConfig(

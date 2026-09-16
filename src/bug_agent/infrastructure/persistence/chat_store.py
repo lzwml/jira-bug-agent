@@ -16,11 +16,14 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
-from .contracts import BugAnalysisTask
+from ...domain.contracts import BugAnalysisTask
 from .optimization_feedback import write_optimization_candidate
+
+
+OptimizationCandidateWriter = Callable[..., Path | None]
 
 
 def _now() -> str:
@@ -37,7 +40,7 @@ def resolve_chat_sessions_dir(task: BugAnalysisTask) -> Path | None:
         if not task.case_path:
             return None
         return Path(task.case_path).expanduser().resolve() / ".bug-agent" / "chat-sessions"
-    from .config import default_export_root
+    from ..config import default_export_root
 
     issue_key = (task.issue_key or "").upper()
     if not issue_key:
@@ -61,8 +64,16 @@ def _session_path(sessions_dir: Path, session_id: str) -> Path:
 class ChatStore:
     """每次操作原子写入单个 JSON 文件，与 runs/*.json 风格一致。"""
 
-    def __init__(self, sessions_dir: Path):
+    def __init__(
+        self,
+        sessions_dir: Path,
+        *,
+        optimization_candidate_writer: OptimizationCandidateWriter | None = (
+            write_optimization_candidate
+        ),
+    ):
         self._dir = sessions_dir
+        self._optimization_candidate_writer = optimization_candidate_writer
 
     @property
     def sessions_dir(self) -> Path:
@@ -150,8 +161,8 @@ class ChatStore:
 
         data["schema_version"] = 3
         optimization_candidate = None
-        if human_intervention is not None:
-            optimization_candidate = write_optimization_candidate(
+        if human_intervention is not None and self._optimization_candidate_writer is not None:
+            optimization_candidate = self._optimization_candidate_writer(
                 self._dir,
                 session_id=session_id,
                 turn_index=turn_index,

@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ..contracts import (
+from ..domain.contracts import (
     BugAnalysisResult,
     BugAnalysisTask,
     InvestigationState,

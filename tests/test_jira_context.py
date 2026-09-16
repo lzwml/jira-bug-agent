@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from bug_agent.jira_context import JiraCaseValidationError, load_jira_initial_context
+from bug_agent.infrastructure.jira_context import JiraCaseValidationError, load_jira_initial_context
 
 
 def write_case(path, *, comments, complete=True, collected=None, total=None):

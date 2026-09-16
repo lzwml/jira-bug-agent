@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from bug_agent.chat_visualization import (
+from bug_agent.presentation.chat_visualization import (
     build_return_preview,
     enrich_member_references,
     load_chat_session,

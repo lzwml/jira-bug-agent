@@ -76,17 +76,44 @@ BugAnalysisAgent         Agent Loop, step budget, tool result truncation, prompt
 
 ```
 src/bug_agent/
-  agent.py          # BugAnalysisAgent — framework-agnostic tool-call loop
-  worker.py         # BugAnalysisWorker — application boundary, MCP lifecycle, prompt assembly
-  contracts.py      # BugAnalysisTask, BugAnalysisResult, RCAReport, Hypothesis, EvidenceReference
-  config.py         # AgentConfig — reads from env (BUG_AGENT_LLM_*)
-  mcp_router.py     # McpToolRouter — manages multiple stdio MCP sessions, tool name routing
-  provider.py       # OpenAICompatibleProvider — httpx-based, adds tool_choice + temperature
-  prompts.py        # Domain prompts (BASE_SYSTEM_PROMPT, JIRA/LOCAL workflow, REPORT_FORMAT)
-  skills.py         # SkillRegistry — loads SKILL.md files with YAML frontmatter validation
-  cli.py            # argparse CLI entry point (bug-agent command)
-  renderer.py       # Markdown renderer for BugAnalysisResult (human-readable output)
-  models.py         # AgentRunResult, ToolEvent (internal, not exposed to upstream)
+  agent_core/       # Framework-agnostic loop, ports, prompts, checkpoints
+    agent.py         # BugAnalysisAgent tool-call loop
+    contracts.py     # ModelProvider, ToolRouter, runtime config, provider failure ports
+    human_checkpoint.py # Core checkpoint protocol and result parsing
+    prompts.py       # Domain and workflow prompts
+  application/      # Analysis workflows and use-case coordination
+    worker.py        # Stable Worker facade and runtime lifecycle
+    conversation.py  # Multi-turn analysis session
+    skill_router.py  # Runtime Skill activation policy
+    investigation_state.py # Investigation control-plane tools
+    human_guidance.py # Human checkpoint workflow
+    rca_reconciliation.py # Cross-run RCA reconciliation
+    evaluation.py    # Run review and promotion use cases
+    comment_compiler.py # Bounded Jira context compilation
+  domain/           # Stable business contracts and deterministic RCA rules
+    contracts.py    # BugAnalysisTask, BugAnalysisResult, RCAReport, evidence models
+    models.py       # AgentRunResult, ToolEvent, token and intervention models
+    rca_state.py    # Persistent RCA state and audit event models
+    report_validation.py # Evidence-bound report validation
+    coverage_contracts.py # Versioned minimum coverage rules
+  infrastructure/   # External services and runtime adapters
+    config.py        # AgentConfig and environment loading
+    provider.py      # OpenAI-compatible model provider
+    mcp_router.py    # MCP process lifecycle and tool routing
+    jira_context.py  # Exported Jira Case validation
+    skills.py        # Filesystem-backed Skill registry
+    tool_catalog.py  # Runtime tool schema catalog and legacy fallback
+    persistence/     # Run bundles, chat sessions, run records, and RCA state storage
+      chat_store.py  # JSON chat persistence with an injected optimization writer
+      optimization_feedback.py # Human intervention optimization artifacts
+  interfaces/       # User-facing process entrypoints
+    cli.py           # argparse CLI implementation (bug-agent command)
+  presentation/     # Report parsing, Markdown rendering, and visualizations
+    report_parser.py # Structured RCA parsing and conversation presentation
+    renderer.py      # Human-readable Markdown output
+    chat_visualization.py # Chat artifact generation
+    run_visualization.py  # Run review artifact generation
+  __init__.py       # Stable package-level public API; no flat implementation modules
 
 packages/
   jira-bug-mcp/     # Jira Cloud v3 / Data Center v2 adapter, read-only, case exporter

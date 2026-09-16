@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from bug_agent.contracts import (
+from bug_agent.domain.contracts import (
     EvidenceReference,
     Hypothesis,
     IncidentIdentity,
@@ -10,8 +10,8 @@ from bug_agent.contracts import (
     RCAReport,
     TimelineEntry,
 )
-from bug_agent.models import ToolEvent
-from bug_agent.report_validation import build_evidence_registry, validate_report
+from bug_agent.domain.models import ToolEvent
+from bug_agent.domain.report_validation import build_evidence_registry, validate_report
 
 
 def evidence_event() -> ToolEvent:

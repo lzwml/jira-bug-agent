@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from bug_agent.run_bundle import seal_record
-from bug_agent.run_visualization import render_run_visualization
+from bug_agent.infrastructure.persistence.run_bundle import seal_record
+from bug_agent.presentation.run_visualization import render_run_visualization
 
 
 def test_visualization_embeds_verified_bundle_and_feedback_form(tmp_path):
