@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from bug_agent.agent import BugAnalysisAgent
-from bug_agent.config import AgentConfig
-from bug_agent.conversation import ConversationSession
-from bug_agent.human_guidance import HumanGuidanceToolRouter
+from bug_agent.agent_core import BugAnalysisAgent
+from bug_agent.application.conversation import ConversationSession
+from bug_agent.application.human_guidance import HumanGuidanceToolRouter
+from bug_agent.infrastructure.config import AgentConfig
 
 
 CONFIG = AgentConfig(

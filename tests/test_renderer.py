@@ -1,4 +1,4 @@
-from bug_agent.contracts import (
+from bug_agent.domain.contracts import (
     ActionItem,
     AnalysisGuide,
     BugAnalysisResult,
@@ -8,8 +8,8 @@ from bug_agent.contracts import (
     RCAReport,
     TimelineEntry,
 )
-from bug_agent.models import TokenUsage
-from bug_agent.renderer import render_analysis_guide, render_markdown
+from bug_agent.domain.models import TokenUsage
+from bug_agent.presentation.renderer import render_analysis_guide, render_markdown
 
 
 def test_renderer_outputs_formal_stability_rca_sections():

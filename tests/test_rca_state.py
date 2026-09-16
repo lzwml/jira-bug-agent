@@ -1,4 +1,4 @@
-from bug_agent.rca_state import Claim, RCAState, stable_claim_id
+from bug_agent.domain.rca_state import Claim, RCAState, stable_claim_id
 
 
 def test_claim_id_is_stable_and_state_round_trips():

@@ -6,10 +6,11 @@ import json
 from typing import Any, Protocol
 from uuid import uuid4
 
-from .models import HumanCheckpoint, InterventionAttribution
-
-
-REQUEST_HUMAN_GUIDANCE_TOOL = "request_human_guidance"
+from ..agent_core.human_checkpoint import (
+    REQUEST_HUMAN_GUIDANCE_TOOL,
+    checkpoint_from_result,
+)
+from ..domain.models import HumanCheckpoint, InterventionAttribution
 
 
 class DelegateRouter(Protocol):
@@ -171,15 +172,6 @@ def infer_attribution(
         target="unknown",
         rationale="现有结构不足以可靠归因，保留给人工评审，不自动进入 Tool/Skill。",
     )
-
-
-def checkpoint_from_result(raw: str) -> HumanCheckpoint | None:
-    try:
-        payload = json.loads(raw)
-        value = payload.get("data", {}).get("human_checkpoint")
-        return HumanCheckpoint.model_validate(value) if value else None
-    except (json.JSONDecodeError, AttributeError, ValueError):
-        return None
 
 
 def _error(code: str, message: str) -> str:

@@ -7,15 +7,15 @@ from typing import Any, Literal, Protocol
 
 from pydantic import ValidationError
 
-from .contracts import (
+from ..domain.contracts import (
     IncidentProfile,
     InvestigationCandidate,
     InvestigationCoverage,
     InvestigationHypothesis,
     InvestigationState,
 )
-from .report_validation import build_evidence_registry
-from .models import ToolEvent
+from ..domain.report_validation import build_evidence_registry
+from ..domain.models import ToolEvent
 
 
 UPDATE_INVESTIGATION_STATE_TOOL = "update_investigation_state"

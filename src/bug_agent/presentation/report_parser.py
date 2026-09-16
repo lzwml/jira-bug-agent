@@ -6,10 +6,10 @@ from dataclasses import dataclass
 import json
 import re
 
-from .contracts import BugAnalysisResult, RCAReport, ReportValidation
-from .models import ToolEvent
+from ..domain.contracts import BugAnalysisResult, RCAReport, ReportValidation
+from ..domain.models import ToolEvent
 from .renderer import render_markdown
-from .report_validation import validate_report
+from ..domain.report_validation import validate_report
 
 
 @dataclass(frozen=True)

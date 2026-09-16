@@ -7,11 +7,11 @@ import inspect
 import logging
 from typing import Callable, Protocol
 
-from ..contracts import BugAnalysisResult, BugAnalysisTask, InvestigationState
-from ..models import ToolEvent
-from ..presentation import present_conversation_answer
-from ..rca_reconciliation import reconcile
-from ..rca_store import RCAStore
+from ..application.rca_reconciliation import reconcile
+from ..domain.contracts import BugAnalysisResult, BugAnalysisTask, InvestigationState
+from ..domain.models import ToolEvent
+from ..infrastructure.persistence.rca_store import RCAStore
+from ..presentation.report_parser import present_conversation_answer
 from .models import ConversationPersistence, TaskRecord
 from .task_store import SqliteTaskStore
 

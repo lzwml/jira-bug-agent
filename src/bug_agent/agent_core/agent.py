@@ -22,41 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
-from .config import AgentConfig
-from .models import AgentRunResult, TokenUsageAccumulator, ToolEvent
-from .human_guidance import REQUEST_HUMAN_GUIDANCE_TOOL, checkpoint_from_result
-from .provider import ProviderError
-
-
-class ModelProvider(Protocol):
-    """模型提供者协议：只需要能执行一次对话补全。
-
-    【学习要点】为什么用 Protocol 而不是 ABC(抽象基类)？
-    - Protocol 是"鸭子类型"的正式化：只要对象有 complete() 方法就算实现了协议，
-      不需要显式继承，降低了耦合；
-    - 测试中的 FakeProvider 不需要继承任何基类，直接定义 complete() 即可；
-    - 未来接入 LangChain/LiteLLM 等框架时，包一层适配器就能满足协议。
-    """
-
-    async def complete(self, messages: list[dict], tools: list[dict]) -> dict[str, Any]: ...
-
-
-class ToolRouter(Protocol):
-    """工具路由器协议：负责工具的发现和执行。
-
-    【学习要点】Agent 不关心工具从哪来(MCP/本地函数/远程API)，
-    只要求两个能力：
-    1. openai_tools() → 返回 OpenAI 格式的工具定义列表，给模型看；
-    2. call(name, arguments) → 执行指定工具，返回 JSON 字符串结果。
-
-    这种抽象让 Agent 可以同时驱动多个 MCP Server，也可以在不改代码的情况下
-    把某些工具换成 mocks 用于测试。
-    """
-
-    def openai_tools(self) -> list[dict[str, Any]]: ...
-    async def call(self, name: str, arguments: dict[str, Any]) -> str: ...
+from ..domain.models import AgentRunResult, TokenUsageAccumulator, ToolEvent
+from .contracts import AgentRuntimeConfig, ModelProvider, ProviderFailure, ToolRouter
+from .human_checkpoint import REQUEST_HUMAN_GUIDANCE_TOOL, checkpoint_from_result
 
 
 def _result_success(raw: str) -> bool:
@@ -126,7 +96,7 @@ class BugAnalysisAgent:
     这是处理复杂 Bug 分析任务的关键能力。
     """
 
-    def __init__(self, config: AgentConfig, provider: ModelProvider):
+    def __init__(self, config: AgentRuntimeConfig, provider: ModelProvider):
         self.config = config
         self.provider = provider
 
@@ -136,7 +106,7 @@ class BugAnalysisAgent:
         for attempt in range(self.config.llm_max_retries + 1):
             try:
                 return await self.provider.complete(messages, tools)
-            except ProviderError as exc:
+            except ProviderFailure as exc:
                 if not exc.retryable or attempt >= self.config.llm_max_retries:
                     raise
                 delay = self.config.llm_retry_base_seconds * (2 ** attempt)
@@ -204,7 +174,7 @@ class BugAnalysisAgent:
                     pass
             try:
                 message = await self._complete(messages, tools)
-            except ProviderError as exc:
+            except ProviderFailure as exc:
                 return AgentRunResult(
                     status="failed", task="", final_answer="", steps=step - 1 - starting_step,
                     tool_events=events, error=str(exc),

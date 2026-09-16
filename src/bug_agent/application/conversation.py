@@ -29,10 +29,10 @@ import inspect
 from dataclasses import dataclass
 from typing import Callable
 
-from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
-from .config import AgentConfig
-from .contracts import InvestigationState
-from .models import (
+from ..agent_core import BugAnalysisAgent, ModelProvider, ToolRouter
+from ..infrastructure.config import AgentConfig
+from ..domain.contracts import InvestigationState
+from ..domain.models import (
     AgentRunResult,
     HumanCheckpoint,
     HumanIntervention,
@@ -40,9 +40,9 @@ from .models import (
     ToolEvent,
     merge_token_usage,
 )
-from .prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
+from ..agent_core.prompts import CONVERSATION_FOLLOWUP_SYSTEM_PROMPT
 from .human_guidance import infer_attribution
-from .tool_catalog import normalize_tool_catalog
+from ..infrastructure.tool_catalog import normalize_tool_catalog
 
 
 @dataclass

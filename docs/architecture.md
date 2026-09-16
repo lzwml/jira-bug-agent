@@ -31,6 +31,34 @@ BugAnalysisAgent        Agent Loop、步骤预算、内部 Trace、Prompt
 
 Worker 契约与内部 Agent Trace 的边界见 [Worker Contract](worker-contract.md)。
 
+代码包按依赖方向整理。`bug_agent.domain` 保存稳定业务契约和确定性 RCA
+规则，不得反向依赖 Worker、Provider、MCP、API 或持久化实现。仓库代码直接导入
+正式分层包，该约束由架构测试检查。`bug_agent.infrastructure` 保存模型 Provider、MCP Router、环境配置、
+Jira 导出校验和 Skill 文件加载器，只能依赖自身、domain 或 Agent Core 端口契约，不能反向依赖 Worker、
+API 或表现层。
+
+运行 Bundle、运行记录、Chat 会话和 RCA 状态存储位于
+`infrastructure.persistence`。它们只能依赖 domain、Agent Core 端口及基础设施配置。
+ChatStore 和优化候选写入器都属于持久化实现，且不反向依赖 application。
+
+分析用例与流程协调位于 `bug_agent.application`：Worker、连续对话、Skill 路由、
+调查状态、人工检查点、RCA 协调和评估都在这一层。application 可以依赖 domain、
+infrastructure、Agent Core 和 presentation，但不能依赖 CLI、HTTP
+API 等入口。
+
+报告解析、Markdown 渲染以及 Chat/Run 可视化位于 `bug_agent.presentation`。
+CLI、API 和 application 直接导入具体表现模块；presentation 不得依赖 CLI 或 HTTP API。
+
+框架无关的循环、Prompt、模型与工具端口位于 `bug_agent.agent_core`。Core 只依赖
+domain，不引用 application、infrastructure、CLI 或 API。Provider 的可重试失败通过
+Core 端口异常表达；HTTP Provider 只负责实现该契约。依赖外部日志模型的工具目录则
+归入 infrastructure，而不是为了目录对称放进 Core。
+
+命令行入口位于 `bug_agent.interfaces`，HTTP 入口保留在公开的 `bug_agent.api`
+包中。两个入口只能编排 application、domain、infrastructure 和 presentation，不能
+在包根目录放置扁平实现模块。`bug_agent` 根目录只保留公开 API 的 `__init__.py`，
+该目录约束由架构测试保证。
+
 当前 HTTP 入口在 Worker 之上增加 SQLite 状态存储和有界并发调度器。它只负责
 任务生命周期、幂等和恢复，不介入 Prompt、工具选择或 RCA 生成：
 

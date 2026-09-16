@@ -26,7 +26,7 @@ dev = [
 ]
 
 [project.scripts]
-bug-agent = "bug_agent.cli:main"
+bug-agent = "bug_agent.interfaces.cli:main"
 bug-agent-api = "bug_agent.api.main:main"
 
 [tool.hatch.build.targets.wheel]

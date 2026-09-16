@@ -12,9 +12,9 @@ from uuid import uuid4
 from fastapi import FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
-from ..config import AgentConfig
-from ..contracts import BugAnalysisTask
-from ..worker import BugAnalysisWorker
+from ..application.worker import BugAnalysisWorker
+from ..domain.contracts import BugAnalysisTask
+from ..infrastructure.config import AgentConfig
 from .config import ApiConfig
 from .dispatcher import ConversationDispatcher, TaskDispatcher, WorkerFactory
 from .models import (

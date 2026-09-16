@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from bug_agent.api.client_events import locations_from_tool_event
-from bug_agent.models import ToolEvent
+from bug_agent.domain.models import ToolEvent
 
 
 def _event(data: dict) -> ToolEvent:

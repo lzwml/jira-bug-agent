@@ -5,9 +5,9 @@ from dataclasses import replace
 
 import pytest
 
-from bug_agent.comment_compiler import compile_jira_context
-from bug_agent.config import AgentConfig
-from bug_agent.provider import ProviderError
+from bug_agent.application.comment_compiler import compile_jira_context
+from bug_agent.infrastructure.config import AgentConfig
+from bug_agent.infrastructure.provider import ProviderError
 
 
 CONFIG = AgentConfig(

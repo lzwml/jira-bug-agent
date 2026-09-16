@@ -11,7 +11,7 @@ from bug_agent.api.app import create_app
 from bug_agent.api.config import ApiConfig
 from bug_agent.api.dispatcher import TaskDispatcher
 from bug_agent.api.task_store import SqliteTaskStore, TaskConflictError
-from bug_agent.contracts import (
+from bug_agent.domain.contracts import (
     BugAnalysisResult,
     BugAnalysisTask,
     EvidenceReference,
@@ -19,7 +19,7 @@ from bug_agent.contracts import (
     InvestigationState,
     RCAReport,
 )
-from bug_agent.models import ToolEvent
+from bug_agent.domain.models import ToolEvent
 
 
 def completed_result(task_id: str) -> BugAnalysisResult:
@@ -601,9 +601,9 @@ def test_fail_message_idempotent_when_already_completed(tmp_path):
 @pytest.mark.anyio
 async def test_conversation_session_on_close_called_once():
     """验证 ConversationSession 的 on_close 回调在 finalize 中只被调用一次。"""
-    from bug_agent.agent import BugAnalysisAgent
-    from bug_agent.config import AgentConfig
-    from bug_agent.conversation import ConversationSession
+    from bug_agent.agent_core import BugAnalysisAgent
+    from bug_agent.application.conversation import ConversationSession
+    from bug_agent.infrastructure.config import AgentConfig
 
     close_count = 0
 
@@ -647,9 +647,9 @@ async def test_conversation_session_on_close_called_once():
 
 def test_conversation_session_load_history():
     """验证 load_history 可将历史消息注入会话。"""
-    from bug_agent.agent import BugAnalysisAgent
-    from bug_agent.config import AgentConfig
-    from bug_agent.conversation import ConversationSession
+    from bug_agent.agent_core import BugAnalysisAgent
+    from bug_agent.application.conversation import ConversationSession
+    from bug_agent.infrastructure.config import AgentConfig
 
     class DummyRouter:
         async def call(self, name, arguments):
@@ -690,9 +690,9 @@ def test_conversation_session_load_history():
 
 def test_conversation_session_load_history_rejects_invalid_role():
     """load_history 对无效角色应抛出 ValueError。"""
-    from bug_agent.agent import BugAnalysisAgent
-    from bug_agent.config import AgentConfig
-    from bug_agent.conversation import ConversationSession
+    from bug_agent.agent_core import BugAnalysisAgent
+    from bug_agent.application.conversation import ConversationSession
+    from bug_agent.infrastructure.config import AgentConfig
 
     class DummyRouter:
         async def call(self, name, arguments):

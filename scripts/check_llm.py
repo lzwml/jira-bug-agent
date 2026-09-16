@@ -32,7 +32,7 @@ async def check_config() -> "object | None":
     """步骤 1：验证配置能从 .env 正确加载。"""
     print_step(1, "检查配置加载")
     try:
-        from bug_agent.config import AgentConfig
+        from bug_agent.infrastructure.config import AgentConfig
         config = AgentConfig.from_environment()
         print(f"  base_url : {config.llm_base_url}")
         print(f"  model    : {config.llm_model}")

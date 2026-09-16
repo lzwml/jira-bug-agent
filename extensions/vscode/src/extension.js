@@ -8,75 +8,23 @@ const {LargeLogProvider, LogOpener} = require("./logs");
 const {ConversationPanel} = require("./panel");
 const {EvidenceAnnotationManager} = require("./annotations");
 
-class ConversationTree {
-  constructor(server) {
-    this.server = server;
-    this.changed = new vscode.EventEmitter();
-    this.onDidChangeTreeData = this.changed.event;
-  }
-
-  refresh() { this.changed.fire(); }
-
-  async getChildren() {
-    try {
-      const api = await this.server.ensure();
-      return await api.listConversations();
-    } catch (error) {
-      return [{error: error.message}];
-    }
-  }
-
-  getTreeItem(item) {
-    if (item.error) {
-      const treeItem = new vscode.TreeItem("服务未连接");
-      treeItem.description = item.error;
-      treeItem.iconPath = new vscode.ThemeIcon("warning");
-      return treeItem;
-    }
-    const task = item.task || {};
-    const label = task.issue_key || path.basename(task.case_path || item.conversation_id);
-    const treeItem = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-    const running = (item.messages || []).some((message) =>
-      message.status === "queued" || message.status === "running");
-    const count = (item.messages || []).length;
-    treeItem.description = running ? "分析中" : count ? count + " 条消息" : "尚未开始";
-    treeItem.tooltip = new vscode.MarkdownString([
-      "**" + label + "**",
-      "",
-      task.objective || "未设置分析目标",
-      "",
-      task.goal_mode ? "`Goal Mode`" : "`限步模式`",
-    ].join("\n"));
-    treeItem.contextValue = running ? "bugAgentConversationRunning" : "bugAgentConversation";
-    treeItem.iconPath = new vscode.ThemeIcon(running ? "loading~spin" : "comment-discussion");
-    treeItem.command = {
-      command: "bugAgent.openConversation",
-      title: "打开 BugAgent 会话",
-      arguments: [item],
-    };
-    return treeItem;
-  }
-}
-
 async function activate(context) {
   const output = vscode.window.createOutputChannel("BugAgent");
   const server = new ServerManager(context, output);
   const largeLogs = new LargeLogProvider();
   const logOpener = new LogOpener(largeLogs);
   const annotations = new EvidenceAnnotationManager(context, largeLogs);
-  const tree = new ConversationTree(server);
   const panels = new ConversationPanel(
-    context, server, logOpener, annotations, () => tree.refresh(),
+    context, server, logOpener, annotations, () => panels.refreshHistory(),
   );
 
   context.subscriptions.push(
     output,
     vscode.workspace.registerTextDocumentContentProvider("bugagent-log", largeLogs),
-    vscode.window.registerTreeDataProvider("bugAgent.conversations", tree),
     vscode.window.registerWebviewViewProvider("bugAgent.chat", panels, {
       webviewOptions: {retainContextWhenHidden: true},
     }),
-    vscode.commands.registerCommand("bugAgent.refresh", () => tree.refresh()),
+    vscode.commands.registerCommand("bugAgent.refresh", () => panels.refreshHistory()),
     vscode.commands.registerCommand(
       "bugAgent.toggleEvidenceAnnotations", () => annotations.toggle(),
     ),
@@ -101,49 +49,45 @@ async function activate(context) {
       }
     }),
     vscode.commands.registerCommand("bugAgent.stopServer", () => server.stop()),
-    vscode.commands.registerCommand("bugAgent.newLocalCase", async () => {
-      const selected = await vscode.window.showOpenDialog({
-        canSelectFiles: false,
-        canSelectFolders: true,
-        canSelectMany: false,
-        title: "选择本地 Bug Case",
-      });
-      if (!selected || !selected[0]) return;
-      const objective = await vscode.window.showInputBox({
-        prompt: "分析目标",
-        value: "定位 Bug 根因并给出下一步建议",
-        ignoreFocusOut: true,
-      });
-      if (!objective) return;
+    vscode.commands.registerCommand("bugAgent.newLocalCase", async (options = {}) => {
+      let casePath = options.casePath;
+      if (!casePath) {
+        const selected = await vscode.window.showOpenDialog({
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          title: "选择本地 Bug Case",
+        });
+        if (!selected || !selected[0]) return;
+        casePath = selected[0].fsPath;
+      }
+      const objective = options.objective || "定位 Bug 根因并给出下一步建议";
       await createAndOpen(
-        server, panels, tree,
-        {source: "local", case_path: selected[0].fsPath, objective},
-        selected[0].fsPath,
+        server, panels,
+        {source: "local", case_path: casePath, objective},
+        casePath, Boolean(options.sendImmediately),
       );
     }),
-    vscode.commands.registerCommand("bugAgent.newJiraCase", async () => {
-      const issueKey = await vscode.window.showInputBox({
-        prompt: "Jira Issue Key",
-        placeHolder: "APP-42",
-        validateInput: (value) =>
-          /^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(value) ? undefined : "请输入有效的 Issue Key",
-      });
+    vscode.commands.registerCommand("bugAgent.newJiraCase", async (options = {}) => {
+      const issueKey = options.issueKey || await vscode.window.showInputBox({
+          prompt: "Jira Issue Key",
+          placeHolder: "APP-42",
+          validateInput: (value) =>
+            /^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(value) ? undefined : "请输入有效的 Issue Key",
+        });
       if (!issueKey) return;
-      const objective = await vscode.window.showInputBox({
-        prompt: "分析目标",
-        value: "定位 Bug 根因并给出下一步建议",
-      });
-      if (!objective) return;
+      const objective = options.objective || "定位 Bug 根因并给出下一步建议";
       await createAndOpen(
-        server, panels, tree,
+        server, panels,
         {source: "jira", issue_key: issueKey.toUpperCase(), objective},
+        undefined, Boolean(options.sendImmediately),
       );
     }),
     {dispose: () => server.stop()},
   );
 }
 
-async function createAndOpen(server, panels, tree, taskFields, caseRoot) {
+async function createAndOpen(server, panels, taskFields, caseRoot, sendImmediately = false) {
   try {
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
@@ -153,35 +97,16 @@ async function createAndOpen(server, panels, tree, taskFields, caseRoot) {
       const conversations = await api.listConversations();
       const existing = conversations.find((item) =>
         item.status === "active" && sameCase(item.task || {}, taskFields));
-      let forceNew = false;
       if (existing) {
-        const choice = await vscode.window.showQuickPick([
-          {
-            label: "$(history) 继续已有会话",
-            description: "推荐·保留已查证据、人工纠偏和调查上下文",
-            resume: true,
-          },
-          {
-            label: "$(new-file) 重新分析",
-            description: "创建独立新会话，不继承上一次对话",
-            resume: false,
-          },
-        ], {
-          placeHolder: "已找到该 Case 的历史会话",
-          ignoreFocusOut: true,
-        });
-        if (!choice) return;
-        if (choice.resume) {
-          const record = await api.getConversation(existing.conversation_id);
-          tree.refresh();
-          await panels.open(record);
-          vscode.window.showInformationMessage("已恢复该 Case 的历史会话。");
-          return;
+        if (sendImmediately) {
+          await api.sendMessage(existing.conversation_id, taskFields.objective);
         }
-        forceNew = true;
+        const record = await api.getConversation(existing.conversation_id);
+        await panels.refreshHistory();
+        await panels.open(record);
+        return;
       }
       const created = await api.createConversation({
-        ...(forceNew ? {conversation_id: "vscode-" + crypto.randomUUID()} : {}),
         task: {
           task_id: "chat-" + crypto.randomUUID(),
           include_trace: true,
@@ -196,7 +121,7 @@ async function createAndOpen(server, panels, tree, taskFields, caseRoot) {
         );
       }
       const record = await api.getConversation(created.conversation_id);
-      tree.refresh();
+      await panels.refreshHistory();
       await panels.open(record);
     });
   } catch (error) {

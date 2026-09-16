@@ -9,8 +9,8 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .runstore import _atomic_write
-from .tool_catalog import current_fallback_catalog
+from ..infrastructure.persistence.runstore import _atomic_write
+from ..infrastructure.tool_catalog import current_fallback_catalog
 
 
 def load_chat_session(session_path: Path) -> dict[str, Any]:

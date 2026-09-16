@@ -15,7 +15,8 @@ from typing import Any
 import httpx
 
 from .config import AgentConfig
-from .models import CompletionTokenUsage, TokenUsage, TokenUsageAccumulator
+from ..agent_core.contracts import ProviderFailure
+from ..domain.models import CompletionTokenUsage, TokenUsage, TokenUsageAccumulator
 
 
 class ProviderMessage(dict[str, Any]):
@@ -79,7 +80,7 @@ def _parse_token_usage(raw: Any) -> CompletionTokenUsage | None:
     )
 
 
-class ProviderError(RuntimeError):
+class ProviderError(ProviderFailure):
     """Provider 专用异常，额外携带 retryable 标志。
 
     【学习要点】为什么不直接用 HTTP 状态码或裸异常？
@@ -89,9 +90,7 @@ class ProviderError(RuntimeError):
     把这个判断封装在异常里，调用方就不用关心 HTTP 细节了。
     """
 
-    def __init__(self, message: str, retryable: bool):
-        super().__init__(message)
-        self.retryable = retryable
+    pass
 
 
 class OpenAICompatibleProvider:

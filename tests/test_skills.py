@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from bug_agent.skills import SkillRegistry
-from bug_agent.coverage_contracts import CONTRACTS
+from bug_agent.domain.coverage_contracts import CONTRACTS
+from bug_agent.infrastructure.skills import SkillRegistry
 
 
 SKILLS_ROOT = Path(__file__).resolve().parents[1] / "skills"

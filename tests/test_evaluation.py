@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from bug_agent.evaluation import (
+from bug_agent.application.evaluation import (
     ReviewScores, RunReview, evaluate_run, promote_review, save_review,
 )
-from bug_agent.run_bundle import seal_record, verify_record
+from bug_agent.infrastructure.persistence.run_bundle import seal_record, verify_record
 
 
 def _bundle(path):

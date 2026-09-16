@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from bug_agent.contracts import BugAnalysisTask, EvidenceReference
+from bug_agent.domain.contracts import BugAnalysisTask, EvidenceReference
 
 
 def test_task_defaults_to_automatic_skill_selection():

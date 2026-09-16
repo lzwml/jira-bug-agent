@@ -1,6 +1,6 @@
 """Android Bug Analysis Agent harness."""
 
-from .contracts import (
+from .domain.contracts import (
     BugAnalysisResult,
     BugAnalysisTask,
     IncidentIdentity,
@@ -8,8 +8,8 @@ from .contracts import (
     RCAReport,
     ReportValidation,
 )
-from .worker import BugAnalysisWorker
-from .rca_state import Claim, RCAEvent, RCAState
+from .application.worker import BugAnalysisWorker
+from .domain.rca_state import Claim, RCAEvent, RCAState
 
 __version__ = "0.1.0"
 

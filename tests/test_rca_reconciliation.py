@@ -1,6 +1,6 @@
-from bug_agent.contracts import ActionItem, BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis, RCAReport
-from bug_agent.rca_reconciliation import _validate_actions, compare_claims, initialize_state, reconcile_state
-from bug_agent.rca_state import Claim
+from bug_agent.application.rca_reconciliation import _validate_actions, compare_claims, initialize_state, reconcile_state
+from bug_agent.domain.contracts import ActionItem, BugAnalysisResult, BugAnalysisTask, EvidenceReference, Hypothesis, RCAReport
+from bug_agent.domain.rca_state import Claim
 
 
 def _result(task_id, root, status="hypothesis_only", evidence="e1"):

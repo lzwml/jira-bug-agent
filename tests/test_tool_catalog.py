@@ -1,4 +1,4 @@
-from bug_agent.tool_catalog import current_fallback_catalog
+from bug_agent.infrastructure.tool_catalog import current_fallback_catalog
 
 
 def test_fallback_catalog_exposes_human_readable_parameter_contracts():

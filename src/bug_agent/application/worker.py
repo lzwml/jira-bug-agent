@@ -8,10 +8,10 @@ from pathlib import Path
 import re
 from typing import Any, Awaitable, Callable, Literal, Protocol
 
-from .agent import BugAnalysisAgent, ModelProvider, ToolRouter
+from ..agent_core import BugAnalysisAgent, ModelProvider, ToolRouter
 from .comment_compiler import CompiledJiraContext, compile_jira_context, sources_from_issue
-from .config import AgentConfig, default_export_root
-from .contracts import (
+from ..infrastructure.config import AgentConfig, default_export_root
+from ..domain.contracts import (
     AnalysisGuide,
     BugAnalysisResult,
     BugAnalysisTask,
@@ -21,12 +21,12 @@ from .contracts import (
     SkillActivation,
 )
 from .conversation import ConversationSession
-from .models import TokenUsage, TokenUsageAccumulator, ToolEvent, merge_token_usage
+from ..domain.models import TokenUsage, TokenUsageAccumulator, ToolEvent, merge_token_usage
 from .human_guidance import HumanGuidanceToolRouter
 from .investigation_state import InvestigationStateToolRouter
-from .jira_context import JiraInitialContext, load_jira_initial_context
-from .mcp_router import McpToolRouter
-from .prompts import (
+from ..infrastructure.jira_context import JiraInitialContext, load_jira_initial_context
+from ..infrastructure.mcp_router import McpToolRouter
+from ..agent_core.prompts import (
     ANALYSIS_GUIDE_PROMPT,
     ADAPTIVE_INVESTIGATION_PROMPT,
     CHAT_REPORT_SYNTHESIS_PROMPT,
@@ -36,15 +36,15 @@ from .prompts import (
     REPORT_FORMAT_PROMPT,
     VIDEO_ANALYSIS_WORKFLOW_PROMPT,
 )
-from .provider import OpenAICompatibleProvider, ProviderError
-from .presentation import parse_report_output
-from .report_validation import build_evidence_registry, validate_report
-from .run_bundle import build_execution_context
-from .runstore import RunRecorder, write_run_record
+from ..infrastructure.provider import OpenAICompatibleProvider, ProviderError
+from ..presentation.report_parser import parse_report_output
+from ..domain.report_validation import build_evidence_registry, validate_report
+from ..infrastructure.persistence.run_bundle import build_execution_context
+from ..infrastructure.persistence.runstore import RunRecorder, write_run_record
 from .rca_reconciliation import reconcile
-from .rca_store import RCAStore, continuation_context
+from ..infrastructure.persistence.rca_store import RCAStore, continuation_context
 from .skill_router import SkillAwareToolRouter
-from .skills import SkillDocument, SkillRegistry
+from ..infrastructure.skills import SkillDocument, SkillRegistry
 
 
 class CloseableProvider(ModelProvider, Protocol):
@@ -294,8 +294,7 @@ class BugAnalysisWorker:
             # 自定义 Skill 根目录无需复制它，避免破坏团队自定义目录的兼容性。
             requested_skills = task.skills or ["android-log-triage"]
             skill_prompt, applied_skills = self.skill_registry.render(requested_skills)
-            builtin_skills_root = Path(__file__).resolve().parents[2] / "skills"
-            report_registry = SkillRegistry(builtin_skills_root)
+            report_registry = SkillRegistry.builtin()
             report_prompt, _ = report_registry.render(["stability-rca-report"])
             skill_documents = [
                 self.skill_registry.load(name) for name in dict.fromkeys(requested_skills)
@@ -735,8 +734,7 @@ class BugAnalysisWorker:
         # 1. 加载 Skills
         requested_skills = task.skills or ["android-log-triage"]
         skill_prompt, applied_skills = self.skill_registry.render(requested_skills)
-        builtin_skills_root = Path(__file__).resolve().parents[2] / "skills"
-        report_registry = SkillRegistry(builtin_skills_root)
+        report_registry = SkillRegistry.builtin()
         report_prompt, _ = report_registry.render(["stability-rca-report"])
         skill_prompt += "\n\n" + report_prompt
         applied_skills = list(dict.fromkeys([

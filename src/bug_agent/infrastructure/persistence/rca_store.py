@@ -9,8 +9,8 @@ import threading
 from pathlib import Path
 from uuid import uuid4
 
-from .contracts import BugAnalysisTask
-from .rca_state import RCAEvent, RCAState
+from ...domain.contracts import BugAnalysisTask
+from ...domain.rca_state import RCAEvent, RCAState
 from .runstore import resolve_run_dir
 
 _locks: dict[str, threading.RLock] = {}

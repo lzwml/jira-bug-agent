@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .contracts import AnalysisGuide, BugAnalysisResult
+from ..domain.contracts import AnalysisGuide, BugAnalysisResult
 
 
 STATUS_LABELS = {

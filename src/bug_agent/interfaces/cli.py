@@ -18,18 +18,23 @@ from jira_bug_mcp.service import JiraService
 from log_analyzer.case_registry import CaseRegistry
 from log_analyzer.service import LogAnalyzerService
 
-from .chat_store import ChatStore, resolve_chat_session_id, resolve_chat_sessions_dir
-from .chat_visualization import render_chat_visualization
-from .config import AgentConfig
-from .contracts import BugAnalysisResult, BugAnalysisTask
-from .conversation import ConversationSession, SavedTurn
-from .evaluation import evaluate_run, load_review_file, promote_review, save_review
-from .models import ToolEvent, merge_token_usage
-from .presentation import present_conversation_answer
-from .renderer import render_analysis_guide, render_markdown
-from .runstore import resolve_run_dir, write_analysis_guide
-from .run_visualization import render_run_visualization
-from .worker import BugAnalysisWorker
+from ..application.conversation import ConversationSession, SavedTurn
+from ..application.evaluation import evaluate_run, load_review_file, promote_review, save_review
+from ..application.worker import BugAnalysisWorker
+from ..domain.contracts import BugAnalysisResult, BugAnalysisTask
+from ..domain.models import ToolEvent, merge_token_usage
+from ..infrastructure.config import AgentConfig
+from ..infrastructure.persistence.chat_store import (
+    ChatStore,
+    resolve_chat_session_id,
+    resolve_chat_sessions_dir,
+)
+from ..infrastructure.persistence.optimization_feedback import write_optimization_candidate
+from ..infrastructure.persistence.runstore import resolve_run_dir, write_analysis_guide
+from ..presentation.chat_visualization import render_chat_visualization
+from ..presentation.report_parser import present_conversation_answer
+from ..presentation.renderer import render_analysis_guide, render_markdown
+from ..presentation.run_visualization import render_run_visualization
 
 
 def _human_turn_answer(task: BugAnalysisTask, session: ConversationSession, raw: str) -> str:
@@ -489,7 +494,7 @@ async def _maybe_generate_report(
 async def _save_report(task: BugAnalysisTask, markdown: str) -> Path | None:
     """保存报告到 Case 的 .bug-agent/reports/ 目录。"""
     try:
-        from .runstore import resolve_run_dir
+        from .infrastructure.persistence.runstore import resolve_run_dir
         run_dir = resolve_run_dir(task)
         if run_dir is None:
             return None
@@ -580,7 +585,10 @@ async def _run_chat(args: argparse.Namespace) -> int:
     # ---------- 持久化：检测已有会话 ----------
     sessions_dir = resolve_chat_sessions_dir(task)
     session_id = resolve_chat_session_id(task)
-    store = ChatStore(sessions_dir) if sessions_dir is not None else None
+    store = (
+        ChatStore(sessions_dir, optimization_candidate_writer=write_optimization_candidate)
+        if sessions_dir is not None else None
+    )
     saved_turns: list[SavedTurn] = []
 
     if store is not None:

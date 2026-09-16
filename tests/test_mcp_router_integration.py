@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from bug_agent.mcp_router import McpToolRouter
+from bug_agent.infrastructure.mcp_router import McpToolRouter
 
 
 @pytest.mark.anyio

@@ -2,7 +2,7 @@
   "name": "bugagent-vscode",
   "displayName": "BugAgent",
   "description": "Run BugAgent and open log evidence in VS Code.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "internal",
   "engines": {
     "vscode": "^1.96.0"
@@ -11,7 +11,6 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:bugAgent.conversations",
     "onView:bugAgent.chat",
     "onCommand:bugAgent.newLocalCase",
     "onCommand:bugAgent.newJiraCase"
@@ -113,13 +112,6 @@
       }
     ],
     "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "bugAgent",
-          "title": "BugAgent",
-          "icon": "media/bugagent.svg"
-        }
-      ],
       "secondarySidebar": [
         {
           "id": "bugAgentChat",
@@ -129,48 +121,18 @@
       ]
     },
     "views": {
-      "bugAgent": [
-        {
-          "id": "bugAgent.conversations",
-          "name": "Case 与会话"
-        }
-      ],
       "bugAgentChat": [
         {
           "id": "bugAgent.chat",
-          "name": "Agent 对话",
+          "name": "BugAgent",
           "type": "webview"
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "bugAgent.conversations",
-        "contents": "当前还没有会话。\n[分析本地 Case](command:bugAgent.newLocalCase)\n[分析 Jira Issue](command:bugAgent.newJiraCase)"
-      }
-    ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "bugAgent.newLocalCase",
-          "when": "view == bugAgent.conversations",
-          "group": "navigation@1"
-        },
-        {
-          "command": "bugAgent.newJiraCase",
-          "when": "view == bugAgent.conversations",
-          "group": "navigation@2"
-        },
-        {
-          "command": "bugAgent.refresh",
-          "when": "view == bugAgent.conversations",
-          "group": "navigation@3"
-        }
-      ]
-    }
+    "viewsWelcome": []
   },
   "scripts": {
-    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.2.0.vsix"
+    "package": "vsce package --allow-missing-repository --out dist/bugagent-vscode-0.3.0.vsix"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.2"

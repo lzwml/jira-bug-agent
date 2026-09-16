@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bug_agent.chat_store import ChatStore
-from bug_agent.contracts import BugAnalysisTask
-from bug_agent.models import (
+from bug_agent.domain.contracts import BugAnalysisTask
+from bug_agent.domain.models import (
     HumanCheckpoint, HumanIntervention, InterventionAttribution,
 )
-from bug_agent.run_bundle import verify_record
+from bug_agent.infrastructure.persistence.chat_store import ChatStore
+from bug_agent.infrastructure.persistence.run_bundle import verify_record
 
 
 def test_human_intervention_automatically_creates_reviewable_optimization_candidate(tmp_path):

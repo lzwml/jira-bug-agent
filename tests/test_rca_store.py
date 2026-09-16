@@ -1,8 +1,7 @@
 import json
 
-from bug_agent.contracts import BugAnalysisTask
-from bug_agent.rca_reconciliation import reconcile
-from bug_agent.contracts import BugAnalysisResult, RCAReport
+from bug_agent.application.rca_reconciliation import reconcile
+from bug_agent.domain.contracts import BugAnalysisResult, BugAnalysisTask, RCAReport
 
 
 def test_store_writes_one_case_snapshot_and_append_only_events(tmp_path):

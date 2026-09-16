@@ -7,14 +7,14 @@ import json
 from pathlib import Path
 import sqlite3
 
-from ..contracts import (
+from ..domain.contracts import (
     BugAnalysisResult,
     BugAnalysisTask,
     InvestigationState,
     RCAReport,
     ReportValidation,
 )
-from ..models import ToolEvent
+from ..domain.models import ToolEvent
 from .client_events import locations_from_evidence, locations_from_tool_event
 from .models import (
     ConversationEvent,
@@ -45,7 +45,7 @@ def _case_root(task: BugAnalysisTask) -> Path | None:
         return Path(task.case_path).expanduser().resolve() if task.case_path else None
     if not task.issue_key:
         return None
-    from ..config import default_export_root
+    from ..infrastructure.config import default_export_root
     return (default_export_root() / task.issue_key.upper()).resolve()
 
 

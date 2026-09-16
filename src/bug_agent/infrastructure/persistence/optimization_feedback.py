@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 
-from .models import HumanIntervention
+from ...domain.models import HumanIntervention
 from .run_bundle import seal_record, verify_record
 from .runstore import _atomic_write
 
